@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing annotated release tag to verify and publish"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -24,22 +30,33 @@ jobs:
       - name: Verify pinned Corepack bootstrap
         run: node scripts/run-pnpm.mjs --version
 
-      - name: Verify annotated tag and main ancestry
+      - name: Resolve annotated release tag and source commit
+        id: release_tag
+        env:
+          RELEASE_TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
         shell: bash
         run: |
-          tag_name="$GITHUB_REF_NAME"
+          tag_name="$RELEASE_TAG_NAME"
+          if [[ ! "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must use the v<major>.<minor>.<patch> form." >&2
+            exit 1
+          fi
+          git fetch --force origin \
+            "refs/tags/$tag_name:refs/tags/$tag_name" \
+            "main:refs/remotes/origin/main"
+          if [[ "$(git cat-file -t "refs/tags/$tag_name")" != "tag" ]]; then
+            echo "Release tags must be annotated so the content-manifest digest is auditable." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "refs/tags/$tag_name^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          git checkout --detach "$tag_commit"
           package_version="$(node --input-type=module -e 'import packageJson from "./package.json" with { type: "json" }; console.log(packageJson.version)')"
           if [[ "$tag_name" != "v$package_version" ]]; then
             echo "Tag $tag_name does not match package version v$package_version" >&2
             exit 1
           fi
-          if [[ "$(git cat-file -t "refs/tags/$tag_name")" != "tag" ]]; then
-            echo "Release tags must be annotated so the content-manifest digest is auditable." >&2
-            exit 1
-          fi
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          tag_commit="$(git rev-list -n 1 "refs/tags/$tag_name")"
-          git merge-base --is-ancestor "$tag_commit" origin/main
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: node scripts/run-pnpm.mjs install --frozen-lockfile
@@ -82,7 +99,7 @@ jobs:
           tar -xzf "$marketplace_archive" -C "$release_directory/extracted"
           cp "$release_directory/extracted/CONTENT-MANIFEST.json" "$release_directory/CONTENT-MANIFEST.json"
           manifest_digest="$(sha256sum "$release_directory/CONTENT-MANIFEST.json" | awk '{print $1}')"
-          expected_digest="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" | sed -nE 's/^Codex-Content-Manifest-SHA256:[[:space:]]*([0-9a-f]{64})[[:space:]]*$/\1/p')"
+          expected_digest="$(git for-each-ref --format='%(contents)' "refs/tags/${{ steps.release_tag.outputs.tag_name }}" | sed -nE 's/^Codex-Content-Manifest-SHA256:[[:space:]]*([0-9a-f]{64})[[:space:]]*$/\1/p')"
           if [[ "$(printf '%s\n' "$expected_digest" | sed '/^$/d' | wc -l)" -ne 1 ]]; then
             echo "Annotated tag message must contain exactly one Codex-Content-Manifest-SHA256: <64 lowercase hex> line." >&2
             exit 1
@@ -98,7 +115,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "${{ steps.release_tag.outputs.tag_name }}" \
             --generate-notes \
             "${{ steps.assets.outputs.release_directory }}"/npm/*.tgz \
             "${{ steps.assets.outputs.release_directory }}"/codex/*.tar.gz \
