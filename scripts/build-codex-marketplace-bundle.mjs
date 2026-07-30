@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { gzipSync } from "node:zlib";
 import {
   cpSync,
   existsSync,
@@ -265,37 +266,92 @@ function writeContentManifest(stagingRoot, version) {
   };
 }
 
-function createArchive(stagingRoot, archivePath) {
-  const epoch = process.env.SOURCE_DATE_EPOCH ?? "0";
-  const tarPath = `${archivePath}.tar`;
-  execFileSync(
-    "tar",
-    [
-      "--sort=name",
-      `--mtime=@${epoch}`,
-      "--owner=0",
-      "--group=0",
-      "--numeric-owner",
-      "--format=gnu",
-      "-cf",
-      tarPath,
-      "-C",
-      stagingRoot,
-      ".",
-    ],
-    {
-      stdio: "pipe",
-    },
-  );
-  try {
-    const compressed = execFileSync("gzip", ["-n", "-9", "-c", tarPath], {
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    writeFileSync(archivePath, compressed);
-  } finally {
-    rmSync(tarPath, { force: true });
+function writeTarString(header, offset, length, value) {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.length > length) {
+    throw new Error(`USTAR field exceeds ${length} bytes: ${value}`);
   }
+  encoded.copy(header, offset);
+}
+
+function writeTarOctal(header, offset, length, value) {
+  const encoded = value.toString(8).padStart(length - 1, "0");
+  if (encoded.length > length - 1) {
+    throw new Error(`USTAR numeric field exceeds ${length} bytes: ${value}`);
+  }
+  writeTarString(header, offset, length, `${encoded}\0`);
+}
+
+function writeTarPath(header, relativePath) {
+  if (Buffer.byteLength(relativePath, "utf8") <= 100) {
+    writeTarString(header, 0, 100, relativePath);
+    return;
+  }
+
+  const segments = relativePath.split("/");
+  for (let index = 1; index < segments.length; index++) {
+    const prefix = segments.slice(0, index).join("/");
+    const name = segments.slice(index).join("/");
+    if (Buffer.byteLength(prefix, "utf8") <= 155 && Buffer.byteLength(name, "utf8") <= 100) {
+      writeTarString(header, 0, 100, name);
+      writeTarString(header, 345, 155, prefix);
+      return;
+    }
+  }
+
+  throw new Error(`USTAR path is too long: ${relativePath}`);
+}
+
+function createTarHeader(relativePath, type, size, mtime) {
+  const header = Buffer.alloc(512, 0);
+  writeTarPath(header, relativePath);
+  writeTarOctal(header, 100, 8, type === "directory" ? 0o755 : 0o644);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, size);
+  writeTarOctal(header, 136, 12, mtime);
+  header.fill(0x20, 148, 156);
+  header[156] = type === "directory" ? 0x35 : 0x30;
+  writeTarString(header, 257, 6, "ustar\0");
+  writeTarString(header, 263, 2, "00");
+
+  let checksum = 0;
+  for (const byte of header) checksum += byte;
+  writeTarString(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
+  return header;
+}
+
+function createArchive(stagingRoot, archivePath) {
+  const sourceDateEpoch = Number.parseInt(process.env.SOURCE_DATE_EPOCH ?? "0", 10);
+  if (!Number.isSafeInteger(sourceDateEpoch) || sourceDateEpoch < 0) {
+    throw new Error("SOURCE_DATE_EPOCH must be a non-negative integer");
+  }
+
+  const filePaths = listFiles(stagingRoot);
+  const directoryPaths = new Set();
+  for (const relativePath of filePaths) {
+    const segments = relativePath.split("/");
+    for (let index = 1; index < segments.length; index++) {
+      directoryPaths.add(`${segments.slice(0, index).join("/")}/`);
+    }
+  }
+
+  const archiveParts = [];
+  for (const relativePath of [...directoryPaths].sort()) {
+    archiveParts.push(createTarHeader(relativePath, "directory", 0, sourceDateEpoch));
+  }
+  for (const relativePath of filePaths) {
+    const content = readFileSync(join(stagingRoot, relativePath));
+    const remainder = content.length % 512;
+    archiveParts.push(createTarHeader(relativePath, "file", content.length, sourceDateEpoch));
+    archiveParts.push(content);
+    if (remainder !== 0) archiveParts.push(Buffer.alloc(512 - remainder));
+  }
+  archiveParts.push(Buffer.alloc(1024));
+
+  const compressed = gzipSync(Buffer.concat(archiveParts), { level: 9, mtime: 0 });
+  compressed[9] = 255;
+  writeFileSync(archivePath, compressed);
 }
 
 function main() {

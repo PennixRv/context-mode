@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 const repositoryRoot = resolve(__dirname, "..", "..");
 const builderPath = resolve(repositoryRoot, "scripts", "build-codex-marketplace-bundle.mjs");
@@ -60,6 +61,21 @@ describe("Codex offline marketplace release asset", () => {
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
       rmSync(extractionDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("uses a portable USTAR archive with a normalized gzip header", () => {
+    const outputDirectory = mkdtempSync(join(tmpdir(), "context-mode-release-format-"));
+    try {
+      const archive = readFileSync(buildArchive(outputDirectory));
+      const tar = gunzipSync(archive);
+
+      expect(archive.subarray(4, 8).equals(Buffer.alloc(4))).toBe(true);
+      expect(archive[9]).toBe(255);
+      expect(tar.subarray(257, 263).toString("ascii")).toBe("ustar\0");
+      expect(tar.subarray(263, 265).toString("ascii")).toBe("00");
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
     }
   });
 

@@ -35,9 +35,12 @@ echo "  openclaw    : $OPENCLAW_STATE_DIR"
 
 # 1. Build TypeScript + rebuild native bindings for system Node
 echo "→ building..."
-npm --prefix "$PLUGIN_ROOT" install --silent
-npm --prefix "$PLUGIN_ROOT" run build
-npm --prefix "$PLUGIN_ROOT" rebuild better-sqlite3
+(
+  cd "$PLUGIN_ROOT"
+  node scripts/run-pnpm.mjs install --frozen-lockfile
+  node scripts/run-pnpm.mjs run build
+  node scripts/run-pnpm.mjs rebuild better-sqlite3
+)
 
 # 2. Create global extension dir (real directory — OpenClaw does NOT follow dir symlinks)
 echo "→ installing extension into $EXT_DIR..."
