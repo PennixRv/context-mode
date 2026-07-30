@@ -29,6 +29,20 @@ function buildArchiveWithPnpmSeparator(outputDirectory: string): string {
 }
 
 describe("Codex offline marketplace release asset", () => {
+  test("extracts npm package archives from relative paths for Windows tar", () => {
+    const builderSource = readFileSync(builderPath, "utf8");
+    const functionStart = builderSource.indexOf("function createPublishablePackageRoot");
+    const functionEnd = builderSource.indexOf("function listFiles", functionStart);
+    const functionSource = builderSource.slice(functionStart, functionEnd);
+
+    // GNU tar on Windows interprets an absolute C:\\ path as a remote archive
+    // specifier. The builder must execute in the temp root and pass only paths
+    // relative to it when unpacking npm's generated archive.
+    expect(functionSource).toContain("cwd: temporaryRoot");
+    expect(functionSource).toContain("relative(temporaryRoot, join(packageDirectory, archives[0]))");
+    expect(functionSource).toContain("relative(temporaryRoot, extractionRoot)");
+  });
+
   test("accepts the package-manager argument separator", () => {
     const outputDirectory = mkdtempSync(join(tmpdir(), "context-mode-release-separator-"));
     try {

@@ -169,7 +169,15 @@ function createPublishablePackageRoot(temporaryRoot) {
   }
   const extractionRoot = join(temporaryRoot, "npm-package-extracted");
   mkdirSync(extractionRoot, { recursive: true });
-  execFileSync("tar", ["-xzf", join(packageDirectory, archives[0]), "-C", extractionRoot], {
+  // Windows tar treats an absolute drive path (for example, C:\\...) as a
+  // remote archive specifier. Resolve both paths relative to the temp root.
+  execFileSync("tar", [
+    "-xzf",
+    normalizePath(relative(temporaryRoot, join(packageDirectory, archives[0]))),
+    "-C",
+    normalizePath(relative(temporaryRoot, extractionRoot)),
+  ], {
+    cwd: temporaryRoot,
     stdio: "pipe",
   });
   const packageRoot = join(extractionRoot, "package");
