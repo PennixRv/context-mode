@@ -62,9 +62,9 @@ function isCodexPluginRuntime() {
  */
 export async function assertCodexSqliteRuntime() {
   const [major, minor] = process.versions.node.split(".").map(Number);
-  if (major < 22 || (major === 22 && minor < 5)) {
+  if (major < 22 || (major === 22 && minor < 22)) {
     throw new Error(
-      `[context-mode] Codex requires Node >=22.5 with node:sqlite; found ${process.versions.node}.`,
+      `[context-mode] Codex requires Node >=22.22 with FTS5-capable node:sqlite; found ${process.versions.node}.`,
     );
   }
 
@@ -85,7 +85,7 @@ export async function assertCodexSqliteRuntime() {
 
 /**
  * Check if the current runtime has built-in SQLite support.
- * Bun has bun:sqlite, Node >= 22.5 has node:sqlite.
+ * Bun has bun:sqlite; Codex requires Node >= 22.22 for FTS5-capable node:sqlite.
  *
  * Used to skip the SIGSEGV-prone child-process probe on modern Node (#331),
  * but NOT to skip installing better-sqlite3 — the bundle unconditionally

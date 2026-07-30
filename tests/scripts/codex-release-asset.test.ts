@@ -17,7 +17,26 @@ function buildArchive(outputDirectory: string): string {
   return JSON.parse(result.stdout).archive as string;
 }
 
+function buildArchiveWithPnpmSeparator(outputDirectory: string): string {
+  const result = spawnSync(process.execPath, [builderPath, "--", "--output-dir", outputDirectory], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout).archive as string;
+}
+
 describe("Codex offline marketplace release asset", () => {
+  test("accepts the package-manager argument separator", () => {
+    const outputDirectory = mkdtempSync(join(tmpdir(), "context-mode-release-separator-"));
+    try {
+      expect(existsSync(buildArchiveWithPnpmSeparator(outputDirectory))).toBe(true);
+    } finally {
+      rmSync(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("uses a local wrapper and excludes source, tests, config, and native modules", () => {
     const outputDirectory = mkdtempSync(join(tmpdir(), "context-mode-release-asset-"));
     const extractionDirectory = mkdtempSync(join(tmpdir(), "context-mode-release-extract-"));

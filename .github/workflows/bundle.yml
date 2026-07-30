@@ -33,19 +33,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.11.0"
+          node-version: "22.23.2"
 
-      - name: Install and enable Corepack
-        run: |
-          npm install --global corepack@0.31.0
-          corepack enable
-          corepack install
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: node scripts/run-pnpm.mjs install --frozen-lockfile
 
       - name: Build bundles
-        run: pnpm run build
+        run: node scripts/run-pnpm.mjs run build
 
       - name: Reject generated bundle drift
         run: |

@@ -13,7 +13,7 @@ concurrency:
 
 env:
   OPENCLAW_VERSION: "2026.3.2"
-  NODE_VERSION: "22.11.0"
+  NODE_VERSION: "22.23.2"
 
 jobs:
   e2e:
@@ -49,17 +49,14 @@ jobs:
           path: ~/.npm-global
           key: openclaw-${{ runner.os }}-v${{ env.OPENCLAW_VERSION }}
 
-      - name: Install and enable Corepack
-        run: |
-          npm install --global corepack@0.31.0
-          corepack enable
-          corepack install
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
 
       - name: Install dependencies and build
         run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-          pnpm rebuild better-sqlite3
+          node scripts/run-pnpm.mjs install --frozen-lockfile
+          node scripts/run-pnpm.mjs run build
+          node scripts/run-pnpm.mjs rebuild better-sqlite3
 
       - name: Install OpenClaw
         if: steps.cache-openclaw.outputs.cache-hit != 'true'

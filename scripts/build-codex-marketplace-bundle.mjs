@@ -71,6 +71,9 @@ function parseArguments(argv) {
   const options = { outputDirectory: releaseDirectory };
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
+    if (value === "--") {
+      continue;
+    }
     if (value === "--output-dir") {
       const outputDirectory = argv[++index];
       if (!outputDirectory) throw new Error("--output-dir requires a directory");

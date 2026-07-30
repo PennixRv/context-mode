@@ -21,9 +21,17 @@ function run(command, args, options) {
   return result.stdout;
 }
 
+function parseArchivePath(argv) {
+  const values = argv.filter((value) => value !== "--");
+  if (values.length !== 1) {
+    throw new Error("Usage: node scripts/verify-codex-release-asset.mjs <archive.tar.gz>");
+  }
+  return resolve(values[0]);
+}
+
 function main() {
-  const archivePath = resolve(process.argv[2] ?? "");
-  if (!archivePath || !existsSync(archivePath)) {
+  const archivePath = parseArchivePath(process.argv.slice(2));
+  if (!existsSync(archivePath)) {
     throw new Error("Usage: node scripts/verify-codex-release-asset.mjs <archive.tar.gz>");
   }
 

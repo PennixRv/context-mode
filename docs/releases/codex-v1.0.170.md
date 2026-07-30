@@ -8,7 +8,7 @@ an FTS5-capable `node:sqlite` runtime instead of `better-sqlite3`.
 ## Prerequisites
 
 - Codex CLI `0.145.0` or the version validated by the target release.
-- Node `>=22.5` with `node:sqlite` and FTS5. The plugin fails explicitly when
+- Node `>=22.22` with `node:sqlite` and FTS5. The plugin fails explicitly when
   that runtime is unavailable; it does not compile or download a native addon.
 - Hooks enabled in the Codex profile that will run the plugin:
 
@@ -98,13 +98,12 @@ Maintainers run the reproducible build and isolated offline-install smoke from
 the repository root:
 
 ```bash
-corepack enable
-pnpm install --frozen-lockfile
-pnpm run typecheck
-pnpm run build
-pnpm test
-pnpm run build:codex-marketplace
-pnpm run verify:codex-marketplace -- \
+node scripts/run-pnpm.mjs install --frozen-lockfile
+node scripts/run-pnpm.mjs run typecheck
+node scripts/run-pnpm.mjs run build
+node scripts/run-pnpm.mjs test
+node scripts/run-pnpm.mjs run build:codex-marketplace
+node scripts/run-pnpm.mjs run verify:codex-marketplace -- \
   release/context-mode-codex-marketplace-v1.0.170.tar.gz
 ```
 

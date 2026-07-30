@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.11.0"
+          node-version: "22.23.2"
 
       - uses: actions/setup-python@v5
         with:
@@ -46,20 +46,17 @@ jobs:
         shell: pwsh
         run: choco install elixir --yes --no-progress
 
-      - name: Install and enable Corepack
-        run: |
-          npm install --global corepack@0.31.0
-          corepack enable
-          corepack install
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: node scripts/run-pnpm.mjs install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm run typecheck
+        run: node scripts/run-pnpm.mjs run typecheck
 
       - name: Build
-        run: pnpm run build
+        run: node scripts/run-pnpm.mjs run build
 
       - name: Check generated bundles
         shell: bash
@@ -80,7 +77,7 @@ jobs:
           # Vitest worker cleanup can report Windows EPERM after all suites
           # complete. Fail on actual suite/test failures, not that teardown race.
           set +e
-          pnpm exec vitest run 2>&1 | tee /tmp/vitest-output.txt
+          node scripts/run-pnpm.mjs exec vitest run 2>&1 | tee /tmp/vitest-output.txt
           VITEST_EXIT=$?
           set -e
 
@@ -100,7 +97,7 @@ jobs:
           fi
 
       - name: Doctor (verify server starts)
-        run: pnpm run doctor
+        run: node scripts/run-pnpm.mjs run doctor
         continue-on-error: true
 
   codex-release-asset:
@@ -112,19 +109,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.11.0"
+          node-version: "22.23.2"
 
-      - name: Install and enable Corepack
-        run: |
-          npm install --global corepack@0.31.0
-          corepack enable
-          corepack install
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: node scripts/run-pnpm.mjs install --frozen-lockfile
 
       - name: Build release inputs
-        run: pnpm run build
+        run: node scripts/run-pnpm.mjs run build
 
       - name: Check generated bundles
         run: |
@@ -143,8 +137,8 @@ jobs:
         run: |
           first_output="$(mktemp -d)"
           second_output="$(mktemp -d)"
-          pnpm run build:codex-marketplace -- --output-dir "$first_output"
-          pnpm run build:codex-marketplace -- --output-dir "$second_output"
+          node scripts/run-pnpm.mjs run build:codex-marketplace -- --output-dir "$first_output"
+          node scripts/run-pnpm.mjs run build:codex-marketplace -- --output-dir "$second_output"
           first_archive="$(find "$first_output" -maxdepth 1 -name '*.tar.gz' -print -quit)"
           second_archive="$(find "$second_output" -maxdepth 1 -name '*.tar.gz' -print -quit)"
           test -n "$first_archive"
@@ -156,4 +150,4 @@ jobs:
         run: npm install --global @openai/codex@0.145.0
 
       - name: Verify isolated offline Codex installation
-        run: pnpm run verify:codex-marketplace -- "$RUNNER_TEMP/context-mode-codex-marketplace.tar.gz"
+        run: node scripts/run-pnpm.mjs run verify:codex-marketplace -- "$RUNNER_TEMP/context-mode-codex-marketplace.tar.gz"
