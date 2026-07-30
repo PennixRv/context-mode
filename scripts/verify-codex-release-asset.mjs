@@ -2,7 +2,15 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -43,7 +51,13 @@ function main() {
     mkdirSync(extractionRoot, { recursive: true });
     mkdirSync(codexHome, { recursive: true });
     mkdirSync(projectRoot, { recursive: true });
-    execFileSync("tar", ["-xzf", archivePath, "-C", extractionRoot], {
+    // GNU tar on Windows treats a C:\\ archive path as a remote archive
+    // specifier. Stage the input beneath the temporary root and use only
+    // relative paths for the extraction command.
+    const stagedArchivePath = join(temporaryRoot, "release-asset.tar.gz");
+    copyFileSync(archivePath, stagedArchivePath);
+    execFileSync("tar", ["-xzf", "release-asset.tar.gz", "-C", "marketplace"], {
+      cwd: temporaryRoot,
       stdio: "pipe",
     });
 

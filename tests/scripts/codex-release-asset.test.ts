@@ -2,11 +2,12 @@ import { describe, expect, test } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 const repositoryRoot = resolve(__dirname, "..", "..");
 const builderPath = resolve(repositoryRoot, "scripts", "build-codex-marketplace-bundle.mjs");
+const verifierPath = resolve(repositoryRoot, "scripts", "verify-codex-release-asset.mjs");
 
 function buildArchive(outputDirectory: string): string {
   const result = spawnSync(process.execPath, [builderPath, "--output-dir", outputDirectory], {
@@ -28,6 +29,22 @@ function buildArchiveWithPnpmSeparator(outputDirectory: string): string {
   return JSON.parse(result.stdout).archive as string;
 }
 
+function extractArchive(archivePath: string, extractionDirectory: string): void {
+  const temporaryDirectory = tmpdir();
+  // GNU tar on Windows parses a C:\\ path as a remote archive specifier. Both
+  // temporary paths are under the system temp root, so pass paths relative to it.
+  execFileSync(
+    "tar",
+    [
+      "-xzf",
+      relative(temporaryDirectory, archivePath).split(sep).join("/"),
+      "-C",
+      relative(temporaryDirectory, extractionDirectory).split(sep).join("/"),
+    ],
+    { cwd: temporaryDirectory },
+  );
+}
+
 describe("Codex offline marketplace release asset", () => {
   test("extracts npm package archives from relative paths for Windows tar", () => {
     const builderSource = readFileSync(builderPath, "utf8");
@@ -41,6 +58,17 @@ describe("Codex offline marketplace release asset", () => {
     expect(functionSource).toContain("cwd: temporaryRoot");
     expect(functionSource).toContain("relative(temporaryRoot, join(packageDirectory, archives[0]))");
     expect(functionSource).toContain("relative(temporaryRoot, extractionRoot)");
+  });
+
+  test("stages downloaded assets before tar extraction on Windows", () => {
+    const verifierSource = readFileSync(verifierPath, "utf8");
+
+    // The downloaded release archive may live at C:\\... on Windows. The
+    // verifier stages it beneath its temporary root, then passes tar a stable
+    // relative path so GNU tar does not parse the drive prefix as a host name.
+    expect(verifierSource).toContain('copyFileSync(archivePath, stagedArchivePath)');
+    expect(verifierSource).toContain('["-xzf", "release-asset.tar.gz", "-C", "marketplace"]');
+    expect(verifierSource).toContain("cwd: temporaryRoot");
   });
 
   test("accepts the package-manager argument separator", () => {
@@ -57,7 +85,7 @@ describe("Codex offline marketplace release asset", () => {
     const extractionDirectory = mkdtempSync(join(tmpdir(), "context-mode-release-extract-"));
     try {
       const archive = buildArchive(outputDirectory);
-      execFileSync("tar", ["-xzf", archive, "-C", extractionDirectory]);
+      extractArchive(archive, extractionDirectory);
 
       const marketplace = JSON.parse(
         readFileSync(join(extractionDirectory, ".agents", "plugins", "marketplace.json"), "utf8"),
