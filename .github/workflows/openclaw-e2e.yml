@@ -13,7 +13,7 @@ concurrency:
 
 env:
   OPENCLAW_VERSION: "2026.3.2"
-  NODE_VERSION: "22"
+  NODE_VERSION: "22.11.0"
 
 jobs:
   e2e:
@@ -40,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules/better-sqlite3/build
-          key: better-sqlite3-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+          key: better-sqlite3-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Cache OpenClaw binary
         id: cache-openclaw
@@ -49,11 +49,17 @@ jobs:
           path: ~/.npm-global
           key: openclaw-${{ runner.os }}-v${{ env.OPENCLAW_VERSION }}
 
+      - name: Install and enable Corepack
+        run: |
+          npm install --global corepack@0.31.0
+          corepack enable
+          corepack install
+
       - name: Install dependencies and build
         run: |
-          npm install
-          npm run build
-          npm rebuild better-sqlite3
+          pnpm install --frozen-lockfile
+          pnpm run build
+          pnpm rebuild better-sqlite3
 
       - name: Install OpenClaw
         if: steps.cache-openclaw.outputs.cache-hit != 'true'
