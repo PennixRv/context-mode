@@ -2,12 +2,12 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve, win32 } from "node:path";
+import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const corepackVersion = "0.31.0";
 export function resolveNpmCliPath(nodeExecutablePath, platform) {
-  const path = platform === "win32" ? win32 : { dirname, join };
+  const path = platform === "win32" ? win32 : posix;
   const nodeRoot = platform === "win32"
     ? path.dirname(nodeExecutablePath)
     : path.dirname(path.dirname(nodeExecutablePath));

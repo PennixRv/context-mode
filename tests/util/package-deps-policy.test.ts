@@ -37,4 +37,14 @@ describe("package.json dependency policy (#514)", () => {
     // pin — the pin is a separate decision tracked in commit history.
     expect(pkg.dependencies?.["better-sqlite3"]).toBe("^12.6.2");
   });
+
+  it("pnpm permits build scripts only for better-sqlite3", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+
+    // pnpm 10 blocks dependency lifecycle scripts by default. OpenClaw's
+    // development and installation paths still require this native fallback,
+    // while Codex's released payload deliberately excludes native addons.
+    expect(pkg.pnpm?.onlyBuiltDependencies).toEqual(["better-sqlite3"]);
+    expect(pkg.pnpm?.dangerouslyAllowAllBuilds).toBeUndefined();
+  });
 });

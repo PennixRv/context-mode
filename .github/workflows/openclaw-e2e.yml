@@ -57,6 +57,7 @@ jobs:
           node scripts/run-pnpm.mjs install --frozen-lockfile
           node scripts/run-pnpm.mjs run build
           node scripts/run-pnpm.mjs rebuild better-sqlite3
+          node -e "const Database = require('better-sqlite3'); const database = new Database(':memory:'); database.close(); console.log('PASS: better-sqlite3 native binding is loadable')"
 
       - name: Install OpenClaw
         if: steps.cache-openclaw.outputs.cache-hit != 'true'

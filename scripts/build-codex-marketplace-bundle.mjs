@@ -26,6 +26,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveNpmCliPath } from "./run-pnpm.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDirectory = resolve(repositoryRoot, "release");
@@ -152,8 +153,14 @@ function createPublishablePackageRoot(temporaryRoot) {
   const packageDirectory = join(temporaryRoot, "npm-package");
   mkdirSync(packageDirectory, { recursive: true });
   execFileSync(
-    "npm",
-    ["pack", "--ignore-scripts", "--pack-destination", packageDirectory],
+    process.execPath,
+    [
+      resolveNpmCliPath(process.execPath, process.platform),
+      "pack",
+      "--ignore-scripts",
+      "--pack-destination",
+      packageDirectory,
+    ],
     { cwd: repositoryRoot, stdio: "pipe" },
   );
   const archives = readdirSync(packageDirectory).filter((name) => name.endsWith(".tgz"));
