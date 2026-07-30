@@ -19,24 +19,56 @@
             "command": "node \"${PLUGIN_ROOT}/hooks/codex/posttooluse.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/codex/checkpoint-posttooluse.mjs\""
+          }
+        ]
       }
     ],
     "SessionStart": [
       {
+        "matcher": "^(startup|resume|clear)$",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/codex/sessionstart.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "^compact$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/codex/checkpoint-sessionstart.mjs\"",
+            "additionalContextLimit": 1500
+          }
+        ]
       }
     ],
     "PreCompact": [
       {
+        "matcher": "^(manual|auto)$",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/hooks/codex/precompact.mjs\""
+            "command": "node \"${PLUGIN_ROOT}/hooks/codex/checkpoint-precompact.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "^(manual|auto)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/codex/checkpoint-postcompact.mjs\""
           }
         ]
       }
@@ -47,6 +79,14 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/codex/userpromptsubmit.mjs\""
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/codex/checkpoint-userpromptsubmit.mjs\""
           }
         ]
       }

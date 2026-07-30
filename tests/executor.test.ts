@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll } from "vitest";
 import { strict as assert } from "node:assert";
-import { existsSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -1724,15 +1724,23 @@ describe("Temp Cleanup Resilience", () => {
         `,
       }),
     );
-    const results = await Promise.all(promises);
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      assert.equal(typeof r.exitCode, "number", `Execution ${i}: exitCode not a number`);
-      assert.equal(typeof r.stdout, "string", `Execution ${i}: stdout not a string`);
-      assert.equal(typeof r.stderr, "string", `Execution ${i}: stderr not a string`);
-      assert.equal(typeof r.timedOut, "boolean", `Execution ${i}: timedOut not a boolean`);
-      assert.equal(r.exitCode, 0, `Execution ${i} failed with stderr: ${r.stderr}`);
-      assert.ok(r.stdout.includes(`ok-${i}`), `Missing output for execution ${i}`);
+    try {
+      const results = await Promise.all(promises);
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        assert.equal(typeof r.exitCode, "number", `Execution ${i}: exitCode not a number`);
+        assert.equal(typeof r.stdout, "string", `Execution ${i}: stdout not a string`);
+        assert.equal(typeof r.stderr, "string", `Execution ${i}: stderr not a string`);
+        assert.equal(typeof r.timedOut, "boolean", `Execution ${i}: timedOut not a boolean`);
+        assert.equal(r.exitCode, 0, `Execution ${i} failed with stderr: ${r.stderr}`);
+        assert.ok(r.stdout.includes(`ok-${i}`), `Missing output for execution ${i}`);
+      }
+    } finally {
+      for (const fileName of readdirSync(process.cwd())) {
+        if (/^f[0-2]\.tmp$/.test(fileName)) {
+          rmSync(join(process.cwd(), fileName), { force: true });
+        }
+      }
     }
   });
 

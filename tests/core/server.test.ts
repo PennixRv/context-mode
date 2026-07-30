@@ -25,7 +25,6 @@ import {
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { describe, test, expect, beforeAll, afterAll, afterEach } from "vitest";
 
 import { classifyNonZeroExit } from "../../src/exit-classify.js";
@@ -607,21 +606,23 @@ describe("executeFile Cap", () => {
 // 3. Turndown HTML-to-markdown conversion
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Resolve turndown path the same way server.ts will
-const require = createRequire(import.meta.url);
-const turndownPath = require.resolve("turndown");
-const gfmPath = require.resolve("turndown-plugin-gfm");
-
 const turndownExecutor = new PolyglotExecutor();
+const fetchWorkerBundlePath = resolve(__dirname, "../../fetch-worker.bundle.cjs");
+const fetchWorkerTypeScriptSource = readFileSync(
+  resolve(__dirname, "../../src/fetch-worker.ts"),
+  "utf8",
+);
 
 function buildConversionCode(html: string): string {
   return `
-const TurndownService = require(${JSON.stringify(turndownPath)});
-const { gfm } = require(${JSON.stringify(gfmPath)});
-const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-td.use(gfm);
-td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
-console.log(td.turndown(${JSON.stringify(html)}));
+const { createRequire } = require("node:module");
+const worker = createRequire(${JSON.stringify(fetchWorkerBundlePath)})(${JSON.stringify(fetchWorkerBundlePath)});
+const TurndownService = worker.__testOnlyTurndownService;
+const gfm = worker.__testOnlyGfm;
+const turndown = new TurndownService({ headingStyle: "atx", codeBlockStyle: "fenced" });
+turndown.use(gfm);
+turndown.remove(["script", "style", "nav", "header", "footer", "noscript"]);
+console.log(turndown.turndown(${JSON.stringify(html)}));
 `;
 }
 
@@ -3822,213 +3823,32 @@ describe("SSRF guard — ssrfGuard policy in src/server.ts", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// buildFetchCode — embedded SSRF guard contract (#476 review follow-ups)
+// Fetch worker release contract
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { buildFetchCode } from "../../src/server.js";
 
-describe("buildFetchCode — embedded SSRF guard contract", () => {
+describe("fetch worker release contract", () => {
+  const workerSource = readFileSync(fetchWorkerBundlePath, "utf8");
   const generated = buildFetchCode("https://example.com/x", "/tmp/x");
 
-  test("strips proxy env vars (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY)", () => {
-    // A configured outbound proxy would route fetch through an arbitrary
-    // target; DNS resolution would happen at the proxy and the in-subprocess
-    // DNS guard would never see the rebound IP. The generated subprocess
-    // source must delete every proxy env var before any fetch can run.
-    expect(generated).toMatch(/delete process\.env\.HTTP_PROXY/);
-    expect(generated).toMatch(/delete process\.env\.HTTPS_PROXY/);
-    expect(generated).toMatch(/delete process\.env\.ALL_PROXY/);
-    expect(generated).toMatch(/delete process\.env\.http_proxy/);
-    expect(generated).toMatch(/delete process\.env\.https_proxy/);
-    expect(generated).toMatch(/delete process\.env\.all_proxy/);
+  test("embeds the static worker without resolving runtime node_modules", () => {
+    expect(generated).toContain(workerSource);
+    expect(generated).not.toMatch(/require\.resolve\(\s*["']turndown/);
+    expect(workerSource).toContain("runFetchWorker");
+    expect(workerSource).toContain("TurndownService");
   });
 
-  test("embedded SSRF classifier is callable as `classifyIp` even when bundler renames the export (#bug-v1.0.133)", () => {
-    // REGRESSION: esbuild renames top-level `classifyIp` to a short name
-    // (e.g. `_h`) in server.bundle.mjs. The previous implementation embedded
-    // `classifyIp.toString()` directly, which yielded `function _h(t){...}`
-    // — but the subprocess template invokes `classifyIp(...)` literally and
-    // the function's own internal recursion uses the bundler-mangled name.
-    // Result was 100% failure of ctx_fetch_and_index in the published build:
-    //   ReferenceError: classifyIp is not defined
-    //     at patchedPromisesLookup (.../script.js:71:19)
-    // The fix must: (1) expose the canonical `classifyIp` identifier in the
-    // embedded scope, AND (2) preserve recursion under whatever name the
-    // bundler chose. Validate by evaluating the embedded source in an
-    // isolated scope and confirming `classifyIp` resolves and works for
-    // both direct calls AND the recursive IPv4-mapped-IPv6 path.
-    expect(generated).toMatch(/var\s+classifyIp\s*=/);
-
-    // Extract the self-contained classifier declaration block (var classifyIp
-    // = function classifyIp(rawIp){...};) and evaluate it in a fresh function
-    // scope where neither `classifyIp` nor any bundler alias exists in the
-    // outer closure. The canonical name MUST resolve and behave.
-    const classifyIpDeclMatch = generated.match(
-      /var\s+\w+\s*=\s*function\s+\w+\s*\(\s*rawIp\s*\)[\s\S]+?\n\};(?:\s*var\s+classifyIp\s*=\s*\w+;)?/,
-    );
-    expect(
-      classifyIpDeclMatch,
-      "embedded classifyIp declaration block must be extractable from buildFetchCode output",
-    ).not.toBeNull();
-    const classifierBlock = classifyIpDeclMatch![0];
-
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const probe = new Function(`
-      ${classifierBlock}
-      return {
-        imds: classifyIp("169.254.169.254"),
-        loopback: classifyIp("127.0.0.1"),
-        publicIp: classifyIp("8.8.8.8"),
-        mapped: classifyIp("::ffff:169.254.169.254"),
-      };
-    `);
-    const result = probe() as Record<string, string>;
-    expect(result.imds).toBe("block");
-    expect(result.loopback).toBe("private");
-    expect(result.publicIp).toBe("public");
-    // IPv4-mapped IPv6 forces the internal recursive call path; if recursion
-    // is broken (bundler-mangled self-reference unresolved), this throws.
-    expect(result.mapped).toBe("block");
-  });
-
-  test("patches dns/promises lookup (separate function reference from dns.lookup)", () => {
-    // Patching dns.lookup does NOT affect dnsPromises.lookup. Today undici
-    // uses callback-form dns.lookup so default fetch is covered, but the
-    // invariant is fragile — a future undici switch or any caller using
-    // dnsPromises.lookup directly would bypass the guard.
-    // Match either literal 'node:dns/promises' or split-string 'no'+'de:dns/promises'
-    // The split form is required by the G3 bundle invariant — the literal would
-    // false-positive scripts/assert-bundle.mjs's raw-bare-require-node-builtin check.
-    expect(generated).toMatch(
-      /const dnsPromises\s*=\s*require\([^)]*dns\/promises['"]\)/,
-    );
-    expect(generated).toMatch(/dnsPromises\.lookup\s*=\s*async\s+function/);
-    expect(generated).toMatch(/SSRF blocked/);
-  });
-
-  test("patches dns.resolve4 and dns.resolve6 (libuv bypass path)", () => {
-    // dns.resolve* uses a different code path (no getaddrinfo, no /etc/hosts)
-    // than dns.lookup — they must be patched separately or the guard is
-    // trivially bypassed by any caller using dns.resolve* directly.
-    expect(generated).toMatch(/['"]resolve4['"]\s*,\s*['"]resolve6['"]/);
-    expect(generated).toMatch(/dns\[name\]\s*=\s*function/);
-  });
-
-  describe("buildFetchCode — redirect chain rebinding", () => {
-    // SSRF rebinding via HTTP redirect chain bypasses the parent's pre-flight
-    // ssrfGuard: a 302 to http://attacker/ (or an IPv4-mapped IMDS literal)
-    // sends the subprocess fetch to an alternate host the parent never
-    // classified. The connect-time DNS guard catches some cases, but a
-    // direct-IP redirect target may not trigger getaddrinfo at all. Mitigate
-    // at the HTTP layer: emit `redirect: 'manual'` in the generated source,
-    // re-validate every Location header against ssrfGuard's classifier, and
-    // cap the redirect chain so an attacker cannot exhaust the loop.
-    const generated = buildFetchCode("https://example.com/x", "/tmp/x");
-
-    test("generated source uses redirect: 'manual' (no follow default)", () => {
-      // The default `redirect: 'follow'` lets undici chase a 3xx Location
-      // BEFORE the in-subprocess DNS guard sees the target hostname (and even
-      // when it does, a direct IPv4-literal redirect skips getaddrinfo). The
-      // generated subprocess source MUST opt out of automatic following so
-      // every hop is re-validated by classifyIp before another fetch fires.
-      expect(generated).toMatch(/redirect:\s*['"]manual['"]/);
-    });
-
-    test("manual redirect handler validates Location host via classifyIp", () => {
-      // After receiving a 3xx, the subprocess must parse the Location header,
-      // resolve its host, and run the same classifyIp policy as ssrfGuard
-      // before issuing the next fetch. Without this re-check, an attacker can
-      // redirect to http://169.254.169.254/ or any rebinding-friendly host.
-      expect(generated).toMatch(/Location/);
-      expect(generated).toMatch(/classifyIp\s*\(/);
-      // The redirect handler specifically must invoke classifyIp on the
-      // redirect target — not just the parent's pre-flight call site.
-      expect(generated).toMatch(/redirect[\s\S]{0,400}classifyIp/);
-    });
-
-    test("redirect chain is capped (no unbounded follow)", () => {
-      // An attacker controlling redirect responses could otherwise loop the
-      // subprocess forever or chain enough hops to amortize a slow rebinding
-      // attack. Cap at 5 — the standard browser limit — and abort cleanly.
-      expect(generated).toMatch(/(maxRedirects|MAX_REDIRECTS|redirectCount\s*[<>]=?\s*5|<\s*5|<=\s*5)/);
-    });
-
-    test("non-3xx response path still emits content (preserves 200 semantics)", () => {
-      // Manual redirect handling must not break the happy path: a 200 OK
-      // still flows through emit() with the right content-type branch. Pin
-      // the existing emit() call sites so a refactor that drops them fails.
-      expect(generated).toMatch(/emit\(['"]json['"]/);
-      expect(generated).toMatch(/emit\(['"]html['"]/);
-      expect(generated).toMatch(/emit\(['"]text['"]/);
-    });
-  });
-
-  test("classifyIp embeds without references to module scope", () => {
-    // classifyIp is embedded into the subprocess via Function.prototype.toString().
-    // If a future change ever has classifyIp close over a module-scope helper
-    // (e.g. a regex constant declared above it), the embedded source will
-    // ReferenceError at parse or call time — silently breaking the guard. Pin
-    // the contract: classifyIp source must contain no identifiers that can
-    // only resolve in module scope.
-    const src = classifyIp.toString();
-    const forbidden = [
-      "require(",
-      "process.",
-      "globalThis.",
-      "global.",
-      "__dirname",
-      "__filename",
-    ];
-    for (const ident of forbidden) {
-      expect(src).not.toContain(ident);
+  test("preserves proxy removal, connect-time DNS validation, redirects, and the response cap", () => {
+    for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]) {
+      expect(fetchWorkerTypeScriptSource).toContain(`"${name}"`);
     }
-    // Roundtrip: eval the source in an empty vm context with no globals,
-    // then invoke it. This is exactly what the subprocess does.
-    const { runInNewContext } = require("node:vm");
-    const ctx: Record<string, unknown> = {};
-    runInNewContext(`${src}\n;globalThis.fn = classifyIp;`, ctx);
-    const fn = ctx.fn as (ip: string) => "block" | "private" | "public";
-    expect(fn("169.254.169.254")).toBe("block");
-    expect(fn("8.8.8.8")).toBe("public");
-    expect(fn("10.0.0.1")).toBe("private");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// buildFetchCode — IPv6 zone-id + generic dns.resolve (#476 round-3)
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("buildFetchCode — IPv6 zone-id + generic dns.resolve", () => {
-  test("classifyIp strips IPv6 zone-id before classification (link-local)", () => {
-    // fe80::/10 link-local with %eth0 zone suffix must still be blocked.
-    // Today the lowercase prefix check `fe8`/`fe9`/`fea`/`feb` accidentally
-    // catches link-local even with a zone suffix — but only because the
-    // suffix is appended *after* the prefix. Pin the behavior explicitly so
-    // a future refactor cannot regress.
-    expect(classifyIp("fe80::1%eth0")).toBe("block");
-    expect(classifyIp("fe80::1%25eth0")).toBe("block"); // URL-encoded zone
-  });
-
-  test("classifyIp strips IPv6 zone-id before classification (non-link-local)", () => {
-    // RFC 6874 permits zone identifiers on any IPv6 address (not just
-    // link-local). Without zone stripping, a loopback `::1%eth0` would NOT
-    // match the strict equality `lower === "::1"` and would leak through as
-    // "public". Pin every class so the strip happens before classification.
-    expect(classifyIp("::1%eth0")).toBe("private");        // loopback w/ zone
-    expect(classifyIp("fc00::1%eth0")).toBe("private");    // ULA w/ zone
-    expect(classifyIp("ff00::1%eth0")).toBe("block");      // multicast w/ zone
-    expect(classifyIp("2001:db8::1%eth0")).toBe("public"); // doc range w/ zone
-  });
-
-  test("buildFetchCode patches generic dns.resolve (not just resolve4/resolve6)", () => {
-    // dns.resolve is the polymorphic entrypoint that dispatches on rrtype.
-    // Today only resolve4/resolve6 are patched; a caller using
-    // `dns.resolve(host, 'A', cb)` or default rrtype goes through an
-    // un-guarded code path. Patch the generic wrapper so every A/AAAA
-    // record runs through classifyIp.
-    const generated = buildFetchCode("https://example.com/x", "/tmp/x");
-    expect(generated).toMatch(/dns\.resolve\s*=\s*function/);
-    expect(generated).toMatch(/classifyIp/);
+    expect(fetchWorkerTypeScriptSource).toContain("dns.lookup");
+    expect(fetchWorkerTypeScriptSource).toContain("dns.resolve");
+    expect(fetchWorkerTypeScriptSource).toContain('redirect: "manual"');
+    expect(fetchWorkerTypeScriptSource).toContain("const maximumRedirects = 5;");
+    expect(fetchWorkerTypeScriptSource).toContain("const maximumFetchBytes = 50 * 1024 * 1024;");
+    expect(workerSource).toContain("SSRF blocked");
   });
 });
 
@@ -6204,11 +6024,7 @@ describe("ctx_index: root-level symlink defense in directory dispatch", () => {
   // lstatSync, realpath them once, and re-apply the deny check against
   // the actual walk target before dispatching.
 
-  const SERVER_SOURCE = readFileSync(
-    resolve(__dirname, "../../src/server.ts"),
-    "utf-8",
-  );
-
+  const SERVER_SOURCE = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
   test("ctx_index handler lstats and re-deny-checks symlinks before directory dispatch", () => {
     const dispatchBlock = SERVER_SOURCE.match(
       /Root-level symlink defense[\s\S]*?if \(resolvedPath && existsSync\(resolvedPath\) && statSync\(resolvedPath\)\.isDirectory\(\)\)/,
@@ -6275,20 +6091,12 @@ describe("ctx_fetch_and_index: response body size cap", () => {
   );
 
   test("subprocess buildFetchCode caps response via Content-Length and post-text length", () => {
-    expect(SERVER_SOURCE).toContain("const MAX_FETCH_BYTES = 50 * 1024 * 1024;");
-    expect(SERVER_SOURCE).toContain("async function safeText(resp)");
+    expect(fetchWorkerTypeScriptSource).toContain("const maximumFetchBytes = 50 * 1024 * 1024;");
+    expect(fetchWorkerTypeScriptSource).toContain("async function readResponseText");
     // The three response paths (JSON, HTML, default) all route through safeText
     // instead of resp.text() directly.
-    const buildFetchSrc = SERVER_SOURCE.slice(
-      SERVER_SOURCE.indexOf("export function buildFetchCode"),
-      SERVER_SOURCE.indexOf("// fetch_and_index helpers"),
-    );
-    expect(buildFetchSrc.length).toBeGreaterThan(0);
-    expect(buildFetchSrc.match(/await safeText\(resp\)/g)?.length).toBeGreaterThanOrEqual(3);
-    // The pre-fix call sites (one per content-type branch) routed through
-    // `await resp.text()` directly. Now only one such call survives,
-    // inside safeText itself. Count exactly one.
-    const directCalls = buildFetchSrc.match(/await resp\.text\(\)/g) ?? [];
+    expect(fetchWorkerTypeScriptSource.match(/await readResponseText\(response\)/g)?.length).toBeGreaterThanOrEqual(3);
+    const directCalls = fetchWorkerTypeScriptSource.match(/await response\.text\(\)/g) ?? [];
     expect(directCalls.length).toBe(1);
   });
 

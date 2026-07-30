@@ -63,23 +63,19 @@ try {
   const source = input.source ?? "startup";
   const projectDir = getInputProjectDir(input, CODEX_OPTS);
 
-  if (source === "compact" || source === "resume") {
+  if (source === "compact") {
+    // Compact restore is handled only by checkpoint-sessionstart.mjs. Keeping
+    // this handler inert prevents legacy event directives from crossing the
+    // Layer 1 checkpoint boundary when it is invoked outside the manifest.
+    additionalContext = "";
+  } else if (source === "resume") {
     const { SessionDB } = await loadSessionDB();
     const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
     const sessionId = getSessionId(input, OPTS);
-    let resumeSnapshot = null;
+    try { unlinkSync(getCleanupFlagPath(OPTS, projectDir)); } catch { /* no flag */ }
 
-    if (source === "compact") {
-      const resume = sessionId ? db.getResume(sessionId) : null;
-      if (resume && !resume.consumed) {
-        resumeSnapshot = resume.snapshot;
-      }
-    } else {
-      try { unlinkSync(getCleanupFlagPath(OPTS, projectDir)); } catch { /* no flag */ }
-    }
-
-    // Filter events to the session being resumed/compacted. Falling back to
+    // Filter events to the resumed session. Falling back to
     // getLatestSessionEvents(db) for resume leaks events from any other
     // session whose session_meta.started_at is more recent — observed
     // cross-session bleed when a different session started after this one
@@ -88,10 +84,6 @@ try {
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
       additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
-    }
-    if (resumeSnapshot) {
-      additionalContext += `\n\n${resumeSnapshot}`;
-      db.markResumeConsumed(sessionId);
     }
 
     db.close();

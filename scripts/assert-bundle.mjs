@@ -40,6 +40,23 @@ const FORBIDDEN_PATTERNS = [
   },
 ];
 
+const CJS_FORBIDDEN_PATTERNS = FORBIDDEN_PATTERNS.filter(
+  ({ name }) => name !== "raw-bare-require-node-builtin",
+).concat(
+  {
+    name: "raw-bare-require-call",
+    pattern: /(?:^|[^.$\w])require\s*\(\s*["'`]/,
+    reason:
+      "The CommonJS fetch worker may use module.require('node:...') only. A bare require() makes its runtime dependency surface implicit.",
+  },
+  {
+    name: "module-require-non-node-module",
+    pattern: /\bmodule\.require\s*\(\s*["'`](?!node:)/,
+    reason:
+      "The CommonJS fetch worker may use module.require('node:...') only. Package dependencies must be statically bundled for the offline marketplace release.",
+  },
+);
+
 /**
  * Scan a single bundle file for forbidden patterns.
  * @param {string} filePath
@@ -53,8 +70,14 @@ export function assertBundleClean(filePath) {
     };
   }
   const content = readFileSync(filePath, "utf-8");
+  // fetch-worker.bundle.cjs is deliberately injected into a CommonJS sandbox
+  // script. It may use `module.require("node:…")` for Node built-ins, but
+  // must not acquire package dependencies through a bare require() call.
+  const patterns = filePath.endsWith(".cjs")
+    ? CJS_FORBIDDEN_PATTERNS
+    : FORBIDDEN_PATTERNS;
   const violations = [];
-  for (const { name, pattern, reason } of FORBIDDEN_PATTERNS) {
+  for (const { name, pattern, reason } of patterns) {
     const match = content.match(pattern);
     if (match) {
       violations.push(

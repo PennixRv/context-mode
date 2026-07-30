@@ -243,6 +243,16 @@ export function hasModernSqlite(
   return major > 22 || (major === 22 && minor >= 5);
 }
 
+function isCodexPluginRuntime(): boolean {
+  return process.env.CONTEXT_MODE_PLATFORM === "codex";
+}
+
+function codexSqliteUnavailableError(): Error {
+  return new Error(
+    "context-mode Codex release requires Node >=22.5 with an FTS5-capable node:sqlite runtime; it will not download or compile better-sqlite3 at runtime.",
+  );
+}
+
 /**
  * Lazy-load the SQLite driver for the current runtime.
  * Bun → bun:sqlite via BunSQLiteAdapter (issue #45).
@@ -309,6 +319,8 @@ export function loadDatabase(): typeof DatabaseConstructor {
           }
           return adapter;
         } as any;
+      } else if (isCodexPluginRuntime()) {
+        throw codexSqliteUnavailableError();
       } else {
         // node:sqlite missing or built without FTS5 — fall through to
         // better-sqlite3. Trade-off: on Node 26 + macOS this may now hit
@@ -317,6 +329,8 @@ export function loadDatabase(): typeof DatabaseConstructor {
         // on every ctx_search call.
         _Database = require("better-sqlite3") as typeof DatabaseConstructor;
       }
+    } else if (isCodexPluginRuntime()) {
+      throw codexSqliteUnavailableError();
     } else {
       // Old Node (< 22.5) without bun:sqlite — fall back to better-sqlite3.
       _Database = require("better-sqlite3") as typeof DatabaseConstructor;

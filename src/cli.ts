@@ -106,10 +106,14 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
   "codex": {
     pretooluse: "hooks/codex/pretooluse.mjs",
     posttooluse: "hooks/codex/posttooluse.mjs",
-    precompact: "hooks/codex/precompact.mjs",
     sessionstart: "hooks/codex/sessionstart.mjs",
     userpromptsubmit: "hooks/codex/userpromptsubmit.mjs",
     stop: "hooks/codex/stop.mjs",
+    checkpointposttooluse: "hooks/codex/checkpoint-posttooluse.mjs",
+    checkpointprecompact: "hooks/codex/checkpoint-precompact.mjs",
+    checkpointpostcompact: "hooks/codex/checkpoint-postcompact.mjs",
+    checkpointsessionstart: "hooks/codex/checkpoint-sessionstart.mjs",
+    checkpointuserpromptsubmit: "hooks/codex/checkpoint-userpromptsubmit.mjs",
   },
   "kiro": {
     pretooluse: "hooks/kiro/pretooluse.mjs",
