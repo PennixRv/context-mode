@@ -13,19 +13,45 @@
         "hooks": [
           { "type": "command", "command": "context-mode hook codex posttooluse" }
         ]
+      },
+      {
+        "matcher": "^(Bash|apply_patch|Edit|Write)$",
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex checkpointposttooluse" }
+        ]
       }
     ],
     "SessionStart": [
       {
+        "matcher": "^(startup|resume|clear)$",
         "hooks": [
           { "type": "command", "command": "context-mode hook codex sessionstart" }
+        ]
+      },
+      {
+        "matcher": "^compact$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "context-mode hook codex checkpointsessionstart",
+            "additionalContextLimit": 1500
+          }
         ]
       }
     ],
     "PreCompact": [
       {
+        "matcher": "^(manual|auto)$",
         "hooks": [
-          { "type": "command", "command": "context-mode hook codex precompact" }
+          { "type": "command", "command": "context-mode hook codex checkpointprecompact" }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "^(manual|auto)$",
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex checkpointpostcompact" }
         ]
       }
     ],
@@ -33,6 +59,11 @@
       {
         "hooks": [
           { "type": "command", "command": "context-mode hook codex userpromptsubmit" }
+        ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex checkpointuserpromptsubmit" }
         ]
       }
     ],

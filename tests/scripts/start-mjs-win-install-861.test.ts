@@ -58,7 +58,7 @@ describe("start.mjs Windows boot-install cwd handling (#861)", () => {
   );
   const compact = stripWs(BLOCK);
 
-  it("prefers invoking npm's CLI through node with shell:false (cwd honored)", () => {
+  it("keeps the non-Codex compatibility installer on the safe Windows path", () => {
     expect(compact).toContain("npm-cli.js");
     expect(compact).toContain("process.execPath");
     expect(compact).toContain("shell:false");

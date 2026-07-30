@@ -4,7 +4,8 @@
  * Implements HookAdapter for Codex CLI's JSON stdin/stdout paradigm.
  *
  * Codex CLI hook specifics:
- *   - 6 hook events: PreToolUse, PostToolUse, PreCompact, SessionStart, UserPromptSubmit, Stop
+ *   - 7 hook events: PreToolUse, PostToolUse, PreCompact, PostCompact,
+ *     SessionStart, UserPromptSubmit, Stop
  *   - Same wire protocol as Claude Code (JSON stdin → stdout)
  *   - Config: $CODEX_HOME or ~/.codex (hooks.json + config.toml)
  *   - Session dir: $CODEX_HOME/context-mode/sessions/
@@ -102,17 +103,25 @@ const CODEX_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",
   PostToolUse: "context-mode hook codex posttooluse",
   SessionStart: "context-mode hook codex sessionstart",
-  PreCompact: "context-mode hook codex precompact",
+  PreCompact: "context-mode hook codex checkpointprecompact",
+  PostCompact: "context-mode hook codex checkpointpostcompact",
   UserPromptSubmit: "context-mode hook codex userpromptsubmit",
   Stop: "context-mode hook codex stop",
 } as const;
 
-const LEGACY_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, string[]> = {
+const CHECKPOINT_HOOK_COMMANDS: Partial<Record<keyof typeof CODEX_HOOK_COMMANDS, string[]>> = {
+  PostToolUse: ["context-mode hook codex checkpointposttooluse"],
+  SessionStart: ["context-mode hook codex checkpointsessionstart"],
+  UserPromptSubmit: ["context-mode hook codex checkpointuserpromptsubmit"],
+};
+
+const MANAGED_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, string[]> = {
   PreToolUse: ["hooks/pretooluse.mjs", "hooks/codex/pretooluse.mjs"],
-  PostToolUse: ["hooks/posttooluse.mjs", "hooks/codex/posttooluse.mjs"],
-  SessionStart: ["hooks/sessionstart.mjs", "hooks/codex/sessionstart.mjs"],
-  PreCompact: ["hooks/precompact.mjs", "hooks/codex/precompact.mjs"],
-  UserPromptSubmit: ["hooks/userpromptsubmit.mjs", "hooks/codex/userpromptsubmit.mjs"],
+  PostToolUse: ["hooks/posttooluse.mjs", "hooks/codex/posttooluse.mjs", "hooks/codex/checkpoint-posttooluse.mjs"],
+  SessionStart: ["hooks/sessionstart.mjs", "hooks/codex/sessionstart.mjs", "hooks/codex/checkpoint-sessionstart.mjs"],
+  PreCompact: ["hooks/precompact.mjs", "hooks/codex/precompact.mjs", "hooks/codex/checkpoint-precompact.mjs"],
+  PostCompact: ["hooks/codex/checkpoint-postcompact.mjs"],
+  UserPromptSubmit: ["hooks/userpromptsubmit.mjs", "hooks/codex/userpromptsubmit.mjs", "hooks/codex/checkpoint-userpromptsubmit.mjs"],
   Stop: ["hooks/stop.mjs", "hooks/codex/stop.mjs"],
 };
 
@@ -506,10 +515,19 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             },
           ],
         },
+        {
+          matcher: "^(Bash|apply_patch|Edit|Write)$",
+          hooks: [
+            {
+              type: "command",
+              command: CHECKPOINT_HOOK_COMMANDS.PostToolUse![0]!,
+            },
+          ],
+        },
       ],
       SessionStart: [
         {
-          matcher: "",
+          matcher: "^(startup|resume|clear)$",
           hooks: [
             {
               type: "command",
@@ -517,14 +535,35 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             },
           ],
         },
+        {
+          matcher: "^compact$",
+          hooks: [
+            {
+              type: "command",
+              command: CHECKPOINT_HOOK_COMMANDS.SessionStart![0]!,
+              additionalContextLimit: 1500,
+            },
+          ],
+        },
       ],
       PreCompact: [
         {
-          matcher: "",
+          matcher: "^(manual|auto)$",
           hooks: [
             {
               type: "command",
               command: CODEX_HOOK_COMMANDS.PreCompact,
+            },
+          ],
+        },
+      ],
+      PostCompact: [
+        {
+          matcher: "^(manual|auto)$",
+          hooks: [
+            {
+              type: "command",
+              command: CODEX_HOOK_COMMANDS.PostCompact,
             },
           ],
         },
@@ -536,6 +575,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             {
               type: "command",
               command: CODEX_HOOK_COMMANDS.UserPromptSubmit,
+            },
+          ],
+        },
+        {
+          matcher: "",
+          hooks: [
+            {
+              type: "command",
+              command: CHECKPOINT_HOOK_COMMANDS.UserPromptSubmit![0]!,
             },
           ],
         },
@@ -708,18 +756,20 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }))
       : Object.entries(expected).map(([hookName, entries]) => {
         const actualEntries = hookConfig.config.hooks?.[hookName];
-        const expectedEntry = entries[0];
         const ok = Array.isArray(actualEntries)
-          && actualEntries.some((entry) => this.isExpectedHookEntry(hookName, entry, expectedEntry));
-        const missingStatus = hookName === "PreCompact" ? "warn" : "fail";
+          && entries.every((expectedEntry) => actualEntries.some((entry) =>
+            this.isExpectedHookEntry(hookName, entry, expectedEntry),
+          ));
+        const isCompactionLifecycleHook = hookName === "PreCompact" || hookName === "PostCompact";
+        const missingStatus = isCompactionLifecycleHook ? "warn" : "fail";
 
         return {
           check: `${hookName} hook`,
           status: (ok ? "pass" : missingStatus) as "pass" | "warn" | "fail",
           message: ok
             ? `${hookName} hook configured in ${this.getHooksPath()}`
-            : hookName === "PreCompact"
-              ? `${hookName} hook missing or not pointing to context-mode; compaction snapshots require a Codex build that emits PreCompact`
+            : isCompactionLifecycleHook
+              ? `${hookName} hook missing or not pointing to context-mode; confirmed checkpoints require a Codex build that emits PreCompact and PostCompact`
               : `${hookName} hook missing or not pointing to context-mode`,
           fix: ok ? undefined : `Update ${this.getHooksPath()} to match configs/codex/hooks.json`,
         };
@@ -734,17 +784,25 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     for (const hookName of Object.keys(expected)) {
       const actualEntries = hookConfig.config.hooks?.[hookName];
       if (!Array.isArray(actualEntries)) continue;
+      const expectedEntries = expected[hookName] ?? [];
+      const duplicateExpectedEntry = expectedEntries.find((expectedEntry) =>
+        actualEntries.filter((entry) =>
+          this.isExpectedHookEntry(hookName, entry as HookEntry, expectedEntry),
+        ).length > 1,
+      );
       const managedCount = actualEntries.filter(
         (entry) => this.isManagedContextModeEntry(hookName, entry as HookEntry),
       ).length;
-      if (managedCount > 1) {
+      if (duplicateExpectedEntry || managedCount > expectedEntries.length) {
         duplicateChecks.push({
           check: `${hookName} duplicates`,
           status: "warn",
-          message: `${managedCount} context-mode entries found for ${hookName} in ${this.getHooksPath()}; Codex will fire all of them`,
+          message: duplicateExpectedEntry
+            ? `Duplicate ${duplicateExpectedEntry.hooks[0]?.command ?? "context-mode"} entries found for ${hookName} in ${this.getHooksPath()}; Codex will fire all of them`
+            : `${managedCount} context-mode entries found for ${hookName} in ${this.getHooksPath()}; expected at most ${expectedEntries.length}`,
           fix: "context-mode upgrade (collapses duplicate context-mode entries; preserves unrelated hooks)",
         });
-      } else if (codexPluginHooksAvailable && managedCount === 1) {
+      } else if (codexPluginHooksAvailable && managedCount > 0) {
         duplicateChecks.push({
           check: `${hookName} plugin duplicate`,
           status: "warn",
@@ -860,7 +918,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }
     } else {
       for (const [hookName, entries] of Object.entries(desiredHooks)) {
-        this.upsertManagedHookEntry(hooks, hookName, entries[0], changes);
+        this.upsertManagedHookEntries(hooks, hookName, entries, changes);
       }
     }
 
@@ -1000,36 +1058,20 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
   }
 
-  private upsertManagedHookEntry(
+  private upsertManagedHookEntries(
     hooks: HookRegistration,
     hookName: string,
-    expectedEntry: HookEntry,
+    expectedEntries: HookEntry[],
     changes: string[],
   ): void {
     const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
-    const managedIndices = currentEntries
-      .map((entry, index) => this.isManagedContextModeEntry(hookName, entry) ? index : -1)
-      .filter((index) => index >= 0);
-
-    if (managedIndices.length === 0) {
-      currentEntries.push(expectedEntry);
-      hooks[hookName] = currentEntries;
-      changes.push(`Added ${hookName} hook`);
-      return;
-    }
-
-    const primaryIndex = managedIndices[0];
-    if (JSON.stringify(currentEntries[primaryIndex]) !== JSON.stringify(expectedEntry)) {
-      currentEntries[primaryIndex] = expectedEntry;
-      changes.push(`Updated ${hookName} hook`);
-    }
-
-    for (const duplicateIndex of managedIndices.slice(1).reverse()) {
-      currentEntries.splice(duplicateIndex, 1);
-      changes.push(`Removed duplicate ${hookName} context-mode hook`);
-    }
-
-    hooks[hookName] = currentEntries;
+    const unmanagedEntries = currentEntries.filter((entry) =>
+      !this.isManagedContextModeEntry(hookName, entry),
+    );
+    const replacement = [...unmanagedEntries, ...expectedEntries];
+    if (JSON.stringify(currentEntries) === JSON.stringify(replacement)) return;
+    hooks[hookName] = replacement;
+    changes.push(`Updated ${hookName} hook`);
   }
 
   private removeManagedHookEntries(
@@ -1163,10 +1205,13 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     expectedEntry: HookEntry,
   ): boolean {
     if (!entry || typeof entry !== "object") return false;
-    if (hookName === "PreToolUse" && entry.matcher !== expectedEntry.matcher) {
-      return false;
-    }
-    return this.entryContainsManagedCommand(hookName, entry);
+    if ((entry.matcher ?? "") !== expectedEntry.matcher) return false;
+    const expectedHook = expectedEntry.hooks[0];
+    if (!expectedHook || !this.entryContainsCommand(entry, expectedHook.command)) return false;
+    const matchingHook = (Array.isArray(entry.hooks) ? entry.hooks : []).find((hook) =>
+      this.normalizeCommand(hook.command).includes(this.normalizeCommand(expectedHook.command)),
+    );
+    return matchingHook?.additionalContextLimit === expectedHook.additionalContextLimit;
   }
 
   private isManagedContextModeEntry(hookName: string, entry: HookEntry): boolean {
@@ -1175,18 +1220,30 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private entryContainsManagedCommand(hookName: string, entry: HookEntry): boolean {
+    const expectedCommands = [
+      CODEX_HOOK_COMMANDS[hookName as keyof typeof CODEX_HOOK_COMMANDS],
+      ...(CHECKPOINT_HOOK_COMMANDS[hookName as keyof typeof CHECKPOINT_HOOK_COMMANDS] ?? []),
+      ...(hookName === "PreCompact" ? ["context-mode hook codex precompact"] : []),
+    ].filter((command): command is string => typeof command === "string");
+    const pathSuffixes = MANAGED_HOOK_PATH_SUFFIXES[hookName as keyof typeof MANAGED_HOOK_PATH_SUFFIXES] ?? [];
+    return expectedCommands.some((command) => this.entryContainsCommand(entry, command))
+      || this.entryContainsAnyPathSuffix(entry, pathSuffixes);
+  }
+
+  private entryContainsCommand(entry: HookEntry, expectedCommand: string | undefined): boolean {
+    if (!expectedCommand) return false;
     const normalizedCommands = (Array.isArray(entry.hooks) ? entry.hooks : [])
       .map((hook) => this.normalizeCommand(hook.command))
       .filter((command) => command.length > 0);
-    const expectedCliCommand = this.normalizeCommand(
-      CODEX_HOOK_COMMANDS[hookName as keyof typeof CODEX_HOOK_COMMANDS] ?? "",
-    );
-    const legacySuffixes = LEGACY_HOOK_PATH_SUFFIXES[hookName as keyof typeof LEGACY_HOOK_PATH_SUFFIXES] ?? [];
+    const normalizedExpected = this.normalizeCommand(expectedCommand);
+    return normalizedCommands.some((command) => command.includes(normalizedExpected));
+  }
 
-    return normalizedCommands.some((command) =>
-      command.includes(expectedCliCommand)
-      || legacySuffixes.some((suffix) => command.includes(suffix)),
-    );
+  private entryContainsAnyPathSuffix(entry: HookEntry, suffixes: string[]): boolean {
+    const normalizedCommands = (Array.isArray(entry.hooks) ? entry.hooks : [])
+      .map((hook) => this.normalizeCommand(hook.command))
+      .filter((command) => command.length > 0);
+    return normalizedCommands.some((command) => suffixes.some((suffix) => command.includes(suffix)));
   }
 
   private normalizeCommand(command: string | undefined): string {

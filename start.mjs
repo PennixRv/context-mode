@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
+const isCodexPluginRuntime = process.env.CONTEXT_MODE_PLATFORM === "codex";
 process.chdir(__dirname);
 
 // Resolve the Claude Code config dir, honoring $CLAUDE_CONFIG_DIR (incl. leading ~).
@@ -64,7 +65,7 @@ if (!process.env.CONTEXT_MODE_PROJECT_DIR && safeOriginalCwd) {
 // (SIGSEGV on Linux under Node's V8). When invoked via node on Linux, detect
 // a Bun installation and re-exec this file under Bun so the bundle takes the
 // safe path. No-op when already running under Bun or on non-Linux platforms.
-if (typeof globalThis.Bun === "undefined" && process.platform === "linux") {
+if (!isCodexPluginRuntime && typeof globalThis.Bun === "undefined" && process.platform === "linux") {
   const bunCandidates = [
     process.env.BUN_INSTALL ? join(process.env.BUN_INSTALL, "bin", "bun") : null,
     join(homedir(), ".bun", "bin", "bun"),
@@ -140,7 +141,7 @@ if (typeof globalThis.Bun === "undefined" && process.platform === "linux") {
 const cacheMatch = __dirname.match(
   /^(.*[\/\\]plugins[\/\\]cache[\/\\][^\/\\]+[\/\\][^\/\\]+[\/\\])([^\/\\]+)$/,
 );
-if (cacheMatch) {
+if (!isCodexPluginRuntime && cacheMatch) {
   try {
     const cacheParent = cacheMatch[1];
     const myVersion = cacheMatch[2];
@@ -237,7 +238,7 @@ if (cacheMatch) {
 // Logic is shared verbatim with scripts/postinstall.mjs (single source of
 // truth) so users who fix themselves via `npm install -g context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
-try {
+if (!isCodexPluginRuntime) try {
   const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, sweepStaleMcpJson } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
@@ -301,7 +302,7 @@ try {
 //   - On Windows there is no shebang; we fall back to "<execPath>" "<scriptPath>".
 //   - On every boot we self-heal stale "/opt/homebrew/Cellar/node/<ver>/..." paths
 //     left behind by older versions of this code.
-try {
+if (!isCodexPluginRuntime) try {
   const { buildHookCommand, selfHealCacheHealHook, ensureShebangAndExecBit } =
     await import("./hooks/cache-heal-utils.mjs");
 
@@ -438,7 +439,7 @@ try{
 // Skip under vitest: server.test.ts spawns this script from the repo root,
 // and a mutated .claude-plugin/plugin.json poisons sibling tests that read
 // the file (cli.test.ts). VITEST is inherited by spawned subprocesses.
-if (!process.env.VITEST) {
+if (!isCodexPluginRuntime && !process.env.VITEST) {
   try {
     const { normalizeHooksOnStartup } = await import("./hooks/normalize-hooks.mjs");
     // #738: probe for Bun ≥1.0 and pass the resolved path so the static
@@ -463,7 +464,7 @@ if (!process.env.VITEST) {
 // Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs)
 // ensure-deps handles better-sqlite3 install + ABI cache/rebuild automatically (#148, #203)
 import "./hooks/ensure-deps.mjs";
-// Pure-JS runtime deps used only by `ctx_fetch_and_index` (HTML → Markdown
+// Pure-JS runtime deps used only by non-Codex `ctx_fetch_and_index` hosts (HTML → Markdown
 // pipeline runs in a sandboxed subprocess that `require.resolve()`s these at
 // call time). Plugin distributions that bypass `npm install` — most notably
 // codex's marketplace, which git-clones into `~/.codex/plugins/cache/<pkg>/`
@@ -483,7 +484,7 @@ import "./hooks/ensure-deps.mjs";
 // install completes, the subprocess's own `require.resolve("turndown")`
 // failure surfaces a typed error to the caller — same posture as any
 // other missing-runtime-dep situation in that code path.
-{
+if (!isCodexPluginRuntime) {
   const NPM_INSTALL_BG_PKGS = ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"];
   const IS_WIN32 = process.platform === "win32";
   const NPM_BIN = IS_WIN32 ? "npm.cmd" : "npm";

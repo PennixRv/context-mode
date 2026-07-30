@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
+
+      - name: Verify annotated tag and main ancestry
+        shell: bash
+        run: |
+          tag_name="$GITHUB_REF_NAME"
+          package_version="$(node --input-type=module -e 'import packageJson from "./package.json" with { type: "json" }; console.log(packageJson.version)')"
+          if [[ "$tag_name" != "v$package_version" ]]; then
+            echo "Tag $tag_name does not match package version v$package_version" >&2
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "refs/tags/$tag_name")" != "tag" ]]; then
+            echo "Release tags must be annotated so the content-manifest digest is auditable." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-list -n 1 "refs/tags/$tag_name")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+
+      - name: Install dependencies
+        run: node scripts/run-pnpm.mjs install --frozen-lockfile
+
+      - name: Typecheck
+        run: node scripts/run-pnpm.mjs run typecheck
+
+      - name: Build
+        run: node scripts/run-pnpm.mjs run build
+
+      - name: Reject generated bundle drift
+        run: |
+          git diff --exit-code -- \
+            server.bundle.mjs \
+            cli.bundle.mjs \
+            fetch-worker.bundle.cjs \
+            hooks/session-extract.bundle.mjs \
+            hooks/session-snapshot.bundle.mjs \
+            hooks/session-db.bundle.mjs \
+            hooks/checkpoint.bundle.mjs \
+            hooks/security.bundle.mjs
+
+      - name: Test
+        run: node scripts/run-pnpm.mjs test
+
+      - name: Install the pinned Codex CLI
+        run: npm install --global @openai/codex@0.145.0
+
+      - name: Build and verify release assets
+        id: assets
+        shell: bash
+        run: |
+          release_directory="$RUNNER_TEMP/context-mode-release"
+          mkdir -p "$release_directory/npm" "$release_directory/codex" "$release_directory/extracted"
+          npm pack --ignore-scripts --pack-destination "$release_directory/npm"
+          node scripts/run-pnpm.mjs run build:codex-marketplace -- --output-dir "$release_directory/codex"
+          marketplace_archive="$(find "$release_directory/codex" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$marketplace_archive"
+          node scripts/run-pnpm.mjs run verify:codex-marketplace -- "$marketplace_archive"
+          tar -xzf "$marketplace_archive" -C "$release_directory/extracted"
+          cp "$release_directory/extracted/CONTENT-MANIFEST.json" "$release_directory/CONTENT-MANIFEST.json"
+          manifest_digest="$(sha256sum "$release_directory/CONTENT-MANIFEST.json" | awk '{print $1}')"
+          expected_digest="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" | sed -nE 's/^Codex-Content-Manifest-SHA256:[[:space:]]*([0-9a-f]{64})[[:space:]]*$/\1/p')"
+          if [[ "$(printf '%s\n' "$expected_digest" | sed '/^$/d' | wc -l)" -ne 1 ]]; then
+            echo "Annotated tag message must contain exactly one Codex-Content-Manifest-SHA256: <64 lowercase hex> line." >&2
+            exit 1
+          fi
+          if [[ "$expected_digest" != "$manifest_digest" ]]; then
+            echo "Annotated tag content-manifest digest does not match the built offline asset." >&2
+            exit 1
+          fi
+          echo "release_directory=$release_directory" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "${{ steps.assets.outputs.release_directory }}"/npm/*.tgz \
+            "${{ steps.assets.outputs.release_directory }}"/codex/*.tar.gz \
+            "${{ steps.assets.outputs.release_directory }}"/codex/*.tar.gz.sha256 \
+            "${{ steps.assets.outputs.release_directory }}"/CONTENT-MANIFEST.json

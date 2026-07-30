@@ -153,6 +153,8 @@ export interface HookEntry {
   hooks: Array<{
     type: string;
     command: string;
+    /** Maximum additional context Codex accepts inline before previewing. */
+    additionalContextLimit?: number;
   }>;
 }
 

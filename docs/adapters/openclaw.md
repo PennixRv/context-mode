@@ -18,7 +18,7 @@ The context-mode adapter hooks into Pi Agent sessions specifically, intercepting
 ### Quick install
 
 ```bash
-npm run install:openclaw
+node scripts/run-pnpm.mjs run install:openclaw
 ```
 
 This runs `scripts/install-openclaw-plugin.sh`, which handles building, extension setup, runtime registration, and gateway restart.

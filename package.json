@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.169",
+  "version": "1.0.170",
   "type": "module",
   "description": "MCP plugin that saves 98% of your context window. Works with Claude Code, Gemini CLI, VS Code Copilot, OpenCode, and Codex CLI. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
   "author": "Mert Koseoğlu",
@@ -64,6 +64,7 @@
     "configs",
     "server.bundle.mjs",
     "cli.bundle.mjs",
+    "fetch-worker.bundle.cjs",
     "bin",
     "skills",
     ".claude-plugin",
@@ -79,24 +80,26 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && node -e \"if(process.platform!=='win32'){require('fs').chmodSync('build/cli.js',0o755)}\" && npm run bundle && npm run assert-bundle && npm run assert-asymmetric-drift",
-    "assert-bundle": "node scripts/assert-bundle.mjs server.bundle.mjs cli.bundle.mjs hooks/session-extract.bundle.mjs hooks/session-snapshot.bundle.mjs hooks/session-db.bundle.mjs hooks/security.bundle.mjs",
+    "build": "tsc && node -e \"if(process.platform!=='win32'){require('fs').chmodSync('build/cli.js',0o755)}\" && pnpm run bundle && pnpm run assert-bundle && pnpm run assert-asymmetric-drift",
+    "assert-bundle": "node scripts/assert-bundle.mjs server.bundle.mjs cli.bundle.mjs fetch-worker.bundle.cjs hooks/session-extract.bundle.mjs hooks/session-snapshot.bundle.mjs hooks/session-db.bundle.mjs hooks/checkpoint.bundle.mjs hooks/security.bundle.mjs",
     "assert-asymmetric-drift": "node scripts/assert-asymmetric-drift.mjs",
-    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify && esbuild src/cli.ts --bundle --platform=node --target=node18 --format=esm --outfile=cli.bundle.mjs --external:better-sqlite3 --minify && esbuild src/session/extract.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-extract.bundle.mjs --minify && esbuild src/session/snapshot.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-snapshot.bundle.mjs --minify && esbuild src/session/db.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-db.bundle.mjs --external:better-sqlite3 --minify && esbuild src/security.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/security.bundle.mjs --minify",
+    "bundle": "pnpm exec esbuild src/fetch-worker.ts --bundle --platform=node --target=node22 --format=cjs --outfile=fetch-worker.bundle.cjs --minify && pnpm exec esbuild src/server.ts --bundle --platform=node --target=node22 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --minify && pnpm exec esbuild src/cli.ts --bundle --platform=node --target=node22 --format=esm --outfile=cli.bundle.mjs --external:better-sqlite3 --minify && pnpm exec esbuild src/session/extract.ts --bundle --platform=node --target=node22 --format=esm --outfile=hooks/session-extract.bundle.mjs --minify && pnpm exec esbuild src/session/snapshot.ts --bundle --platform=node --target=node22 --format=esm --outfile=hooks/session-snapshot.bundle.mjs --minify && pnpm exec esbuild src/session/db.ts --bundle --platform=node --target=node22 --format=esm --outfile=hooks/session-db.bundle.mjs --external:better-sqlite3 --minify && pnpm exec esbuild src/checkpoint/runtime.ts --bundle --platform=node --target=node22 --format=esm --outfile=hooks/checkpoint.bundle.mjs --external:better-sqlite3 --minify && pnpm exec esbuild src/security.ts --bundle --platform=node --target=node22 --format=esm --outfile=hooks/security.bundle.mjs --minify",
+    "build:codex-marketplace": "node scripts/build-codex-marketplace-bundle.mjs",
+    "verify:codex-marketplace": "node scripts/verify-codex-release-asset.mjs",
     "version-sync": "node scripts/version-sync.mjs",
     "version": "node scripts/version-sync.mjs && git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .cursor-plugin/plugin.json .codex-plugin/plugin.json .openclaw-plugin/openclaw.plugin.json .openclaw-plugin/package.json openclaw.plugin.json .pi/extensions/context-mode/package.json configs/antigravity-cli/plugin.json configs/copilot-cli/.github/plugin/plugin.json",
-    "prepublishOnly": "npm run build",
-    "dev": "npx tsx src/server.ts",
-    "setup": "npx tsx src/cli.ts setup",
-    "doctor": "npx tsx src/cli.ts doctor",
+    "prepublishOnly": "pnpm run build",
+    "dev": "pnpm exec tsx src/server.ts",
+    "setup": "pnpm exec tsx src/cli.ts setup",
+    "doctor": "pnpm exec tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
-    "pretest": "npm run build",
+    "pretest": "pnpm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "benchmark": "npx tsx tests/benchmark.ts",
-    "test:use-cases": "npx tsx tests/use-cases.ts",
-    "test:compare": "npx tsx tests/context-comparison.ts",
-    "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
+    "benchmark": "pnpm exec tsx tests/benchmark.ts",
+    "test:use-cases": "pnpm exec tsx tests/use-cases.ts",
+    "test:compare": "pnpm exec tsx tests/context-comparison.ts",
+    "test:ecosystem": "pnpm exec tsx tests/ecosystem-benchmark.ts",
     "install:openclaw": "node -e \"if(process.platform==='win32'){console.error('OpenClaw install requires bash (Git Bash or WSL)');process.exit(1)}else{require('child_process').execSync('bash scripts/install-openclaw-plugin.sh',{stdio:'inherit'})}\"",
     "postinstall": "node scripts/postinstall.mjs"
   },
@@ -120,6 +123,11 @@
     "vitest": "^4.0.18"
   },
   "packageManager": "pnpm@10.23.0+sha512.21c4e5698002ade97e4efe8b8b4a89a8de3c85a37919f957e7a0f30f38fbc5bbdd05980ffe29179b2fb6e6e691242e098d945d1601772cad0fef5fb6411e2a4b",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "engines": {
     "node": ">=22.5.0"
   }

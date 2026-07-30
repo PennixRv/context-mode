@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "22"
+  NODE_VERSION: "22.23.2"
   # Pin Haiku 4.5 for tier-2: cheap enough for weekly cron without changing
   # tool-call behavior vs. Sonnet/Opus. Override via workflow_dispatch input
   # if a regression needs to be reproduced on a larger model.
@@ -61,11 +61,14 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
+
       - name: Install dependencies and build
         run: |
-          npm ci
-          npm run build
-          npm rebuild better-sqlite3
+          node scripts/run-pnpm.mjs install --frozen-lockfile
+          node scripts/run-pnpm.mjs run build
+          node scripts/run-pnpm.mjs rebuild better-sqlite3
 
       - name: Install Pi
         run: |

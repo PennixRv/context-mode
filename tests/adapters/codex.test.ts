@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter, parseCodexContextModePluginRoot, probeCodexCliVersion } from "../../src/adapters/codex/index.js";
-import { resolveSessionDbPath, SessionDB } from "../../src/session/db.js";
+import { resolveSessionDbPath } from "../../src/session/db.js";
 
 function writeCodexPluginManifest(pluginRoot: string): void {
   const pluginDir = join(pluginRoot, ".codex-plugin");
@@ -365,6 +365,7 @@ describe("CodexAdapter", () => {
       expect(config).toHaveProperty("PreToolUse");
       expect(config).toHaveProperty("PostToolUse");
       expect(config).toHaveProperty("PreCompact");
+      expect(config).toHaveProperty("PostCompact");
       expect(config).toHaveProperty("SessionStart");
       expect(config).toHaveProperty("UserPromptSubmit");
       expect(config).toHaveProperty("Stop");
@@ -379,7 +380,15 @@ describe("CodexAdapter", () => {
       expect(config.PreToolUse[0]?.matcher).toMatch(/(^|\|)mcp__$/);
       expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
       expect(config.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
-      expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
+      expect(config.PreCompact[0]?.matcher).toBe("^(manual|auto)$");
+      expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
+      expect(config.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
+      expect(config.SessionStart).toHaveLength(2);
+      expect(config.SessionStart[1]?.matcher).toBe("^compact$");
+      expect(config.SessionStart[1]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
+      expect(config.SessionStart[1]?.hooks[0]?.additionalContextLimit).toBe(1500);
+      expect(config.PostToolUse).toHaveLength(2);
+      expect(config.UserPromptSubmit).toHaveLength(2);
       expect(config.UserPromptSubmit[0]?.hooks[0]?.command).toBe("context-mode hook codex userpromptsubmit");
     });
   });
@@ -399,7 +408,7 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
       };
 
-      expect(changes.some((change) => change.includes("Added PreToolUse hook"))).toBe(true);
+      expect(changes.some((change) => change.includes("Updated PreToolUse hook"))).toBe(true);
       expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
       expect(changes.some((change) => change.includes("Enabled Codex hooks feature flag"))).toBe(true);
       // #547 hotfix: matcher is charset-clean — bare `ctx_execute` covers
@@ -408,7 +417,9 @@ describe("CodexAdapter", () => {
       expect(written.hooks.PreToolUse[0]?.matcher).toMatch(/(^|\|)mcp__$/);
       expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
       expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
-      expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
+      expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
+      expect(written.hooks.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
+      expect(written.hooks.SessionStart[1]?.hooks[0]?.additionalContextLimit).toBe(1500);
       expect(written.hooks.Stop[0]?.hooks[0]?.command).toBe("context-mode hook codex stop");
       expect(readFileSync(join(codexDir, "config.toml"), "utf-8")).toContain("hooks = true");
     });
@@ -432,8 +443,10 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
       };
       expect(written.hooks.PreToolUse[0]?.matcher).toContain("local_shell|shell|shell_command");
-      expect(written.hooks.SessionStart).toHaveLength(2);
-      expect(written.hooks.SessionStart[1]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
+      expect(written.hooks.SessionStart).toHaveLength(3);
+      expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
+      expect(written.hooks.SessionStart[1]?.hooks[0]?.command).toBe("context-mode hook codex sessionstart");
+      expect(written.hooks.SessionStart[2]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
     });
 
     it("creates ~/.codex/hooks.json when the parent directory is missing", () => {
@@ -447,6 +460,7 @@ describe("CodexAdapter", () => {
       };
 
       expect(Object.keys(written.hooks).sort()).toEqual([
+        "PostCompact",
         "PostToolUse",
         "PreCompact",
         "PreToolUse",
@@ -545,9 +559,10 @@ describe("CodexAdapter", () => {
 
       expect(written.hooks.PreToolUse).toHaveLength(1);
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
-      expect(written.hooks.SessionStart).toHaveLength(1);
+      expect(written.hooks.SessionStart).toHaveLength(2);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("context-mode hook codex sessionstart");
-      expect(changes.some((c) => c.includes("Removed duplicate"))).toBe(true);
+      expect(written.hooks.SessionStart[1]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
+      expect(changes.some((c) => c.includes("Updated SessionStart hook"))).toBe(true);
     });
 
     it("dedups legacy-direct-node entry coexisting with canonical entry (#603)", () => {
@@ -575,8 +590,9 @@ describe("CodexAdapter", () => {
 
       expect(written.hooks.PreToolUse).toHaveLength(1);
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
-      expect(written.hooks.PostToolUse).toHaveLength(1);
+      expect(written.hooks.PostToolUse).toHaveLength(2);
       expect(written.hooks.PostToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex posttooluse");
+      expect(written.hooks.PostToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex checkpointposttooluse");
     });
 
     it("dedups plugin-cache legacy entry left by /ctx-upgrade with canonical entry (#603)", () => {
@@ -599,8 +615,9 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
 
-      expect(written.hooks.UserPromptSubmit).toHaveLength(1);
+      expect(written.hooks.UserPromptSubmit).toHaveLength(2);
       expect(written.hooks.UserPromptSubmit[0]?.hooks[0]?.command).toBe("context-mode hook codex userpromptsubmit");
+      expect(written.hooks.UserPromptSubmit[1]?.hooks[0]?.command).toBe("context-mode hook codex checkpointuserpromptsubmit");
       expect(written.hooks.Stop).toHaveLength(1);
       expect(written.hooks.Stop[0]?.hooks[0]?.command).toBe("context-mode hook codex stop");
     });
@@ -882,7 +899,7 @@ args = ["-y", "context-mode"]
 
       const postToolDup = results.find((r) => r.check === "PostToolUse duplicates");
       expect(postToolDup?.status).toBe("warn");
-      expect(postToolDup?.message).toMatch(/2 context-mode entries/);
+      expect(postToolDup?.message).toMatch(/Duplicate context-mode hook codex posttooluse/);
 
       // Events with only one context-mode entry must NOT trigger the duplicate warning.
       expect(results.some((r) => r.check === "SessionStart duplicates")).toBe(false);
@@ -1041,122 +1058,11 @@ describe("Codex stop hook script", () => {
   });
 });
 
-describe("Codex precompact hook script", () => {
-  it("persists a resume snapshot, compact count, and compaction summary", () => {
-    const hookScript = resolve(__dirname, "../../hooks/codex/precompact.mjs");
-    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
-    const projectDir = join(codexHome, "project");
-    const sessionId = "test-precompact";
-    const savedCodexHome = process.env.CODEX_HOME;
-
-    mkdirSync(projectDir, { recursive: true });
-    process.env.CODEX_HOME = codexHome;
-
-    try {
-      const dbPath = resolveSessionDbPath({
-        projectDir,
-        sessionsDir: new CodexAdapter().getSessionDir(),
-      });
-      const db = new SessionDB({ dbPath });
-      db.ensureSession(sessionId, projectDir);
-      db.insertEvent(sessionId, {
-        type: "file_edit",
-        category: "file",
-        data: "Edited src/app.ts",
-        priority: 2,
-      }, "PostToolUse");
-      db.close();
-
-      const stdout = execFileSync(process.execPath, [hookScript], {
-        input: JSON.stringify({
-          session_id: sessionId,
-          cwd: projectDir,
-          hook_event_name: "PreCompact",
-          source: "compact",
-        }),
-        encoding: "utf-8",
-        timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
-      });
-
-      expect(JSON.parse(stdout.trim())).toEqual({});
-
-      const verifyDb = new SessionDB({ dbPath });
-      const resume = verifyDb.getResume(sessionId);
-      const compactCount = verifyDb.getSessionStats(sessionId)?.compact_count;
-      const hasCompactionSummary = verifyDb
-        .getEvents(sessionId)
-        .some((event) => event.category === "compaction");
-      verifyDb.close();
-
-      expect(resume?.snapshot).toContain("<session_resume");
-      expect(resume?.snapshot).toContain("app.ts");
-      expect(resume?.event_count).toBe(1);
-      expect(compactCount).toBe(1);
-      expect(hasCompactionSummary).toBe(true);
-    } finally {
-      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = savedCodexHome;
-      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
-    }
-  });
-});
-
-describe("Codex sessionstart hook script", () => {
-  it("injects a compact resume snapshot before marking it consumed", () => {
-    const hookScript = resolve(__dirname, "../../hooks/codex/sessionstart.mjs");
-    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
-    const projectDir = join(codexHome, "project");
-    const sessionId = "test-sessionstart-compact";
-    const snapshot = "<session_resume><task_state>restore me</task_state></session_resume>";
-    const savedCodexHome = process.env.CODEX_HOME;
-
-    mkdirSync(projectDir, { recursive: true });
-    process.env.CODEX_HOME = codexHome;
-
-    try {
-      const dbPath = resolveSessionDbPath({
-        projectDir,
-        sessionsDir: new CodexAdapter().getSessionDir(),
-      });
-      const db = new SessionDB({ dbPath });
-      db.ensureSession(sessionId, projectDir);
-      db.upsertResume(sessionId, snapshot, 1);
-      db.close();
-
-      const stdout = execFileSync(process.execPath, [hookScript], {
-        input: JSON.stringify({
-          session_id: sessionId,
-          cwd: projectDir,
-          hook_event_name: "SessionStart",
-          source: "compact",
-        }),
-        encoding: "utf-8",
-        timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
-      });
-
-      const parsed = JSON.parse(stdout.trim());
-      expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
-      expect(parsed.hookSpecificOutput.additionalContext).toContain("restore me");
-
-      const verifyDb = new SessionDB({ dbPath });
-      const consumed = verifyDb.getResume(sessionId)?.consumed;
-      verifyDb.close();
-      expect(consumed).toBe(1);
-    } finally {
-      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = savedCodexHome;
-      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
-    }
-  });
-});
-
 // Pins the #492 follow-up invariants:
 //   1. configs/codex/hooks.json PreToolUse matcher equals
 //      PRE_TOOL_USE_MATCHER_PATTERN in src/adapters/codex/index.ts
-//   2. configs/codex/hooks.json declares a PreCompact entry that routes
-//      to `context-mode hook codex precompact`
+//   2. configs/codex/hooks.json routes confirmed checkpoint lifecycle hooks
+//      through the dedicated checkpoint dispatch commands
 //   3. README.md documents the same matcher (JSON-escaped form)
 describe("Codex matcher parity + config integrity", () => {
   const repoRoot = resolve(__dirname, "..", "..");
@@ -1182,13 +1088,25 @@ describe("Codex matcher parity + config integrity", () => {
     expect(cfgMatcher).toBe(constant);
   });
 
-  it("hooks.json declares PreCompact wired to the precompact hook command", () => {
+  it("hooks.json wires the confirmed checkpoint lifecycle", () => {
     const parsed = JSON.parse(readFileSync(hooksConfigPath, "utf8")) as {
-      hooks: { PreCompact?: Array<{ hooks: Array<{ type: string; command: string }> }> };
+      hooks: {
+        PostCompact?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
+        PreCompact?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
+        SessionStart?: Array<{
+          matcher: string;
+          hooks: Array<{ type: string; command: string; additionalContextLimit?: number }>;
+        }>;
+      };
     };
     expect(parsed.hooks.PreCompact).toBeDefined();
-    const entry = parsed.hooks.PreCompact?.[0];
-    expect(entry?.hooks?.[0]?.command).toBe("context-mode hook codex precompact");
+    expect(parsed.hooks.PreCompact?.[0]?.matcher).toBe("^(manual|auto)$");
+    expect(parsed.hooks.PreCompact?.[0]?.hooks?.[0]?.command).toBe("context-mode hook codex checkpointprecompact");
+    expect(parsed.hooks.PostCompact?.[0]?.matcher).toBe("^(manual|auto)$");
+    expect(parsed.hooks.PostCompact?.[0]?.hooks?.[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
+    expect(parsed.hooks.SessionStart?.[1]?.matcher).toBe("^compact$");
+    expect(parsed.hooks.SessionStart?.[1]?.hooks?.[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
+    expect(parsed.hooks.SessionStart?.[1]?.hooks?.[0]?.additionalContextLimit).toBe(1500);
   });
 
   it("README documents the same Codex PreToolUse matcher as the adapter", () => {

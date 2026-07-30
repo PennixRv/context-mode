@@ -56,21 +56,21 @@ describe("start.mjs MCP boot path", () => {
     ).not.toMatch(/execSync\([^)]{0,200}npm\s+install/);
   });
 
-  it("installs the fetch-and-index deps in the background via `spawn(..., { detached, unref })`", () => {
-    // Positive assertion — the detached spawn path is what keeps boot
-    // fast for codex marketplace installs (no `node_modules/`).
-    expect(START_MJS).toMatch(/spawn\(\s*NPM_BIN/);
-    expect(START_MJS).toMatch(/detached:\s*true/);
-    expect(START_MJS).toMatch(/\.unref\(\)/);
+  it("does not start a dependency installer for the Codex marketplace runtime", () => {
+    const codexBranchStart = START_MJS.indexOf("if (!isCodexPluginRuntime) {");
+    const installerStart = START_MJS.indexOf("const NPM_INSTALL_BG_PKGS");
+    expect(codexBranchStart).toBeGreaterThan(-1);
+    expect(installerStart).toBeGreaterThan(codexBranchStart);
 
-    // The three packages must still be enumerated — dropping one would
-    // mean `ctx_fetch_and_index` silently breaks on codex/marketplace
-    // installs with no recovery path.
-    for (const pkg of ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"]) {
-      expect(
-        START_MJS,
-        `start.mjs must still kick off a background \`npm install ${pkg}\``,
-      ).toContain(`"${pkg}"`);
-    }
+    // The statically bundled worker is now the Codex path. A marketplace
+    // install without node_modules must never attempt an npm download.
+    expect(START_MJS).toContain('const isCodexPluginRuntime = process.env.CONTEXT_MODE_PLATFORM === "codex";');
+    expect(START_MJS).toContain("if (!isCodexPluginRuntime) {");
+  });
+
+  it("does not run Claude cache-repair logic for the Codex marketplace runtime", () => {
+    expect(START_MJS).toContain("if (!isCodexPluginRuntime && cacheMatch) {");
+    expect(START_MJS).toContain("if (!isCodexPluginRuntime) try {");
+    expect(START_MJS).toContain("if (!isCodexPluginRuntime && !process.env.VITEST) {");
   });
 });

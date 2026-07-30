@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main, next]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -21,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.5"
+          node-version: "22.23.2"
 
       - uses: actions/setup-python@v5
         with:
@@ -29,7 +32,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version: stable
           cache: false
 
       - uses: erlef/setup-beam@v1
@@ -43,58 +46,108 @@ jobs:
         shell: pwsh
         run: choco install elixir --yes --no-progress
 
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
+
       - name: Install dependencies
-        run: npm install
+        run: node scripts/run-pnpm.mjs install --frozen-lockfile
 
       - name: Typecheck
-        run: npx tsc -b --noEmit
+        run: node scripts/run-pnpm.mjs run typecheck
 
       - name: Build
-        run: npm run build
+        run: node scripts/run-pnpm.mjs run build
 
-      - name: Bundle
-        run: npm run bundle
-
-      - name: Assert bundle invariants (G3 — Issue #511 guardrail)
-        run: npm run assert-bundle
+      - name: Check generated bundles
+        shell: bash
+        run: |
+          git diff --exit-code -- \
+            server.bundle.mjs \
+            cli.bundle.mjs \
+            fetch-worker.bundle.cjs \
+            hooks/session-extract.bundle.mjs \
+            hooks/session-snapshot.bundle.mjs \
+            hooks/session-db.bundle.mjs \
+            hooks/checkpoint.bundle.mjs \
+            hooks/security.bundle.mjs
 
       - name: Run all tests
         shell: bash
         run: |
-          # Run tests, capture output + exit code.
-          # Vitest fork workers can crash during cleanup on CI (native addon teardown race)
-          # even when all tests pass. We check the actual test results instead of relying
-          # solely on the exit code.
+          # Vitest worker cleanup can report Windows EPERM after all suites
+          # complete. Fail on actual suite/test failures, not that teardown race.
           set +e
-          npx vitest run 2>&1 | tee /tmp/vitest-output.txt
+          node scripts/run-pnpm.mjs exec vitest run 2>&1 | tee /tmp/vitest-output.txt
           VITEST_EXIT=$?
           set -e
 
-          # Extract results from vitest output
           if grep -q "Tests.*failed" /tmp/vitest-output.txt; then
-            echo "❌ Test failures detected"
             exit 1
           elif grep -q "Test Files.*failed" /tmp/vitest-output.txt; then
-            echo "❌ Test file failures detected"
             exit 1
           elif grep -q "Tests.*passed" /tmp/vitest-output.txt; then
-            echo "✅ All tests passed (exit code $VITEST_EXIT may reflect worker cleanup noise)"
             exit 0
           elif grep -q "Error: kill EPERM" /tmp/vitest-output.txt; then
-            # Vitest crashed during worker teardown (Windows-only kill EPERM race, errno -4048)
-            # BEFORE printing the summary line. Look for per-suite failure markers instead —
-            # if none, treat as pass (the same cleanup noise the comment above acknowledges).
-            if grep -qE "FAIL +tests/|⨯ +tests/" /tmp/vitest-output.txt; then
-              echo "❌ Per-suite failures detected before teardown crash"
+            if grep -qE "FAIL +tests/" /tmp/vitest-output.txt; then
               exit 1
             fi
-            echo "⚠️ Vitest worker teardown race (Windows kill EPERM) — no failures detected; treating as pass."
             exit 0
           else
-            echo "❌ Could not parse test results"
             exit $VITEST_EXIT
           fi
 
       - name: Doctor (verify server starts)
-        run: npx tsx src/cli.ts doctor
+        run: node scripts/run-pnpm.mjs run doctor
         continue-on-error: true
+
+  codex-release-asset:
+    runs-on: ubuntu-latest
+    name: Codex offline marketplace asset
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.2"
+
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
+
+      - name: Install dependencies
+        run: node scripts/run-pnpm.mjs install --frozen-lockfile
+
+      - name: Build release inputs
+        run: node scripts/run-pnpm.mjs run build
+
+      - name: Check generated bundles
+        run: |
+          git diff --exit-code -- \
+            server.bundle.mjs \
+            cli.bundle.mjs \
+            fetch-worker.bundle.cjs \
+            hooks/session-extract.bundle.mjs \
+            hooks/session-snapshot.bundle.mjs \
+            hooks/session-db.bundle.mjs \
+            hooks/checkpoint.bundle.mjs \
+            hooks/security.bundle.mjs
+
+      - name: Build reproducible offline marketplace asset
+        shell: bash
+        run: |
+          first_output="$(mktemp -d)"
+          second_output="$(mktemp -d)"
+          node scripts/run-pnpm.mjs run build:codex-marketplace -- --output-dir "$first_output"
+          node scripts/run-pnpm.mjs run build:codex-marketplace -- --output-dir "$second_output"
+          first_archive="$(find "$first_output" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          second_archive="$(find "$second_output" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$first_archive"
+          test -n "$second_archive"
+          cmp --silent "$first_archive" "$second_archive"
+          cp "$first_archive" "$RUNNER_TEMP/context-mode-codex-marketplace.tar.gz"
+
+      - name: Install the pinned Codex CLI
+        run: npm install --global @openai/codex@0.145.0
+
+      - name: Verify isolated offline Codex installation
+        run: node scripts/run-pnpm.mjs run verify:codex-marketplace -- "$RUNNER_TEMP/context-mode-codex-marketplace.tar.gz"

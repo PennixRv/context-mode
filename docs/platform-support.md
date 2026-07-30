@@ -190,7 +190,7 @@ When OpenCode triggers `experimental.session.compacting` (auto on context overfl
 
 ### Codex CLI
 
-**Status:** Supported (MCP active, hooks require `[features].hooks = true`)
+**Status:** Supported (MCP and plugin hooks require `[features].hooks = true`)
 
 **Hook Paradigm:** JSON stdin/stdout
 
@@ -200,6 +200,7 @@ Codex CLI's Rust backend (codex-rs) includes a hook system using the same JSON s
 - `PreToolUse` -- fires before a tool is executed
 - `PostToolUse` -- fires after a tool completes
 - `PreCompact` -- fires before context compaction on Codex builds that emit it
+- `PostCompact` -- confirms a completed compaction before a replacement session can receive checkpoint context
 - `SessionStart` -- fires when a session starts, resumes, or clears
 - `UserPromptSubmit` -- fires when user submits a prompt
 - `Stop` -- fires when agent turn ends (can continue with followup)
@@ -229,7 +230,7 @@ context-mode hook codex stop
 **Known Issues / Caveats:**
 - PreToolUse `additionalContext` is unsupported — context injection works via PostToolUse and SessionStart instead. The codex formatter handles this automatically (deny works, context is dropped). Source: `codex-rs/hooks/src/engine/output_parser.rs:267`.
 - PreToolUse input rewriting still needs upstream `updatedInput` support. Track: [openai/codex#18491](https://github.com/openai/codex/issues/18491).
-- PreCompact support is runtime-gated: context-mode configures it and treats a missing registration as a warning, because older Codex builds may not emit the event. The hook stores the resume snapshot out-of-band and SessionStart restores it.
+- The confirmed-checkpoint protocol requires `PreCompact`, `PostCompact`, and `SessionStart(compact)`. A missing or failed `PostCompact` intentionally prevents checkpoint injection rather than restoring an unconfirmed snapshot.
 - Codex emits structured tool names such as `Bash` and `apply_patch`; context-mode only normalizes legacy shell aliases.
 - updatedInput and updatedMCPToolOutput are in the schema but NOT implemented
 - Default hook timeout: 600 seconds
@@ -253,6 +254,10 @@ context-mode hook codex stop
   Some Codex builds may also require `plugin_hooks = true`. Without hook support,
   the MCP tools can still work, but automatic session capture and persistent
   memory may not record events.
+
+  Release-specific online/offline installation, verification, update, rollback,
+  and local real-model attestation are documented in
+  [`docs/releases/codex-v1.0.170.md`](releases/codex-v1.0.170.md).
 
 ---
 

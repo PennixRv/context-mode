@@ -144,8 +144,11 @@ describe("Issue #531 — asymmetric-drift invariant", () => {
       r.status,
       `npm pack failed: status=${String(r.status)} signal=${String(r.signal)} error=${spawnErr} stderr=${String(r.stderr)} stdout=${String(r.stdout)}`,
     ).toBe(0);
-    const pack = JSON.parse(r.stdout) as Array<{ files: Array<{ path: string }> }>;
-    const files = new Set(pack[0]?.files?.map((f) => f.path) ?? []);
+    const pack = JSON.parse(r.stdout) as
+      | Array<{ files: Array<{ path: string }> }>
+      | Record<string, { files: Array<{ path: string }> }>;
+    const manifest = Array.isArray(pack) ? pack[0] : Object.values(pack)[0];
+    const files = new Set(manifest?.files?.map((file) => file.path) ?? []);
     expect(files).toContain(".claude-plugin/plugin.json");
     for (const rel of REQUIRED_PLUGIN_RUNTIME_FILES) {
       expect(files).toContain(rel);

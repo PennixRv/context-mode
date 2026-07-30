@@ -99,7 +99,10 @@ describe(".codex-plugin/plugin.json", () => {
 describe(".codex-plugin/hooks.json", () => {
   const hooksPath = resolve(REPO_ROOT, ".codex-plugin/hooks.json");
   const hooks = readJson(".codex-plugin/hooks.json") as {
-    hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    hooks: Record<string, Array<{
+      matcher?: string;
+      hooks: Array<{ command: string; additionalContextLimit?: number }>;
+    }>>;
   };
 
   it("ships the Codex plugin hooks manifest", () => {
@@ -108,8 +111,11 @@ describe(".codex-plugin/hooks.json", () => {
 
   it("uses simple plugin-root hook script commands", () => {
     for (const groups of Object.values(hooks.hooks)) {
-      const command = groups[0]?.hooks[0]?.command ?? "";
-      expect(command).toContain('node "${PLUGIN_ROOT}/hooks/codex/');
+      for (const group of groups) {
+        for (const hook of group.hooks) {
+          expect(hook.command).toContain('node "${PLUGIN_ROOT}/hooks/codex/');
+        }
+      }
     }
   });
 
@@ -118,16 +124,30 @@ describe(".codex-plugin/hooks.json", () => {
     expect(platformSource).toContain('process.env.CONTEXT_MODE_PLATFORM = "codex";');
 
     for (const groups of Object.values(hooks.hooks)) {
-      const command = groups[0]?.hooks[0]?.command ?? "";
-      const match = command.match(/\$\{PLUGIN_ROOT\}\/(hooks\/codex\/[^"]+\.mjs)/);
-      expect(match, `expected codex hook script path in ${command}`).not.toBeNull();
+      for (const group of groups) {
+        for (const hook of group.hooks) {
+          const match = hook.command.match(/\$\{PLUGIN_ROOT\}\/(hooks\/codex\/[^"]+\.mjs)/);
+          expect(match, `expected codex hook script path in ${hook.command}`).not.toBeNull();
 
-      const hookSource = readFileSync(resolve(REPO_ROOT, match![1]), "utf8");
-      const platformImport = hookSource.indexOf('import "./platform.mjs";');
-      const firstSharedImport = hookSource.indexOf('import "../');
-      expect(platformImport).toBeGreaterThanOrEqual(0);
-      expect(firstSharedImport).toBeGreaterThan(platformImport);
+          const hookSource = readFileSync(resolve(REPO_ROOT, match![1]), "utf8");
+          const platformImport = hookSource.indexOf('import "./platform.mjs";');
+          const firstSharedImport = hookSource.indexOf('import "../');
+          expect(platformImport).toBeGreaterThanOrEqual(0);
+          expect(firstSharedImport).toBeGreaterThan(platformImport);
+        }
+      }
     }
+  });
+
+  it("routes compact restoration through a confirmed checkpoint lifecycle", () => {
+    expect(hooks.hooks.PreCompact?.[0]?.matcher).toBe("^(manual|auto)$");
+    expect(hooks.hooks.PreCompact?.[0]?.hooks[0]?.command).toContain("checkpoint-precompact.mjs");
+    expect(hooks.hooks.PostCompact?.[0]?.matcher).toBe("^(manual|auto)$");
+    expect(hooks.hooks.PostCompact?.[0]?.hooks[0]?.command).toContain("checkpoint-postcompact.mjs");
+    expect(hooks.hooks.SessionStart?.[0]?.matcher).toBe("^(startup|resume|clear)$");
+    expect(hooks.hooks.SessionStart?.[1]?.matcher).toBe("^compact$");
+    expect(hooks.hooks.SessionStart?.[1]?.hooks[0]?.command).toContain("checkpoint-sessionstart.mjs");
+    expect(hooks.hooks.SessionStart?.[1]?.hooks[0]?.additionalContextLimit).toBe(1500);
   });
 });
 

@@ -3094,10 +3094,14 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("pretooluse");
     expect(codexBlock).toContain("posttooluse");
-    expect(codexBlock).toContain("precompact");
     expect(codexBlock).toContain("sessionstart");
     expect(codexBlock).toContain("userpromptsubmit");
     expect(codexBlock).toContain("stop");
+    expect(codexBlock).toContain("checkpointposttooluse");
+    expect(codexBlock).toContain("checkpointprecompact");
+    expect(codexBlock).toContain("checkpointpostcompact");
+    expect(codexBlock).toContain("checkpointsessionstart");
+    expect(codexBlock).toContain("checkpointuserpromptsubmit");
   });
 
   test("codex hooks point to dedicated hooks/codex/ directory", () => {
@@ -3109,10 +3113,14 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("hooks/codex/pretooluse.mjs");
     expect(codexBlock).toContain("hooks/codex/posttooluse.mjs");
-    expect(codexBlock).toContain("hooks/codex/precompact.mjs");
     expect(codexBlock).toContain("hooks/codex/sessionstart.mjs");
     expect(codexBlock).toContain("hooks/codex/userpromptsubmit.mjs");
     expect(codexBlock).toContain("hooks/codex/stop.mjs");
+    expect(codexBlock).toContain("hooks/codex/checkpoint-posttooluse.mjs");
+    expect(codexBlock).toContain("hooks/codex/checkpoint-precompact.mjs");
+    expect(codexBlock).toContain("hooks/codex/checkpoint-postcompact.mjs");
+    expect(codexBlock).toContain("hooks/codex/checkpoint-sessionstart.mjs");
+    expect(codexBlock).toContain("hooks/codex/checkpoint-userpromptsubmit.mjs");
   });
 
   test("hooks/codex/pretooluse.mjs exists", () => {
@@ -3127,8 +3135,17 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(existsSync(resolve(ROOT, "hooks/codex/sessionstart.mjs"))).toBe(true);
   });
 
-  test("hooks/codex/precompact.mjs exists", () => {
-    expect(existsSync(resolve(ROOT, "hooks/codex/precompact.mjs"))).toBe(true);
+  test("checkpoint hook scripts exist", () => {
+    const checkpointScripts = [
+      "checkpoint-posttooluse.mjs",
+      "checkpoint-precompact.mjs",
+      "checkpoint-postcompact.mjs",
+      "checkpoint-sessionstart.mjs",
+      "checkpoint-userpromptsubmit.mjs",
+    ];
+    for (const scriptName of checkpointScripts) {
+      expect(existsSync(resolve(ROOT, "hooks/codex", scriptName))).toBe(true);
+    }
   });
 
   test("session-helpers.mjs exports CODEX_OPTS", () => {

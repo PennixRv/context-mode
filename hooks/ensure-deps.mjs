@@ -50,9 +50,42 @@ const NATIVE_BINARIES = {
   "better-sqlite3": ["build", "Release", "better_sqlite3.node"],
 };
 
+function isCodexPluginRuntime() {
+  return process.env.CONTEXT_MODE_PLATFORM === "codex";
+}
+
+/**
+ * Codex marketplace plugins are copied into an isolated cache rather than
+ * installed with npm. The release payload deliberately has no native addon,
+ * so this path must use Node's built-in SQLite and fail before any network or
+ * compiler fallback is considered.
+ */
+export async function assertCodexSqliteRuntime() {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < 22 || (major === 22 && minor < 22)) {
+    throw new Error(
+      `[context-mode] Codex requires Node >=22.22 with FTS5-capable node:sqlite; found ${process.versions.node}.`,
+    );
+  }
+
+  let database = null;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    database = new DatabaseSync(":memory:");
+    database.exec("CREATE VIRTUAL TABLE __context_mode_fts5_probe USING fts5(content)");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[context-mode] Codex requires an FTS5-capable node:sqlite runtime; ${message}`,
+    );
+  } finally {
+    try { database?.close(); } catch { /* probe cleanup */ }
+  }
+}
+
 /**
  * Check if the current runtime has built-in SQLite support.
- * Bun has bun:sqlite, Node >= 22.5 has node:sqlite.
+ * Bun has bun:sqlite; Codex requires Node >= 22.22 for FTS5-capable node:sqlite.
  *
  * Used to skip the SIGSEGV-prone child-process probe on modern Node (#331),
  * but NOT to skip installing better-sqlite3 — the bundle unconditionally
@@ -65,6 +98,11 @@ function hasModernSqlite() {
 }
 
 export async function ensureDeps() {
+  if (isCodexPluginRuntime()) {
+    await assertCodexSqliteRuntime();
+    return;
+  }
+
   // Bun ships bun:sqlite and never needs better-sqlite3
   if (typeof globalThis.Bun !== "undefined") return;
   for (const pkg of NATIVE_DEPS) {
@@ -251,4 +289,6 @@ export function codesignBinary(binaryPath) {
 // Top-level await ensures the heal completes before the importer's next
 // statement runs (which is typically `new Database(...)`).
 await ensureDeps();
-ensureNativeCompat(root);
+if (!isCodexPluginRuntime()) {
+  ensureNativeCompat(root);
+}

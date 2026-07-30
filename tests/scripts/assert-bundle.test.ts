@@ -59,6 +59,8 @@ describe("assert-bundle script", () => {
     expect(scripts["assert-bundle"]).toMatch(/scripts\/assert-bundle\.mjs/);
     expect(scripts["assert-bundle"]).toMatch(/server\.bundle\.mjs/);
     expect(scripts["assert-bundle"]).toMatch(/cli\.bundle\.mjs/);
+    expect(scripts["assert-bundle"]).toMatch(/fetch-worker\.bundle\.cjs/);
+    expect(scripts["assert-bundle"]).toMatch(/hooks\/checkpoint\.bundle\.mjs/);
     expect(scripts["assert-bundle"]).toMatch(/hooks\/.*\.bundle\.mjs/);
 
     // The build chain must invoke it. Either `build` calls `assert-bundle`
@@ -91,6 +93,30 @@ describe("assert-bundle script", () => {
     }
   });
 
+  it("permits only node built-ins through module.require in CommonJS workers", () => {
+    const dir = mkdtempSync(join(tmpdir(), "assert-bundle-cjs-"));
+    const clean = join(dir, "clean-worker.bundle.cjs");
+    const polluted = join(dir, "polluted-worker.bundle.cjs");
+    writeFileSync(
+      clean,
+      `const fs = module.require("node:fs");\nmodule.exports = { fs };\n`,
+      "utf-8",
+    );
+    writeFileSync(
+      polluted,
+      `const packageDependency = require("turndown");\nmodule.exports = { packageDependency };\n`,
+      "utf-8",
+    );
+    try {
+      expect(runAssert(clean).status).toBe(0);
+      const result = runAssert(polluted);
+      expect(result.status).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("raw-bare-require-call");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // Slice 4 — regression guard against the current production bundles.
   //
   // EXPECTED RED until the Issue #511 ESM sweep agent merges its branch
@@ -109,6 +135,7 @@ describe("assert-bundle script", () => {
       "hooks/session-extract.bundle.mjs",
       "hooks/session-snapshot.bundle.mjs",
       "hooks/session-db.bundle.mjs",
+      "hooks/checkpoint.bundle.mjs",
     ].map((p) => join(repoRoot, p));
 
     const r = runAssert(...bundles);

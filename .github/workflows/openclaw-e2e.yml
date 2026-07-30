@@ -13,7 +13,7 @@ concurrency:
 
 env:
   OPENCLAW_VERSION: "2026.3.2"
-  NODE_VERSION: "22"
+  NODE_VERSION: "22.23.2"
 
 jobs:
   e2e:
@@ -40,7 +40,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules/better-sqlite3/build
-          key: better-sqlite3-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+          key: better-sqlite3-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Cache OpenClaw binary
         id: cache-openclaw
@@ -49,11 +49,15 @@ jobs:
           path: ~/.npm-global
           key: openclaw-${{ runner.os }}-v${{ env.OPENCLAW_VERSION }}
 
+      - name: Verify pinned Corepack bootstrap
+        run: node scripts/run-pnpm.mjs --version
+
       - name: Install dependencies and build
         run: |
-          npm install
-          npm run build
-          npm rebuild better-sqlite3
+          node scripts/run-pnpm.mjs install --frozen-lockfile
+          node scripts/run-pnpm.mjs run build
+          node scripts/run-pnpm.mjs rebuild better-sqlite3
+          node -e "const Database = require('better-sqlite3'); const database = new Database(':memory:'); database.close(); console.log('PASS: better-sqlite3 native binding is loadable')"
 
       - name: Install OpenClaw
         if: steps.cache-openclaw.outputs.cache-hit != 'true'
