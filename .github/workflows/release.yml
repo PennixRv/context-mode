@@ -43,13 +43,13 @@ jobs:
           fi
           git fetch --force origin \
             "refs/tags/$tag_name:refs/tags/$tag_name" \
-            "main:refs/remotes/origin/main"
+            "devel:refs/remotes/origin/devel"
           if [[ "$(git cat-file -t "refs/tags/$tag_name")" != "tag" ]]; then
             echo "Release tags must be annotated so the content-manifest digest is auditable." >&2
             exit 1
           fi
           tag_commit="$(git rev-parse "refs/tags/$tag_name^{commit}")"
-          git merge-base --is-ancestor "$tag_commit" origin/main
+          node scripts/validate-fork-release-tag.mjs "$tag_name"
           git checkout --detach "$tag_commit"
           package_version="$(node --input-type=module -e 'import packageJson from "./package.json" with { type: "json" }; console.log(packageJson.version)')"
           if [[ "$tag_name" != "v$package_version" ]]; then
