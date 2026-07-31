@@ -369,6 +369,34 @@ function createArchive(stagingRoot, archivePath) {
   writeFileSync(archivePath, compressed);
 }
 
+function moveArchiveToOutput(temporaryArchivePath, outputArchivePath) {
+  try {
+    renameSync(temporaryArchivePath, outputArchivePath);
+    return;
+  } catch (error) {
+    const errorCode = error && typeof error === "object" ? error.code : null;
+    if (errorCode !== "EXDEV") {
+      throw error;
+    }
+  }
+
+  // A repository checkout and os.tmpdir() may be different filesystems. Copy
+  // into a sibling temporary directory first so the final replacement remains
+  // an atomic rename on the destination filesystem.
+  const outputTemporaryRoot = mkdtempSync(join(
+    dirname(outputArchivePath),
+    `.${basename(outputArchivePath)}.tmp-`,
+  ));
+  const outputTemporaryPath = join(outputTemporaryRoot, basename(outputArchivePath));
+  try {
+    cpSync(temporaryArchivePath, outputTemporaryPath, { force: true });
+    renameSync(outputTemporaryPath, outputArchivePath);
+    rmSync(temporaryArchivePath, { force: true });
+  } finally {
+    rmSync(outputTemporaryRoot, { recursive: true, force: true });
+  }
+}
+
 function main() {
   const options = parseArguments(process.argv.slice(2));
   const packageJson = readPackage();
@@ -393,7 +421,7 @@ function main() {
     mkdirSync(options.outputDirectory, { recursive: true });
     const temporaryArchivePath = join(temporaryRoot, archiveName);
     createArchive(stagingRoot, temporaryArchivePath);
-    renameSync(temporaryArchivePath, outputArchivePath);
+    moveArchiveToOutput(temporaryArchivePath, outputArchivePath);
 
     const checksumPath = `${outputArchivePath}.sha256`;
     writeFileSync(

@@ -12,9 +12,8 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSyn
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync as Database } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
-import Database from "better-sqlite3";
 
 const AUTOMATIC_HISTORY_WORD_COUNT = 5_000;
 const AUTOMATIC_TOKEN_LIMIT = 2_000;
@@ -68,7 +67,7 @@ function isInside(parentPath, candidatePath) {
   return pathRelative === "" || (!pathRelative.startsWith("..") && !isAbsolute(pathRelative));
 }
 
-function resolveOptions() {
+export function resolveOptions() {
   const validationHome = requireEnvironmentDirectory("CONTEXT_MODE_VALIDATION_HOME");
   const projectPath = requireEnvironmentDirectory("CONTEXT_MODE_PROJECT_PATH");
   const releasePluginRoot = requireEnvironmentDirectory("CONTEXT_MODE_RELEASE_PLUGIN_ROOT");
@@ -137,11 +136,11 @@ function resolveOptions() {
   };
 }
 
-function writeReport(reportPath, report) {
+export function writeReport(reportPath, report) {
   writeFileSync(reportPath, JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
 }
 
-function createReport(options) {
+export function createReport(options) {
   return {
     status: "running",
     trigger: options.trigger,
@@ -162,7 +161,7 @@ function createReport(options) {
   };
 }
 
-function findCheckpoint(validationHome, sessionId) {
+export function findCheckpoint(validationHome, sessionId) {
   const checkpointDirectory = join(validationHome, "context-mode", "checkpoints");
   if (!existsSync(checkpointDirectory)) {
     return null;
@@ -174,10 +173,10 @@ function findCheckpoint(validationHome, sessionId) {
     }
 
     const databasePath = join(checkpointDirectory, fileName);
-    const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+    const database = new Database(databasePath, { readOnly: true });
     try {
       const checkpoint = database.prepare(`
-        SELECT checkpoint_id, trigger, state
+        SELECT *
         FROM compact_checkpoints
         WHERE session_id = ?
         ORDER BY sequence DESC
@@ -216,7 +215,7 @@ function verifyCompletedCheckpointHooks(hookEvents) {
   }
 }
 
-function createClient(options, report) {
+export function createClient(options, report) {
   const appServerArguments = [
     "-c",
     "features.code_mode_host=true",
@@ -405,8 +404,9 @@ async function runManualCompaction(client, threadId) {
   );
 }
 
-async function run(options, report) {
+export async function run(options, report, verification = null) {
   const client = createClient(options, report);
+  const verificationPrompt = verification?.prompt ?? checkpointAttestationPrompt();
   try {
     await client.request("initialize", {
       clientInfo: {
@@ -461,7 +461,7 @@ async function run(options, report) {
     report.seedTurnId = await startTurn(
       client,
       report.threadId,
-      options.trigger === "manual" ? "Reply with exactly seed." : checkpointAttestationPrompt(),
+      options.trigger === "manual" ? "Reply with exactly seed." : verificationPrompt,
     );
     await waitForCompletedTurn(client, report.seedTurnId, seedEventStart, "seed turn");
 
@@ -469,7 +469,7 @@ async function run(options, report) {
     if (options.trigger === "manual") {
       await runManualCompaction(client, report.threadId);
       attestationEventStart = client.events.length;
-      report.attestationTurnId = await startTurn(client, report.threadId, checkpointAttestationPrompt());
+      report.attestationTurnId = await startTurn(client, report.threadId, verificationPrompt);
       await waitForCompletedTurn(client, report.attestationTurnId, attestationEventStart, "attestation turn");
     } else {
       const seedCompaction = client.events.slice(seedEventStart).find(
@@ -479,7 +479,7 @@ async function run(options, report) {
         report.attestationTurnId = report.seedTurnId;
         attestationEventStart = seedEventStart;
       } else {
-        report.attestationTurnId = await startTurn(client, report.threadId, checkpointAttestationPrompt());
+        report.attestationTurnId = await startTurn(client, report.threadId, verificationPrompt);
         await waitForCompletedTurn(client, report.attestationTurnId, attestationEventStart, "automatic attestation turn");
       }
     }
@@ -532,25 +532,36 @@ async function run(options, report) {
         .filter((itemType) => itemType !== null),
     )].sort();
     const unexpectedItemTypes = itemTypes.filter((itemType) => !RESPONSE_ITEM_TYPES.has(itemType));
-    const attestationMatches = assistantResponse === checkpointEvidence.checkpoint.checkpoint_id;
+    const verificationResult = verification === null
+      ? {
+        attestation: {
+          assistantResponseLength: Buffer.byteLength(assistantResponse, "utf8"),
+          assistantResponseSha256: sha256(assistantResponse),
+          checkpointIdSha256: sha256(checkpointEvidence.checkpoint.checkpoint_id),
+          matchesCheckpointId: assistantResponse === checkpointEvidence.checkpoint.checkpoint_id,
+          observedItemTypes: itemTypes,
+          unexpectedItemTypes,
+        },
+        error: assistantResponse === checkpointEvidence.checkpoint.checkpoint_id
+          ? unexpectedItemTypes.length > 0
+            ? "attestation turn used a non-response item type"
+            : null
+          : "assistant response did not attest the hook-only checkpoint id",
+      }
+      : await verification({
+        assistantResponse,
+        checkpointEvidence,
+        itemTypes,
+        unexpectedItemTypes,
+      });
     report.checkpoint = {
       state: checkpointEvidence.checkpoint.state,
       trigger: checkpointEvidence.checkpoint.trigger,
       transitionReasons: checkpointEvidence.transitions.map((transition) => transition.reason),
     };
-    report.attestation = {
-      assistantResponseLength: Buffer.byteLength(assistantResponse, "utf8"),
-      assistantResponseSha256: sha256(assistantResponse),
-      checkpointIdSha256: sha256(checkpointEvidence.checkpoint.checkpoint_id),
-      matchesCheckpointId: attestationMatches,
-      observedItemTypes: itemTypes,
-      unexpectedItemTypes,
-    };
-    if (!attestationMatches) {
-      throw new Error("assistant response did not attest the hook-only checkpoint id");
-    }
-    if (unexpectedItemTypes.length > 0) {
-      throw new Error("attestation turn used a non-response item type");
+    report.attestation = verificationResult.attestation;
+    if (verificationResult.error) {
+      throw new Error(verificationResult.error);
     }
     if (compactionStart.turnId !== report.attestationTurnId && options.trigger === "auto") {
       throw new Error("automatic compaction did not occur in the attestation turn");

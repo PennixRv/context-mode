@@ -2,6 +2,14 @@ export type CheckpointState = "pending" | "confirmed" | "claimed" | "expired" | 
 
 export type CompactionTrigger = "manual" | "auto";
 
+export type CheckpointProjectionMode = "full" | "pruned" | "id_only";
+
+export type RecoveryBriefStatus = "absent" | "invalid" | "available";
+
+export type RecoveryBriefFactPriority = "critical" | "important" | "optional";
+
+export type RecoveryBriefSourceKind = "trellis_task" | "explicit_project_state" | "git";
+
 export interface CheckpointIdentity {
   canonicalProjectRoot: string;
   projectHash: string;
@@ -52,6 +60,31 @@ export interface TrellisEvidence {
   omittedArtifactCount: number;
 }
 
+/**
+ * Explicit task state maintained by Trellis. This is deliberately separate
+ * from CheckpointPayload so the audit payload remains privacy-minimal.
+ */
+export interface RecoveryBriefFact {
+  value: string | "unknown";
+  priority: RecoveryBriefFactPriority;
+  source_kind: RecoveryBriefSourceKind;
+  source_sha256: string;
+  valid_at: string;
+}
+
+export interface RecoveryBrief {
+  schema_version: 1;
+  updated_at: string;
+  objective: RecoveryBriefFact;
+  hard_constraints: RecoveryBriefFact[];
+  decisions: RecoveryBriefFact[];
+  completed_work: RecoveryBriefFact[];
+  open_work: RecoveryBriefFact[];
+  latest_blocker: RecoveryBriefFact | null;
+  next_action: RecoveryBriefFact | null;
+  project_state: RecoveryBriefFact | null;
+}
+
 export interface CheckpointPayload {
   schema_version: 1;
   created_at: string;
@@ -86,10 +119,65 @@ export interface CheckpointRow {
   state: CheckpointState;
   payload_json: string;
   payload_sha256: string;
+  recovery_json: string | null;
+  recovery_sha256: string | null;
+  recovery_status: RecoveryBriefStatus | null;
   created_at: string;
   confirmed_at: string | null;
   claimed_at: string | null;
   expires_at: string;
+}
+
+export interface CheckpointStateCounts {
+  pending: number;
+  confirmed: number;
+  claimed: number;
+  expired: number;
+  invalid: number;
+}
+
+export interface CheckpointTriggerReliability {
+  checkpointCount: number;
+  stateCounts: CheckpointStateCounts;
+  confirmationRate: number | null;
+  claimRate: number | null;
+}
+
+export interface CheckpointLatencySummary {
+  sampleCount: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+}
+
+export interface CheckpointDeliverySummary {
+  full: number;
+  pruned: number;
+  idOnly: number;
+  unknown: number;
+  emittedBytesTotal: number;
+  emittedBytesAverage: number | null;
+}
+
+export interface CheckpointReliabilityReport {
+  available: boolean;
+  project: {
+    canonicalRoot: string;
+    projectSha256: string;
+    worktreeSha256: string;
+  };
+  window: {
+    startAt: string;
+    endAt: string;
+  };
+  total: CheckpointTriggerReliability;
+  byTrigger: Record<CompactionTrigger, CheckpointTriggerReliability>;
+  latencyMs: {
+    createdToConfirmed: CheckpointLatencySummary;
+    confirmedToClaimed: CheckpointLatencySummary;
+  };
+  delivery: CheckpointDeliverySummary;
+  overduePendingCount: number;
+  warnings: string[];
 }
 
 export interface CheckpointHookInput {

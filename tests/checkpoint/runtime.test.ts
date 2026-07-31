@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -11,12 +10,20 @@ import {
   claimConfirmedCheckpointContext,
   confirmPendingCheckpoint,
   createPendingCheckpoint,
+  getCheckpointReliabilityReport,
   readTrellisEvidence,
   recordPromptCheckpointSignal,
   recordToolCheckpointSignal,
   resolveCheckpointIdentity,
 } from "../../src/checkpoint/runtime.js";
-import type { CheckpointHookInput, CheckpointRow } from "../../src/checkpoint/types.js";
+import { loadDatabase } from "../../src/db-base.js";
+import type {
+  CheckpointHookInput,
+  CheckpointPayload,
+  CheckpointRow,
+  RecoveryBrief,
+  RecoveryBriefFact,
+} from "../../src/checkpoint/types.js";
 
 const BASE_TIME = new Date("2026-07-30T00:00:00.000Z");
 const CLEANUP_DIRS: string[] = [];
@@ -25,6 +32,16 @@ interface RuntimeFixture {
   configDir: string;
   projectDir: string;
   rootDir: string;
+}
+
+interface TestDatabase {
+  close(): void;
+  exec(sql: string): void;
+  prepare(sql: string): {
+    all(...params: unknown[]): unknown[];
+    get(...params: unknown[]): unknown;
+    run(...params: unknown[]): unknown;
+  };
 }
 
 function at(milliseconds: number): Date {
@@ -54,9 +71,10 @@ function hookInput(
   };
 }
 
-function openDatabase(configDir: string, projectDir: string): Database.Database {
+function openDatabase(configDir: string, projectDir: string): TestDatabase {
   const identity = resolveCheckpointIdentity(projectDir, configDir);
-  return new Database(identity.dbPath);
+  const Database = loadDatabase();
+  return new Database(identity.dbPath) as unknown as TestDatabase;
 }
 
 function checkpointRow(
@@ -82,6 +100,62 @@ function checkpointCount(configDir: string, projectDir: string): number {
   } finally {
     database.close();
   }
+}
+
+function recoveryFact(
+  value: string,
+  priority: RecoveryBriefFact["priority"],
+): RecoveryBriefFact {
+  return {
+    value,
+    priority,
+    source_kind: "trellis_task",
+    source_sha256: "a".repeat(64),
+    valid_at: "2026-07-30T00:00:00.000Z",
+  };
+}
+
+function recoveryBrief(overrides: Partial<RecoveryBrief> = {}): RecoveryBrief {
+  return {
+    schema_version: 1,
+    updated_at: "2026-07-30T00:00:00.000Z",
+    objective: recoveryFact("Finish the checkpoint recovery implementation", "critical"),
+    hard_constraints: [recoveryFact("Keep CheckpointPayload v1 unchanged", "critical")],
+    decisions: [recoveryFact("Trellis owns semantic source state", "important")],
+    completed_work: [recoveryFact("Delivery telemetry is complete", "optional")],
+    open_work: [recoveryFact("Add RecoveryBrief snapshot tests", "important")],
+    latest_blocker: null,
+    next_action: recoveryFact("Run isolated quality validation", "critical"),
+    project_state: recoveryFact("Worktree is intentionally dirty", "important"),
+    ...overrides,
+  };
+}
+
+function createActiveTrellisTask(
+  fixture: RuntimeFixture,
+  sessionId: string,
+  taskName = "task-recovery-brief",
+): string {
+  const trellisRoot = join(fixture.projectDir, ".trellis");
+  const taskDir = join(trellisRoot, "tasks", taskName);
+  const runtimeDir = join(trellisRoot, ".runtime", "sessions");
+  mkdirSync(taskDir, { recursive: true });
+  mkdirSync(runtimeDir, { recursive: true });
+  writeFileSync(join(runtimeDir, `codex_${sessionId}.json`), JSON.stringify({
+    current_task: `tasks/${taskName}`,
+  }), "utf8");
+  writeFileSync(join(taskDir, "task.json"), JSON.stringify({
+    id: taskName,
+    status: "in_progress",
+    phase: "implement",
+  }), "utf8");
+  return taskDir;
+}
+
+function parseCheckpointContext(context: string): Record<string, unknown> {
+  const match = context.match(/```json\n([\s\S]+)\n```$/);
+  if (!match) throw new Error("checkpoint context did not include JSON");
+  return JSON.parse(match[1]) as Record<string, unknown>;
 }
 
 afterEach(() => {
@@ -169,6 +243,20 @@ describe("confirmed Codex compaction checkpoints", () => {
     expect(firstContext).toContain("Confirmed checkpoint.");
     expect(secondContext).toBe("");
     expect(checkpointRow(fixture.configDir, fixture.projectDir, "session-confirm", "turn-confirm")?.state).toBe("claimed");
+
+    const database = openDatabase(fixture.configDir, fixture.projectDir);
+    try {
+      const metric = database.prepare(`
+        SELECT projection_mode, emitted_bytes
+        FROM checkpoint_delivery_metrics
+      `).get() as { projection_mode: string; emitted_bytes: number };
+      expect(metric).toEqual({
+        projection_mode: "full",
+        emitted_bytes: Buffer.byteLength(firstContext, "utf8"),
+      });
+    } finally {
+      database.close();
+    }
   });
 
   it("expires unclaimed records after 24 hours and removes aged audit data after 30 days", () => {
@@ -309,5 +397,424 @@ describe("confirmed Codex compaction checkpoints", () => {
     expect(Buffer.byteLength(firstRender, "utf8")).toBeLessThanOrEqual(checkpointInternals.MAX_ADDITIONAL_CONTEXT_BYTES);
     expect(firstRender).not.toContain("ARTIFACT-SECRET-DO-NOT-PERSIST");
     expect(firstRender).not.toContain("TOOL-SECRET-");
+  });
+
+  it("snapshots a valid active-task RecoveryBrief without changing CheckpointPayload", () => {
+    const fixture = createFixture();
+    const sessionId = "session-recovery-snapshot";
+    const input = hookInput(fixture.projectDir, sessionId, "turn-recovery-snapshot");
+    const taskDir = createActiveTrellisTask(fixture, sessionId);
+    const firstBrief = recoveryBrief({
+      objective: recoveryFact("RECOVERY-BRIEF-OBJECTIVE-A", "critical"),
+      next_action: recoveryFact("RECOVERY-BRIEF-NEXT-A", "critical"),
+    });
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(firstBrief), "utf8");
+
+    const created = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
+    const payload = JSON.parse(created.payload_json) as CheckpointPayload;
+
+    expect(created.recovery_status).toBe("available");
+    expect(created.recovery_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(created.recovery_json).toContain("RECOVERY-BRIEF-OBJECTIVE-A");
+    expect(payload).not.toHaveProperty("recovery_brief");
+    expect(JSON.stringify(payload)).not.toContain("RECOVERY-BRIEF-OBJECTIVE-A");
+    expect(Object.keys(payload).sort()).toEqual([
+      "created_at",
+      "git",
+      "project",
+      "schema_version",
+      "sequence",
+      "session_id",
+      "signals",
+      "trellis",
+      "trigger",
+      "turn_id",
+    ]);
+
+    const secondBrief = recoveryBrief({
+      objective: recoveryFact("RECOVERY-BRIEF-OBJECTIVE-B", "critical"),
+      next_action: recoveryFact("RECOVERY-BRIEF-NEXT-B", "critical"),
+    });
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(secondBrief), "utf8");
+    expect(confirmPendingCheckpoint(input, { configDir: fixture.configDir, now: at(1) })).toBe(true);
+
+    const context = claimConfirmedCheckpointContext(input, { configDir: fixture.configDir, now: at(2) });
+    const projected = parseCheckpointContext(context);
+    expect(context).toContain("RECOVERY-BRIEF-OBJECTIVE-A");
+    expect(context).not.toContain("RECOVERY-BRIEF-OBJECTIVE-B");
+    expect(projected.recovery_brief).toMatchObject({
+      status: "available",
+      snapshot_sha256: created.recovery_sha256,
+      objective: { value: "RECOVERY-BRIEF-OBJECTIVE-A", priority: "critical" },
+      next_action: { value: "RECOVERY-BRIEF-NEXT-A", priority: "critical" },
+    });
+  });
+
+  it("records invalid and untrusted RecoveryBriefs without persisting their bodies", () => {
+    const fixture = createFixture();
+    const invalidInput = hookInput(fixture.projectDir, "session-recovery-invalid", "turn-recovery-invalid");
+    const invalidTaskDir = createActiveTrellisTask(fixture, "session-recovery-invalid", "task-invalid");
+    const malformedText = "MALFORMED-RECOVERY-BRIEF-SECRET";
+    writeFileSync(join(invalidTaskDir, "recovery-brief.json"), malformedText, "utf8");
+
+    const invalid = createPendingCheckpoint(invalidInput, { configDir: fixture.configDir, now: at(0) })!;
+    expect(invalid.recovery_status).toBe("invalid");
+    expect(invalid.recovery_json).toBeNull();
+    expect(invalid.recovery_sha256).toBeNull();
+    expect(invalid.payload_json).not.toContain(malformedText);
+    expect(confirmPendingCheckpoint(invalidInput, { configDir: fixture.configDir, now: at(1) })).toBe(true);
+    expect(claimConfirmedCheckpointContext(invalidInput, { configDir: fixture.configDir, now: at(2) })).not.toContain(malformedText);
+
+    const schemaInput = hookInput(fixture.projectDir, "session-recovery-schema", "turn-recovery-schema");
+    const schemaTaskDir = createActiveTrellisTask(fixture, "session-recovery-schema", "task-schema-invalid");
+    writeFileSync(join(schemaTaskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
+      objective: {
+        ...recoveryFact("SCHEMA-INVALID-RECOVERY-BRIEF-SECRET", "critical"),
+        source_sha256: "invalid",
+      },
+    })), "utf8");
+    const invalidSchema = createPendingCheckpoint(schemaInput, { configDir: fixture.configDir, now: at(3) })!;
+    expect(invalidSchema.recovery_status).toBe("invalid");
+    expect(invalidSchema.recovery_json).toBeNull();
+    expect(invalidSchema.payload_json).not.toContain("SCHEMA-INVALID-RECOVERY-BRIEF-SECRET");
+
+    const outsideRecoveryPath = join(fixture.rootDir, "outside-recovery-brief.json");
+    writeFileSync(outsideRecoveryPath, JSON.stringify(recoveryBrief({
+      objective: recoveryFact("OUTSIDE-RECOVERY-BRIEF-SECRET", "critical"),
+    })), "utf8");
+    const symlinkInput = hookInput(fixture.projectDir, "session-recovery-symlink", "turn-recovery-symlink");
+    const symlinkTaskDir = createActiveTrellisTask(fixture, "session-recovery-symlink", "task-symlink");
+    symlinkSync(outsideRecoveryPath, join(symlinkTaskDir, "recovery-brief.json"));
+
+    const symlinked = createPendingCheckpoint(symlinkInput, { configDir: fixture.configDir, now: at(4) })!;
+    expect(symlinked.recovery_status).toBe("invalid");
+    expect(symlinked.recovery_json).toBeNull();
+    expect(symlinked.payload_json).not.toContain("OUTSIDE-RECOVERY-BRIEF-SECRET");
+  });
+
+  it("rejects a RecoveryBrief task pointer outside .trellis", () => {
+    const fixture = createFixture();
+    const sessionId = "session-recovery-outside";
+    const runtimeDir = join(fixture.projectDir, ".trellis", ".runtime", "sessions");
+    const outsideTaskDir = join(fixture.rootDir, "outside-task");
+    mkdirSync(runtimeDir, { recursive: true });
+    mkdirSync(outsideTaskDir, { recursive: true });
+    writeFileSync(join(outsideTaskDir, "task.json"), "{}", "utf8");
+    writeFileSync(join(outsideTaskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
+      objective: recoveryFact("OUTSIDE-POINTER-SECRET", "critical"),
+    })), "utf8");
+    writeFileSync(join(runtimeDir, `codex_${sessionId}.json`), JSON.stringify({
+      current_task: outsideTaskDir,
+    }), "utf8");
+
+    const row = createPendingCheckpoint(
+      hookInput(fixture.projectDir, sessionId, "turn-recovery-outside"),
+      { configDir: fixture.configDir, now: at(0) },
+    )!;
+    expect(row.recovery_status).toBe("invalid");
+    expect(row.recovery_json).toBeNull();
+    expect(row.payload_json).not.toContain("OUTSIDE-POINTER-SECRET");
+  });
+
+  it("isolates RecoveryBrief snapshots by session-specific active task pointers", () => {
+    const fixture = createFixture();
+    const alphaInput = hookInput(fixture.projectDir, "session-recovery-alpha", "turn-recovery-alpha");
+    const betaInput = hookInput(fixture.projectDir, "session-recovery-beta", "turn-recovery-beta");
+    const alphaTaskDir = createActiveTrellisTask(fixture, "session-recovery-alpha", "task-alpha");
+    const betaTaskDir = createActiveTrellisTask(fixture, "session-recovery-beta", "task-beta");
+    writeFileSync(join(alphaTaskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
+      objective: recoveryFact("ALPHA-SESSION-ONLY", "critical"),
+    })), "utf8");
+    writeFileSync(join(betaTaskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
+      objective: recoveryFact("BETA-SESSION-ONLY", "critical"),
+    })), "utf8");
+
+    for (const [index, input] of [alphaInput, betaInput].entries()) {
+      createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(index) });
+      expect(confirmPendingCheckpoint(input, { configDir: fixture.configDir, now: at(index + 10) })).toBe(true);
+    }
+
+    const alphaContext = claimConfirmedCheckpointContext(alphaInput, {
+      configDir: fixture.configDir,
+      now: at(20),
+    });
+    const betaContext = claimConfirmedCheckpointContext(betaInput, {
+      configDir: fixture.configDir,
+      now: at(21),
+    });
+    expect(alphaContext).toContain("ALPHA-SESSION-ONLY");
+    expect(alphaContext).not.toContain("BETA-SESSION-ONLY");
+    expect(betaContext).toContain("BETA-SESSION-ONLY");
+    expect(betaContext).not.toContain("ALPHA-SESSION-ONLY");
+  });
+
+  it("migrates legacy checkpoint databases and leaves legacy RecoveryBrief context absent", () => {
+    const fixture = createFixture();
+    const identity = resolveCheckpointIdentity(fixture.projectDir, fixture.configDir);
+    const Database = loadDatabase();
+    const database = new Database(identity.dbPath) as unknown as TestDatabase;
+    const legacyPayload: CheckpointPayload = {
+      schema_version: 1,
+      created_at: "2026-07-30T00:00:00.000Z",
+      session_id: "legacy-session",
+      turn_id: "legacy-turn",
+      sequence: 1,
+      trigger: "manual",
+      project: {
+        canonical_root: identity.canonicalProjectRoot,
+        project_sha256: identity.projectHash,
+        worktree_sha256: identity.worktreeHash,
+      },
+      git: {
+        availability: "unavailable",
+        head: null,
+        branch: null,
+        statusDigest: null,
+        changedPaths: [],
+        changedPathCount: 0,
+        omittedChangedPathCount: 0,
+      },
+      signals: [],
+      trellis: {
+        bridgeStatus: "absent",
+        task: "absent",
+        taskId: null,
+        taskStatus: null,
+        taskPhase: null,
+        updatedAt: null,
+        artifacts: [],
+        omittedArtifactCount: 0,
+      },
+    };
+    try {
+      database.exec(`
+        CREATE TABLE compact_checkpoints (
+          checkpoint_id TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL,
+          session_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          sequence INTEGER NOT NULL,
+          trigger TEXT NOT NULL,
+          canonical_project_root TEXT NOT NULL,
+          worktree_identity TEXT NOT NULL,
+          state TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          payload_sha256 TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          confirmed_at TEXT,
+          claimed_at TEXT,
+          expires_at TEXT NOT NULL
+        )
+      `);
+      const serializedPayload = JSON.stringify(legacyPayload);
+      database.prepare(`
+        INSERT INTO compact_checkpoints (
+          checkpoint_id, schema_version, session_id, turn_id, sequence, trigger,
+          canonical_project_root, worktree_identity, state, payload_json, payload_sha256,
+          created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "legacy-checkpoint",
+        1,
+        "legacy-session",
+        "legacy-turn",
+        1,
+        "manual",
+        identity.canonicalProjectRoot,
+        identity.worktreeIdentity,
+        "confirmed",
+        serializedPayload,
+        checkpointInternals.sha256(serializedPayload),
+        legacyPayload.created_at,
+        "2026-07-31T00:00:00.000Z",
+      );
+    } finally {
+      database.close();
+    }
+
+    const migrated = new checkpointInternals.CheckpointDB(identity.dbPath);
+    migrated.close();
+    const migratedDatabase = openDatabase(fixture.configDir, fixture.projectDir);
+    try {
+      const columns = migratedDatabase.prepare("PRAGMA table_info(compact_checkpoints)").all() as Array<{ name: string }>;
+      const row = migratedDatabase.prepare("SELECT * FROM compact_checkpoints WHERE checkpoint_id = ?")
+        .get("legacy-checkpoint") as CheckpointRow;
+      const context = checkpointInternals.fitContextDelivery(legacyPayload, row).additionalContext;
+
+      expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+        "recovery_json",
+        "recovery_sha256",
+        "recovery_status",
+      ]));
+      expect(row.recovery_json).toBeNull();
+      expect(row.recovery_sha256).toBeNull();
+      expect(row.recovery_status).toBeNull();
+      expect(context).not.toContain("recovery_brief");
+    } finally {
+      migratedDatabase.close();
+    }
+  });
+
+  it("prunes whole RecoveryBrief facts by priority and falls back when critical facts cannot fit", () => {
+    const fixture = createFixture();
+    const sessionId = "session-recovery-budget";
+    const input = hookInput(fixture.projectDir, sessionId, "turn-recovery-budget");
+    const taskDir = createActiveTrellisTask(fixture, sessionId, "task-recovery-budget");
+    const optionalValue = `OPTIONAL-${"o".repeat(440)}`;
+    const decisionValue = `DECISION-${"d".repeat(440)}`;
+    const openWorkValue = `OPEN-WORK-${"w".repeat(440)}`;
+    const criticalValue = `CRITICAL-${"c".repeat(160)}`;
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
+      objective: recoveryFact(criticalValue, "critical"),
+      completed_work: [recoveryFact(optionalValue, "optional")],
+      decisions: [recoveryFact(decisionValue, "important")],
+      open_work: [recoveryFact(openWorkValue, "important")],
+    })), "utf8");
+
+    const row = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
+    const payload = JSON.parse(row.payload_json) as CheckpointPayload;
+    const pruned = checkpointInternals.fitContextDelivery(payload, row);
+    expect(pruned.projectionMode).toBe("pruned");
+    expect(pruned.additionalContext).not.toContain(optionalValue);
+    expect(pruned.additionalContext).not.toContain(decisionValue);
+    expect(pruned.additionalContext).not.toContain(openWorkValue);
+    expect(pruned.additionalContext).toContain(criticalValue);
+    expect(pruned.emittedBytes).toBeLessThanOrEqual(checkpointInternals.MAX_ADDITIONAL_CONTEXT_BYTES);
+
+    const oversizedCritical = `CRITICAL-UNFIT-${"x".repeat(490)}`;
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
+      objective: recoveryFact(oversizedCritical, "critical"),
+      hard_constraints: [recoveryFact(oversizedCritical, "critical")],
+      latest_blocker: recoveryFact(oversizedCritical, "critical"),
+      next_action: recoveryFact(oversizedCritical, "critical"),
+      decisions: [],
+      completed_work: [],
+      open_work: [],
+      project_state: null,
+    })), "utf8");
+    const oversizedInput = hookInput(fixture.projectDir, sessionId, "turn-recovery-budget-critical");
+    const oversizedRow = createPendingCheckpoint(oversizedInput, { configDir: fixture.configDir, now: at(1) })!;
+    const oversizedPayload = JSON.parse(oversizedRow.payload_json) as CheckpointPayload;
+    const idOnly = checkpointInternals.fitContextDelivery(oversizedPayload, oversizedRow);
+
+    expect(idOnly.projectionMode).toBe("id_only");
+    expect(idOnly.additionalContext).not.toContain(oversizedCritical.slice(0, 64));
+    expect(idOnly.additionalContext).toContain('"status":"not_applicable"');
+    expect(idOnly.emittedBytes).toBeLessThanOrEqual(checkpointInternals.MAX_ADDITIONAL_CONTEXT_BYTES);
+  });
+
+  it("records full, pruned, and identifier-only delivery projections", () => {
+    const fixture = createFixture();
+    const input = hookInput(fixture.projectDir, "session-projection", "turn-projection");
+    const row = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
+    const payload = JSON.parse(row.payload_json) as CheckpointPayload;
+
+    const full = checkpointInternals.fitContextDelivery(payload, row);
+    const pruned = checkpointInternals.fitContextDelivery({
+      ...payload,
+      signals: Array.from({ length: 8 }, () => ({
+        kind: "tool_completed" as const,
+        tool_kind: "Bash",
+        outcome: "success" as const,
+        digest: "d".repeat(240),
+      })),
+    }, row);
+    const idOnly = checkpointInternals.fitContextDelivery({
+      ...payload,
+      git: {
+        ...payload.git,
+        head: "h".repeat(checkpointInternals.MAX_ADDITIONAL_CONTEXT_BYTES * 2),
+      },
+    }, row);
+
+    expect(full.projectionMode).toBe("full");
+    expect(pruned.projectionMode).toBe("pruned");
+    expect(idOnly.projectionMode).toBe("id_only");
+    for (const delivery of [full, pruned, idOnly]) {
+      expect(delivery.emittedBytes).toBe(Buffer.byteLength(delivery.additionalContext, "utf8"));
+      expect(delivery.emittedBytes).toBeLessThanOrEqual(checkpointInternals.MAX_ADDITIONAL_CONTEXT_BYTES);
+    }
+  });
+
+  it("summarizes delivery reliability without reading raw checkpoint evidence", () => {
+    const fixture = createFixture();
+    const claimedInput = hookInput(fixture.projectDir, "session-report", "turn-claimed", "manual");
+    const confirmedInput = hookInput(fixture.projectDir, "session-report", "turn-confirmed", "auto");
+    const pendingInput = hookInput(fixture.projectDir, "session-report", "turn-pending", "manual");
+    const rawPrompt = "REPORT-PROMPT-SECRET";
+    const rawCommand = "REPORT-COMMAND-SECRET";
+
+    recordPromptCheckpointSignal({ ...claimedInput, prompt: rawPrompt } as CheckpointHookInput, {
+      configDir: fixture.configDir,
+      now: at(0),
+    });
+    recordToolCheckpointSignal({
+      ...claimedInput,
+      tool_name: "Bash",
+      tool_input: { command: rawCommand },
+      tool_output: { is_error: true },
+    }, {
+      configDir: fixture.configDir,
+      now: at(1),
+    });
+    createPendingCheckpoint(claimedInput, { configDir: fixture.configDir, now: at(10) });
+    confirmPendingCheckpoint(claimedInput, { configDir: fixture.configDir, now: at(20) });
+    claimConfirmedCheckpointContext(claimedInput, { configDir: fixture.configDir, now: at(50) });
+
+    createPendingCheckpoint(confirmedInput, { configDir: fixture.configDir, now: at(100) });
+    confirmPendingCheckpoint(confirmedInput, { configDir: fixture.configDir, now: at(200) });
+    createPendingCheckpoint(pendingInput, { configDir: fixture.configDir, now: at(300) });
+
+    const report = getCheckpointReliabilityReport(fixture.projectDir, fixture.configDir, {
+      now: at(checkpointInternals.CHECKPOINT_TTL_MS + 1_000),
+    });
+
+    expect(report.available).toBe(true);
+    expect(report.total).toMatchObject({
+      checkpointCount: 3,
+      stateCounts: { pending: 1, confirmed: 1, claimed: 1 },
+      confirmationRate: 2 / 3,
+      claimRate: 1 / 2,
+    });
+    expect(report.byTrigger.manual).toMatchObject({ checkpointCount: 2, claimRate: 1 });
+    expect(report.byTrigger.auto).toMatchObject({ checkpointCount: 1, claimRate: 0 });
+    expect(report.latencyMs.createdToConfirmed).toEqual({ sampleCount: 2, p50Ms: 10, p95Ms: 100 });
+    expect(report.latencyMs.confirmedToClaimed).toEqual({ sampleCount: 1, p50Ms: 30, p95Ms: 30 });
+    expect(report.delivery).toMatchObject({ full: 1, pruned: 0, idOnly: 0, unknown: 0 });
+    expect(report.overduePendingCount).toBe(1);
+    expect(report.warnings).toContain("Pending checkpoints exceeded their TTL and await lifecycle cleanup.");
+    expect(JSON.stringify(report)).not.toContain(rawPrompt);
+    expect(JSON.stringify(report)).not.toContain(rawCommand);
+  });
+
+  it("keeps reports read-only and handles checkpoint databases without delivery telemetry", () => {
+    const fixture = createFixture();
+    const noDatabaseReport = getCheckpointReliabilityReport(fixture.projectDir, fixture.configDir, {
+      now: at(0),
+    });
+    expect(noDatabaseReport.available).toBe(false);
+    expect(noDatabaseReport.warnings).toContain("No checkpoint database exists for this project worktree.");
+    expect(existsSync(join(fixture.configDir, "context-mode", "checkpoints"))).toBe(false);
+
+    const input = hookInput(fixture.projectDir, "session-legacy", "turn-legacy");
+    createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) });
+    confirmPendingCheckpoint(input, { configDir: fixture.configDir, now: at(1) });
+    claimConfirmedCheckpointContext(input, { configDir: fixture.configDir, now: at(2) });
+
+    const database = openDatabase(fixture.configDir, fixture.projectDir);
+    try {
+      database.exec("DROP TABLE checkpoint_delivery_metrics");
+    } finally {
+      database.close();
+    }
+
+    const legacyReport = getCheckpointReliabilityReport(fixture.projectDir, fixture.configDir, {
+      now: at(3),
+    });
+    expect(legacyReport.available).toBe(true);
+    expect(legacyReport.delivery).toMatchObject({ unknown: 1, emittedBytesAverage: null });
+    expect(legacyReport.warnings).toContain(
+      "Delivery telemetry is unavailable until a post-upgrade checkpoint is claimed.",
+    );
   });
 });

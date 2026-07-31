@@ -90,6 +90,7 @@ describe("ContextModePlugin", () => {
       expect(plugin).toHaveProperty("tool");
       expect(Object.keys(plugin.tool ?? {}).sort()).toEqual([
         "ctx_batch_execute",
+        "ctx_checkpoint_report",
         "ctx_doctor",
         "ctx_execute",
         "ctx_execute_file",

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "observable-checkpoint-facts-v1",
+  "fields": [
+    "checkpoint_id",
+    "payload_sha256",
+    "trigger",
+    "project",
+    "git",
+    "trellis"
+  ],
+  "not_observable": [
+    "goal",
+    "decision",
+    "constraint",
+    "blocker",
+    "next_action"
+  ]
+}

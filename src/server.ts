@@ -64,6 +64,7 @@ import { FloodGuard } from "./search/flood-guard.js";
 import { buildNodeCommand, type HookAdapter, type PlatformId, isInProcessPluginPlatform } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { parseCodexContextModePluginRoot } from "./adapters/codex/index.js";
+import { getCheckpointReliabilityReport } from "./checkpoint/runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { stripJsonComments } from "./util/jsonc.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
@@ -3848,6 +3849,48 @@ server.registerTool(
 
     return trackResponse("ctx_stats", {
       content: [{ type: "text" as const, text }],
+    });
+  },
+);
+
+// ── ctx-checkpoint-report: confirmed compaction reliability ──────────────
+
+server.registerTool(
+  "ctx_checkpoint_report",
+  {
+    title: "Checkpoint Reliability Report",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    description: `Checkpoint lifecycle reliability for the local project worktree.
+
+WHEN:
+- You need local confirmation, claim, latency, or projection-mode metrics for confirmed Codex compaction checkpoints.
+
+WHEN NOT:
+- You need checkpoint payload content, semantic recovery scoring, or a cross-project report.
+
+RETURNS:
+- Local JSON aggregates for one to thirty days. It never returns checkpoint payloads, prompts, tool input, tool output, or Trellis artifact contents.
+
+EXAMPLE:
+ctx_checkpoint_report({ "window_days": 7 })`,
+    inputSchema: z.object({
+      window_days: z.number().int().min(1).max(30).optional(),
+    }),
+  },
+  async ({ window_days }) => {
+    const projectDir = getProjectDir();
+    const configDir = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+    const report = getCheckpointReliabilityReport(projectDir, configDir, {
+      windowDays: window_days,
+    });
+
+    return trackResponse("ctx_checkpoint_report", {
+      content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }],
     });
   },
 );

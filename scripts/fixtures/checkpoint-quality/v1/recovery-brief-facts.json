@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "recovery-brief-facts-v1",
+  "fields": [
+    "checkpoint_id",
+    "payload_sha256",
+    "trigger",
+    "recovery_brief"
+  ],
+  "not_observable": [
+    "goal",
+    "decision",
+    "constraint",
+    "blocker",
+    "next_action"
+  ]
+}

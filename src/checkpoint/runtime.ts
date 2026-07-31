@@ -1,19 +1,28 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
-import { SQLiteBase, type PreparedStatement } from "../db-base.js";
+import { loadDatabase, SQLiteBase, type PreparedStatement } from "../db-base.js";
 import type {
   ChangedPath,
+  CheckpointDeliverySummary,
   CheckpointHookInput,
   CheckpointIdentity,
+  CheckpointLatencySummary,
   CheckpointPayload,
+  CheckpointProjectionMode,
+  CheckpointReliabilityReport,
   CheckpointRow,
   CheckpointSignal,
   CheckpointState,
+  CheckpointStateCounts,
+  CheckpointTriggerReliability,
   CompactionTrigger,
   GitEvidence,
+  RecoveryBrief,
+  RecoveryBriefFact,
+  RecoveryBriefStatus,
   TrellisArtifact,
   TrellisEvidence,
 } from "./types.js";
@@ -25,8 +34,24 @@ const MAX_CHANGED_PATHS = 12;
 const MAX_TRELLIS_ARTIFACTS = 4;
 const MAX_SIGNALS = 8;
 const MAX_ADDITIONAL_CONTEXT_BYTES = 1_200;
+const MAX_RECOVERY_BRIEF_BYTES = 12_000;
+const MAX_RECOVERY_FACT_VALUE_BYTES = 512;
+const MAX_RECOVERY_FACTS_PER_LIST = 16;
 const GIT_TIMEOUT_MS = 1_000;
 const ARTIFACT_NAMES = new Set(["prd.md", "design.md", "implement.md", "check.md"]);
+const RECOVERY_BRIEF_SOURCE_KINDS = new Set(["trellis_task", "explicit_project_state", "git"]);
+const RECOVERY_BRIEF_TOP_LEVEL_KEYS = new Set([
+  "schema_version",
+  "updated_at",
+  "objective",
+  "hard_constraints",
+  "decisions",
+  "completed_work",
+  "open_work",
+  "latest_blocker",
+  "next_action",
+  "project_state",
+]);
 const CHECKPOINT_STATES = new Set<CheckpointState>([
   "pending",
   "confirmed",
@@ -45,11 +70,47 @@ interface CheckpointStatements {
   confirm: PreparedStatement;
   insertTransition: PreparedStatement;
   claim: PreparedStatement;
+  insertDeliveryMetric: PreparedStatement;
 }
 
 interface CheckpointRuntimeOptions {
   configDir: string;
   now?: Date;
+}
+
+interface CheckpointReliabilityOptions {
+  now?: Date;
+  windowDays?: number;
+}
+
+interface RecoveryBriefSnapshot {
+  status: RecoveryBriefStatus;
+  recoveryJson: string | null;
+  recoverySha256: string | null;
+}
+
+interface RecoveryBriefContextFact {
+  value: string | "unknown";
+  priority: RecoveryBriefFact["priority"];
+}
+
+interface RecoveryBriefContextProjection {
+  status: "available";
+  schema_version: 1;
+  snapshot_sha256: string;
+  objective: RecoveryBriefContextFact;
+  hard_constraints: RecoveryBriefContextFact[];
+  decisions: RecoveryBriefContextFact[];
+  completed_work: RecoveryBriefContextFact[];
+  open_work: RecoveryBriefContextFact[];
+  latest_blocker: RecoveryBriefContextFact | null;
+  next_action: RecoveryBriefContextFact | null;
+  project_state: RecoveryBriefContextFact | null;
+}
+
+interface ReadonlyCheckpointDatabase {
+  prepare(sql: string): PreparedStatement;
+  close(): void;
 }
 
 function sha256(value: string | Buffer): string {
@@ -135,7 +196,11 @@ function parseGitStatus(rawStatus: string | null): ChangedPath[] {
   return changedPaths;
 }
 
-export function resolveCheckpointIdentity(projectDir: string, configDir: string): CheckpointIdentity {
+export function resolveCheckpointIdentity(
+  projectDir: string,
+  configDir: string,
+  options: { createDirectory?: boolean } = {},
+): CheckpointIdentity {
   const inputProjectRoot = safeRealpath(projectDir);
   const gitProjectRoot = gitOutput(inputProjectRoot, ["rev-parse", "--show-toplevel"]);
   const canonicalProjectRoot = gitProjectRoot ? safeRealpath(gitProjectRoot) : inputProjectRoot;
@@ -153,7 +218,9 @@ export function resolveCheckpointIdentity(projectDir: string, configDir: string)
   const projectHash = sha256(canonicalProjectRoot);
   const worktreeHash = sha256(worktreeIdentity);
   const checkpointDir = join(resolve(configDir), "context-mode", "checkpoints");
-  mkdirSync(checkpointDir, { recursive: true });
+  if (options.createDirectory !== false) {
+    mkdirSync(checkpointDir, { recursive: true });
+  }
 
   return {
     canonicalProjectRoot,
@@ -310,6 +377,181 @@ export function readTrellisEvidence(projectRoot: string, sessionId: string): Tre
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expectedKeys: Set<string>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expectedKeys.size && keys.every((key) => expectedKeys.has(key));
+}
+
+function isValidIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string"
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
+    return false;
+  }
+  const parsedAt = Date.parse(value);
+  if (!Number.isFinite(parsedAt)) return false;
+  const canonical = new Date(parsedAt).toISOString();
+  return value === canonical || value === canonical.replace(".000Z", "Z");
+}
+
+function isValidRecoveryFactValue(value: unknown): value is string {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && Buffer.byteLength(value, "utf8") <= MAX_RECOVERY_FACT_VALUE_BYTES
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function parseRecoveryBriefFact(
+  value: unknown,
+  expectedPriority: RecoveryBriefFact["priority"],
+): RecoveryBriefFact | null {
+  if (!isRecord(value) || !hasExactKeys(value, new Set([
+    "value",
+    "priority",
+    "source_kind",
+    "source_sha256",
+    "valid_at",
+  ]))) {
+    return null;
+  }
+  if (!isValidRecoveryFactValue(value.value)
+    || value.priority !== expectedPriority
+    || typeof value.source_kind !== "string"
+    || !RECOVERY_BRIEF_SOURCE_KINDS.has(value.source_kind)
+    || typeof value.source_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(value.source_sha256)
+    || !isValidIsoTimestamp(value.valid_at)) {
+    return null;
+  }
+  return {
+    value: value.value,
+    priority: expectedPriority,
+    source_kind: value.source_kind as RecoveryBriefFact["source_kind"],
+    source_sha256: value.source_sha256,
+    valid_at: value.valid_at,
+  };
+}
+
+function parseRecoveryBriefFactList(
+  value: unknown,
+  expectedPriority: RecoveryBriefFact["priority"],
+): RecoveryBriefFact[] | null {
+  if (!Array.isArray(value) || value.length > MAX_RECOVERY_FACTS_PER_LIST) return null;
+  const facts = value.map((item) => parseRecoveryBriefFact(item, expectedPriority));
+  return facts.every((fact): fact is RecoveryBriefFact => fact !== null) ? facts : null;
+}
+
+function parseNullableRecoveryBriefFact(
+  value: unknown,
+  expectedPriority: RecoveryBriefFact["priority"],
+): RecoveryBriefFact | null | undefined {
+  if (value === null) return null;
+  return parseRecoveryBriefFact(value, expectedPriority) ?? undefined;
+}
+
+function parseRecoveryBrief(value: unknown): RecoveryBrief | null {
+  if (!isRecord(value)
+    || !hasExactKeys(value, RECOVERY_BRIEF_TOP_LEVEL_KEYS)
+    || value.schema_version !== 1
+    || !isValidIsoTimestamp(value.updated_at)) {
+    return null;
+  }
+
+  const objective = parseRecoveryBriefFact(value.objective, "critical");
+  const hardConstraints = parseRecoveryBriefFactList(value.hard_constraints, "critical");
+  const decisions = parseRecoveryBriefFactList(value.decisions, "important");
+  const completedWork = parseRecoveryBriefFactList(value.completed_work, "optional");
+  const openWork = parseRecoveryBriefFactList(value.open_work, "important");
+  const latestBlocker = parseNullableRecoveryBriefFact(value.latest_blocker, "critical");
+  const nextAction = parseNullableRecoveryBriefFact(value.next_action, "critical");
+  const projectState = parseNullableRecoveryBriefFact(value.project_state, "important");
+  if (!objective || !hardConstraints || !decisions || !completedWork || !openWork
+    || latestBlocker === undefined || nextAction === undefined || projectState === undefined) {
+    return null;
+  }
+
+  return {
+    schema_version: 1,
+    updated_at: value.updated_at,
+    objective,
+    hard_constraints: hardConstraints,
+    decisions,
+    completed_work: completedWork,
+    open_work: openWork,
+    latest_blocker: latestBlocker,
+    next_action: nextAction,
+    project_state: projectState,
+  };
+}
+
+function trustedRegularFile(trellisRoot: string, path: string): string | null {
+  try {
+    const directoryEntry = lstatSync(path);
+    if (!directoryEntry.isFile() || directoryEntry.isSymbolicLink()) return null;
+    const resolvedPath = safeRealpath(path);
+    if (!isPathInside(trellisRoot, resolvedPath)) return null;
+    return statSync(resolvedPath).isFile() ? resolvedPath : null;
+  } catch {
+    return null;
+  }
+}
+
+function readRecoveryBriefSnapshot(projectRoot: string, sessionId: string): RecoveryBriefSnapshot {
+  const absent = (): RecoveryBriefSnapshot => ({
+    status: "absent",
+    recoveryJson: null,
+    recoverySha256: null,
+  });
+  const invalid = (): RecoveryBriefSnapshot => ({
+    status: "invalid",
+    recoveryJson: null,
+    recoverySha256: null,
+  });
+
+  const trellisRoot = join(projectRoot, ".trellis");
+  try {
+    const trellisEntry = lstatSync(trellisRoot);
+    if (!trellisEntry.isDirectory() || trellisEntry.isSymbolicLink()) return absent();
+  } catch {
+    return absent();
+  }
+
+  const runtimePath = join(trellisRoot, ".runtime", "sessions", `${trellisContextKey(sessionId)}.json`);
+  try {
+    if (!existsSync(runtimePath)) return absent();
+    const resolvedRuntimePath = trustedRegularFile(trellisRoot, runtimePath);
+    if (!resolvedRuntimePath) return invalid();
+    const runtime = JSON.parse(readFileSync(resolvedRuntimePath, "utf8")) as Record<string, unknown>;
+    const pointer = getPointerValue(runtime);
+    const taskPath = pointer ? safeTaskPath(projectRoot, trellisRoot, pointer) : null;
+    if (!taskPath) return invalid();
+
+    const taskJsonPath = basename(taskPath) === "task.json" ? taskPath : join(taskPath, "task.json");
+    const resolvedTaskJsonPath = trustedRegularFile(trellisRoot, taskJsonPath);
+    if (!resolvedTaskJsonPath) return invalid();
+
+    const recoveryPath = join(resolve(resolvedTaskJsonPath, ".."), "recovery-brief.json");
+    if (!existsSync(recoveryPath)) return absent();
+    const resolvedRecoveryPath = trustedRegularFile(trellisRoot, recoveryPath);
+    if (!resolvedRecoveryPath) return invalid();
+    if (statSync(resolvedRecoveryPath).size > MAX_RECOVERY_BRIEF_BYTES) return invalid();
+
+    const recoveryBrief = parseRecoveryBrief(JSON.parse(readFileSync(resolvedRecoveryPath, "utf8")));
+    if (!recoveryBrief) return invalid();
+    const recoveryJson = JSON.stringify(recoveryBrief);
+    return {
+      status: "available",
+      recoveryJson,
+      recoverySha256: sha256(recoveryJson),
+    };
+  } catch {
+    return invalid();
+  }
+}
+
 class CheckpointDB extends SQLiteBase {
   private declare statements: CheckpointStatements;
 
@@ -327,6 +569,9 @@ class CheckpointDB extends SQLiteBase {
         state TEXT NOT NULL CHECK (state IN ('pending', 'confirmed', 'claimed', 'expired', 'invalid')),
         payload_json TEXT NOT NULL,
         payload_sha256 TEXT NOT NULL,
+        recovery_json TEXT,
+        recovery_sha256 TEXT,
+        recovery_status TEXT CHECK (recovery_status IS NULL OR recovery_status IN ('absent', 'invalid', 'available')),
         created_at TEXT NOT NULL,
         confirmed_at TEXT,
         claimed_at TEXT,
@@ -365,7 +610,38 @@ class CheckpointDB extends SQLiteBase {
 
       CREATE INDEX IF NOT EXISTS idx_checkpoint_transitions_checkpoint
         ON checkpoint_transitions (checkpoint_id, transition_id);
+
+      CREATE TABLE IF NOT EXISTS checkpoint_delivery_metrics (
+        checkpoint_id TEXT PRIMARY KEY,
+        projection_mode TEXT NOT NULL CHECK (projection_mode IN ('full', 'pruned', 'id_only')),
+        emitted_bytes INTEGER NOT NULL,
+        emitted_at TEXT NOT NULL
+      );
     `);
+    this.ensureRecoveryBriefColumns();
+  }
+
+  private ensureRecoveryBriefColumns(): void {
+    const currentColumns = new Set((this.db.prepare("PRAGMA table_info(compact_checkpoints)").all() as Array<{
+      name: string;
+    }>).map((column) => column.name));
+    const migrations = [
+      ["recovery_json", "TEXT"],
+      ["recovery_sha256", "TEXT"],
+      ["recovery_status", "TEXT CHECK (recovery_status IS NULL OR recovery_status IN ('absent', 'invalid', 'available'))"],
+    ] as const;
+
+    for (const [columnName, definition] of migrations) {
+      if (currentColumns.has(columnName)) continue;
+      try {
+        this.db.exec(`ALTER TABLE compact_checkpoints ADD COLUMN ${columnName} ${definition}`);
+      } catch (error) {
+        const columnsAfterFailure = new Set((this.db.prepare("PRAGMA table_info(compact_checkpoints)").all() as Array<{
+          name: string;
+        }>).map((column) => column.name));
+        if (!columnsAfterFailure.has(columnName)) throw error;
+      }
+    }
   }
 
   protected prepareStatements(): void {
@@ -380,8 +656,8 @@ class CheckpointDB extends SQLiteBase {
         INSERT INTO compact_checkpoints (
           checkpoint_id, schema_version, session_id, turn_id, sequence, trigger,
           canonical_project_root, worktree_identity, state, payload_json, payload_sha256,
-          created_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+          recovery_json, recovery_sha256, recovery_status, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
       `),
       insertSignal: prepare(`
         INSERT INTO checkpoint_signals (
@@ -424,6 +700,15 @@ class CheckpointDB extends SQLiteBase {
         ) AND state = 'confirmed'
         RETURNING *
       `),
+      insertDeliveryMetric: prepare(`
+        INSERT INTO checkpoint_delivery_metrics (
+          checkpoint_id, projection_mode, emitted_bytes, emitted_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(checkpoint_id) DO UPDATE SET
+          projection_mode = excluded.projection_mode,
+          emitted_bytes = excluded.emitted_bytes,
+          emitted_at = excluded.emitted_at
+      `),
     };
   }
 
@@ -445,6 +730,9 @@ class CheckpointDB extends SQLiteBase {
         `).run(timestamp);
         this.db.prepare(`DELETE FROM checkpoint_signals WHERE created_at < ?`).run(retentionCutoff);
         this.db.prepare(`DELETE FROM checkpoint_transitions WHERE checkpoint_id IN (
+          SELECT checkpoint_id FROM compact_checkpoints WHERE created_at < ?
+        )`).run(retentionCutoff);
+        this.db.prepare(`DELETE FROM checkpoint_delivery_metrics WHERE checkpoint_id IN (
           SELECT checkpoint_id FROM compact_checkpoints WHERE created_at < ?
         )`).run(retentionCutoff);
         this.db.prepare(`DELETE FROM compact_checkpoints WHERE created_at < ?`).run(retentionCutoff);
@@ -503,6 +791,7 @@ class CheckpointDB extends SQLiteBase {
     turnId: string,
     trigger: CompactionTrigger,
     payload: CheckpointPayload,
+    recoveryBrief: RecoveryBriefSnapshot,
     createdAt: string,
     expiresAt: string,
   ): CheckpointRow {
@@ -530,6 +819,9 @@ class CheckpointDB extends SQLiteBase {
           identity.worktreeIdentity,
           serializedPayload,
           sha256(serializedPayload),
+          recoveryBrief.recoveryJson,
+          recoveryBrief.recoverySha256,
+          recoveryBrief.status,
           createdAt,
           expiresAt,
         );
@@ -602,11 +894,246 @@ class CheckpointDB extends SQLiteBase {
       identity.worktreeIdentity,
     ) as CheckpointRow | undefined ?? null;
   }
+
+  recordDeliveryMetric(
+    checkpointId: string,
+    projectionMode: CheckpointProjectionMode,
+    emittedBytes: number,
+    emittedAt: string,
+  ): void {
+    this.withRetry(() => {
+      this.statements.insertDeliveryMetric.run(
+        checkpointId,
+        projectionMode,
+        emittedBytes,
+        emittedAt,
+      );
+    });
+  }
 }
 
 function getIdentity(input: CheckpointHookInput, configDir: string): CheckpointIdentity | null {
   const cwd = stringField(input.cwd);
   return cwd ? resolveCheckpointIdentity(cwd, configDir) : null;
+}
+
+interface CheckpointReliabilityRow {
+  trigger: CompactionTrigger;
+  state: CheckpointState;
+  created_at: string;
+  confirmed_at: string | null;
+  claimed_at: string | null;
+  expires_at: string;
+  projection_mode: CheckpointProjectionMode | null;
+  emitted_bytes: number | null;
+}
+
+function emptyStateCounts(): CheckpointStateCounts {
+  return {
+    pending: 0,
+    confirmed: 0,
+    claimed: 0,
+    expired: 0,
+    invalid: 0,
+  };
+}
+
+function percentile(values: number[], percentileValue: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(sorted.length * percentileValue) - 1),
+  );
+  return sorted[index] ?? null;
+}
+
+function summarizeLatency(values: number[]): CheckpointLatencySummary {
+  return {
+    sampleCount: values.length,
+    p50Ms: percentile(values, 0.5),
+    p95Ms: percentile(values, 0.95),
+  };
+}
+
+function summarizeTrigger(rows: CheckpointReliabilityRow[]): CheckpointTriggerReliability {
+  const stateCounts = emptyStateCounts();
+  let confirmedCount = 0;
+  let claimedCount = 0;
+
+  for (const row of rows) {
+    stateCounts[row.state] += 1;
+    if (row.confirmed_at !== null) confirmedCount += 1;
+    if (row.claimed_at !== null) claimedCount += 1;
+  }
+
+  return {
+    checkpointCount: rows.length,
+    stateCounts,
+    confirmationRate: rows.length > 0 ? confirmedCount / rows.length : null,
+    claimRate: confirmedCount > 0 ? claimedCount / confirmedCount : null,
+  };
+}
+
+function summarizeDelivery(rows: CheckpointReliabilityRow[]): CheckpointDeliverySummary {
+  const delivery: CheckpointDeliverySummary = {
+    full: 0,
+    pruned: 0,
+    idOnly: 0,
+    unknown: 0,
+    emittedBytesTotal: 0,
+    emittedBytesAverage: null,
+  };
+  let measuredDeliveryCount = 0;
+
+  for (const row of rows) {
+    if (row.claimed_at === null) continue;
+    if (row.projection_mode === "full") {
+      delivery.full += 1;
+    } else if (row.projection_mode === "pruned") {
+      delivery.pruned += 1;
+    } else if (row.projection_mode === "id_only") {
+      delivery.idOnly += 1;
+    } else {
+      delivery.unknown += 1;
+      continue;
+    }
+
+    measuredDeliveryCount += 1;
+    delivery.emittedBytesTotal += row.emitted_bytes ?? 0;
+  }
+
+  delivery.emittedBytesAverage = measuredDeliveryCount > 0
+    ? Math.round(delivery.emittedBytesTotal / measuredDeliveryCount)
+    : null;
+  return delivery;
+}
+
+function elapsedMilliseconds(start: string, end: string | null): number | null {
+  if (end === null) return null;
+  const elapsed = Date.parse(end) - Date.parse(start);
+  return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed : null;
+}
+
+function emptyReliabilityReport(
+  identity: CheckpointIdentity,
+  startAt: string,
+  endAt: string,
+): CheckpointReliabilityReport {
+  return {
+    available: false,
+    project: {
+      canonicalRoot: identity.canonicalProjectRoot,
+      projectSha256: identity.projectHash,
+      worktreeSha256: identity.worktreeHash,
+    },
+    window: { startAt, endAt },
+    total: summarizeTrigger([]),
+    byTrigger: {
+      manual: summarizeTrigger([]),
+      auto: summarizeTrigger([]),
+    },
+    latencyMs: {
+      createdToConfirmed: summarizeLatency([]),
+      confirmedToClaimed: summarizeLatency([]),
+    },
+    delivery: summarizeDelivery([]),
+    overduePendingCount: 0,
+    warnings: [],
+  };
+}
+
+export function getCheckpointReliabilityReport(
+  projectDir: string,
+  configDir: string,
+  options: CheckpointReliabilityOptions = {},
+): CheckpointReliabilityReport {
+  const now = options.now ?? new Date();
+  const requestedWindowDays = options.windowDays ?? 30;
+  const windowDays = Number.isInteger(requestedWindowDays)
+    ? Math.min(30, Math.max(1, requestedWindowDays))
+    : 30;
+  const endAt = nowIso(now);
+  const startAt = addMilliseconds(now, -windowDays * 24 * 60 * 60 * 1_000);
+  const identity = resolveCheckpointIdentity(projectDir, configDir, { createDirectory: false });
+  const report = emptyReliabilityReport(identity, startAt, endAt);
+
+  if (!existsSync(identity.dbPath)) {
+    report.warnings.push("No checkpoint database exists for this project worktree.");
+    return report;
+  }
+
+  let database: ReadonlyCheckpointDatabase | undefined;
+  try {
+    const Database = loadDatabase();
+    database = new Database(identity.dbPath, { readonly: true }) as unknown as ReadonlyCheckpointDatabase;
+    const deliveryMetricsAvailable = Boolean(database.prepare(`
+      SELECT 1 FROM sqlite_master
+      WHERE type = 'table' AND name = 'checkpoint_delivery_metrics'
+      LIMIT 1
+    `).get());
+    const rows = database.prepare(`
+      SELECT
+        checkpoint.trigger,
+        checkpoint.state,
+        checkpoint.created_at,
+        checkpoint.confirmed_at,
+        checkpoint.claimed_at,
+        checkpoint.expires_at,
+        ${deliveryMetricsAvailable ? "delivery.projection_mode" : "NULL"} AS projection_mode,
+        ${deliveryMetricsAvailable ? "delivery.emitted_bytes" : "NULL"} AS emitted_bytes
+      FROM compact_checkpoints AS checkpoint
+      ${deliveryMetricsAvailable
+        ? "LEFT JOIN checkpoint_delivery_metrics AS delivery ON delivery.checkpoint_id = checkpoint.checkpoint_id"
+        : ""}
+      WHERE checkpoint.canonical_project_root = ?
+        AND checkpoint.worktree_identity = ?
+        AND checkpoint.created_at >= ?
+        AND checkpoint.created_at <= ?
+      ORDER BY checkpoint.created_at ASC
+    `).all(
+      identity.canonicalProjectRoot,
+      identity.worktreeIdentity,
+      startAt,
+      endAt,
+    ) as CheckpointReliabilityRow[];
+
+    report.available = true;
+    report.total = summarizeTrigger(rows);
+    report.byTrigger = {
+      manual: summarizeTrigger(rows.filter((row) => row.trigger === "manual")),
+      auto: summarizeTrigger(rows.filter((row) => row.trigger === "auto")),
+    };
+    report.latencyMs = {
+      createdToConfirmed: summarizeLatency(
+        rows.map((row) => elapsedMilliseconds(row.created_at, row.confirmed_at))
+          .filter((value): value is number => value !== null),
+      ),
+      confirmedToClaimed: summarizeLatency(
+        rows
+          .filter((row) => row.confirmed_at !== null)
+          .map((row) => elapsedMilliseconds(row.confirmed_at!, row.claimed_at))
+          .filter((value): value is number => value !== null),
+      ),
+    };
+    report.delivery = summarizeDelivery(rows);
+    report.overduePendingCount = rows.filter((row) =>
+      row.state === "pending" && Date.parse(row.expires_at) <= now.getTime(),
+    ).length;
+
+    if (!deliveryMetricsAvailable) {
+      report.warnings.push("Delivery telemetry is unavailable until a post-upgrade checkpoint is claimed.");
+    }
+    if (report.overduePendingCount > 0) {
+      report.warnings.push("Pending checkpoints exceeded their TTL and await lifecycle cleanup.");
+    }
+    return report;
+  } catch {
+    report.warnings.push("Checkpoint reliability data could not be read safely.");
+    return report;
+  } finally {
+    database?.close();
+  }
 }
 
 function toolOutcome(input: CheckpointHookInput): CheckpointSignal["outcome"] {
@@ -728,7 +1255,17 @@ export function createPendingCheckpoint(input: CheckpointHookInput, options: Che
     const sequence = db.nextCheckpointSequence(sessionId);
     const createdAt = nowIso(now);
     const payload = buildPayload(identity, sessionId, turnId, trigger, sequence, db.recentSignals(sessionId), createdAt);
-    return db.createPending(identity, sessionId, turnId, trigger, payload, createdAt, addMilliseconds(now, CHECKPOINT_TTL_MS));
+    const recoveryBrief = readRecoveryBriefSnapshot(identity.canonicalProjectRoot, sessionId);
+    return db.createPending(
+      identity,
+      sessionId,
+      turnId,
+      trigger,
+      payload,
+      recoveryBrief,
+      createdAt,
+      addMilliseconds(now, CHECKPOINT_TTL_MS),
+    );
   } finally {
     db.close();
   }
@@ -751,6 +1288,44 @@ export function confirmPendingCheckpoint(input: CheckpointHookInput, options: Ch
   }
 }
 
+function recoveryBriefContextFact(fact: RecoveryBriefFact): RecoveryBriefContextFact {
+  return {
+    value: fact.value,
+    priority: fact.priority,
+  };
+}
+
+function storedRecoveryBriefProjection(row: CheckpointRow): RecoveryBriefContextProjection | null {
+  if (row.recovery_status !== "available" || !row.recovery_json || !row.recovery_sha256) return null;
+  if (sha256(row.recovery_json) !== row.recovery_sha256) return null;
+
+  try {
+    const recoveryBrief = parseRecoveryBrief(JSON.parse(row.recovery_json));
+    if (!recoveryBrief) return null;
+    return {
+      status: "available",
+      schema_version: 1,
+      snapshot_sha256: row.recovery_sha256,
+      objective: recoveryBriefContextFact(recoveryBrief.objective),
+      hard_constraints: recoveryBrief.hard_constraints.map(recoveryBriefContextFact),
+      decisions: recoveryBrief.decisions.map(recoveryBriefContextFact),
+      completed_work: recoveryBrief.completed_work.map(recoveryBriefContextFact),
+      open_work: recoveryBrief.open_work.map(recoveryBriefContextFact),
+      latest_blocker: recoveryBrief.latest_blocker
+        ? recoveryBriefContextFact(recoveryBrief.latest_blocker)
+        : null,
+      next_action: recoveryBrief.next_action
+        ? recoveryBriefContextFact(recoveryBrief.next_action)
+        : null,
+      project_state: recoveryBrief.project_state
+        ? recoveryBriefContextFact(recoveryBrief.project_state)
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function contextProjection(payload: CheckpointPayload, row: CheckpointRow): CheckpointContextProjection {
   return {
     checkpoint_id: row.checkpoint_id,
@@ -760,6 +1335,7 @@ function contextProjection(payload: CheckpointPayload, row: CheckpointRow): Chec
     git: { ...payload.git, changedPaths: [...payload.git.changedPaths] },
     signals: [...payload.signals],
     trellis: { ...payload.trellis, artifacts: [...payload.trellis.artifacts] },
+    recovery_brief: storedRecoveryBriefProjection(row) ?? undefined,
   };
 }
 
@@ -773,9 +1349,10 @@ interface CheckpointContextProjection {
     worktree_sha256: string;
     canonical_root_omitted?: boolean;
   };
-  git: GitEvidence;
-  signals: CheckpointPayload["signals"];
-  trellis: TrellisEvidence;
+  git?: GitEvidence;
+  signals?: CheckpointPayload["signals"];
+  trellis?: TrellisEvidence;
+  recovery_brief?: RecoveryBriefContextProjection;
 }
 
 function encodedContext(context: object): string {
@@ -787,36 +1364,120 @@ function encodedContext(context: object): string {
   ].join("\n");
 }
 
-function fitContext(payload: CheckpointPayload, row: CheckpointRow): string {
+interface CheckpointContextDelivery {
+  additionalContext: string;
+  projectionMode: CheckpointProjectionMode;
+  emittedBytes: number;
+}
+
+function hasFittingContext(projection: CheckpointContextProjection): boolean {
+  return Buffer.byteLength(encodedContext(projection), "utf8") <= MAX_ADDITIONAL_CONTEXT_BYTES;
+}
+
+function pruneOptionalRecoveryBrief(projection: CheckpointContextProjection): boolean {
+  if (!projection.recovery_brief || projection.recovery_brief.completed_work.length === 0) return false;
+  projection.recovery_brief.completed_work.pop();
+  return true;
+}
+
+function pruneImportantRecoveryBrief(projection: CheckpointContextProjection): boolean {
+  const recoveryBrief = projection.recovery_brief;
+  if (!recoveryBrief) return false;
+  if (recoveryBrief.decisions.length > 0) {
+    recoveryBrief.decisions.pop();
+    return true;
+  }
+  if (recoveryBrief.open_work.length > 0) {
+    recoveryBrief.open_work.pop();
+    return true;
+  }
+  if (recoveryBrief.project_state !== null) {
+    recoveryBrief.project_state = null;
+    return true;
+  }
+  return false;
+}
+
+function minimizeCheckpointEvidenceForRecovery(
+  projection: CheckpointContextProjection,
+  payload: CheckpointPayload,
+): boolean {
+  if (!projection.recovery_brief) return false;
+  const compactGit: GitEvidence = {
+    availability: payload.git.availability,
+    head: null,
+    branch: null,
+    statusDigest: null,
+    changedPaths: [],
+    changedPathCount: 0,
+    omittedChangedPathCount: payload.git.changedPathCount,
+  };
+  const compactTrellis: TrellisEvidence = {
+    bridgeStatus: payload.trellis.bridgeStatus,
+    task: payload.trellis.task,
+    taskId: null,
+    taskStatus: null,
+    taskPhase: null,
+    updatedAt: null,
+    artifacts: [],
+    omittedArtifactCount: payload.trellis.omittedArtifactCount + payload.trellis.artifacts.length,
+  };
+  const changed = JSON.stringify(projection.git) !== JSON.stringify(compactGit)
+    || JSON.stringify(projection.trellis) !== JSON.stringify(compactTrellis);
+  projection.git = compactGit;
+  projection.trellis = compactTrellis;
+  return changed;
+}
+
+function omitCheckpointEvidenceForRecovery(projection: CheckpointContextProjection): boolean {
+  if (!projection.recovery_brief) return false;
+  const hadCheckpointEvidence = projection.signals !== undefined
+    || projection.git !== undefined
+    || projection.trellis !== undefined;
+  delete projection.signals;
+  delete projection.git;
+  delete projection.trellis;
+  return hadCheckpointEvidence;
+}
+
+function fitContextDelivery(payload: CheckpointPayload, row: CheckpointRow): CheckpointContextDelivery {
   const projection = contextProjection(payload, row);
-  const originalPathCount = projection.git.changedPaths.length;
-  const originalArtifactCount = projection.trellis.artifacts.length;
+  const originalPathCount = projection.git!.changedPaths.length;
+  const originalArtifactCount = projection.trellis!.artifacts.length;
+  let projectionMode: CheckpointProjectionMode = "full";
 
   const updateOmittedCounts = () => {
-    projection.git.omittedChangedPathCount = payload.git.omittedChangedPathCount + (originalPathCount - projection.git.changedPaths.length);
-    projection.trellis.omittedArtifactCount = payload.trellis.omittedArtifactCount + (originalArtifactCount - projection.trellis.artifacts.length);
+    projection.git!.omittedChangedPathCount = payload.git.omittedChangedPathCount + (originalPathCount - projection.git!.changedPaths.length);
+    projection.trellis!.omittedArtifactCount = payload.trellis.omittedArtifactCount + (originalArtifactCount - projection.trellis!.artifacts.length);
   };
   updateOmittedCounts();
 
-  while (Buffer.byteLength(encodedContext(projection), "utf8") > MAX_ADDITIONAL_CONTEXT_BYTES && projection.signals.length > 0) {
-    projection.signals.pop();
+  while (!hasFittingContext(projection) && pruneOptionalRecoveryBrief(projection)) {
+    projectionMode = "pruned";
   }
-  while (Buffer.byteLength(encodedContext(projection), "utf8") > MAX_ADDITIONAL_CONTEXT_BYTES && projection.git.changedPaths.length > 0) {
-    projection.git.changedPaths.pop();
+  while (!hasFittingContext(projection) && projection.signals!.length > 0) {
+    projection.signals!.pop();
+    projectionMode = "pruned";
+  }
+  while (!hasFittingContext(projection) && projection.git!.changedPaths.length > 0) {
+    projection.git!.changedPaths.pop();
     updateOmittedCounts();
+    projectionMode = "pruned";
   }
-  while (Buffer.byteLength(encodedContext(projection), "utf8") > MAX_ADDITIONAL_CONTEXT_BYTES && projection.trellis.artifacts.length > 0) {
-    projection.trellis.artifacts.pop();
+  while (!hasFittingContext(projection) && projection.trellis!.artifacts.length > 0) {
+    projection.trellis!.artifacts.pop();
     updateOmittedCounts();
+    projectionMode = "pruned";
   }
-  if (Buffer.byteLength(encodedContext(projection), "utf8") > MAX_ADDITIONAL_CONTEXT_BYTES) {
+  if (!hasFittingContext(projection)) {
     projection.project = {
       project_sha256: payload.project.project_sha256,
       worktree_sha256: payload.project.worktree_sha256,
       canonical_root_omitted: true,
     };
+    projectionMode = "pruned";
   }
-  if (Buffer.byteLength(encodedContext(projection), "utf8") > MAX_ADDITIONAL_CONTEXT_BYTES) {
+  if (!hasFittingContext(projection)) {
     projection.trellis = {
       bridgeStatus: payload.trellis.bridgeStatus,
       task: payload.trellis.task,
@@ -827,16 +1488,42 @@ function fitContext(payload: CheckpointPayload, row: CheckpointRow): string {
       artifacts: [],
       omittedArtifactCount: payload.trellis.omittedArtifactCount + originalArtifactCount,
     };
+    projectionMode = "pruned";
   }
-  if (Buffer.byteLength(encodedContext(projection), "utf8") > MAX_ADDITIONAL_CONTEXT_BYTES) {
-    return encodedContext({
+  if (!hasFittingContext(projection) && minimizeCheckpointEvidenceForRecovery(projection, payload)) {
+    projectionMode = "pruned";
+  }
+  if (!hasFittingContext(projection) && omitCheckpointEvidenceForRecovery(projection)) {
+    projectionMode = "pruned";
+  }
+  while (!hasFittingContext(projection) && pruneImportantRecoveryBrief(projection)) {
+    projectionMode = "pruned";
+  }
+  if (!hasFittingContext(projection)) {
+    const idOnlyProjection = {
       checkpoint_id: row.checkpoint_id,
       payload_sha256: row.payload_sha256,
       trigger: payload.trigger,
       truncated: true,
-    });
+      recovery_brief: projection.recovery_brief ? { status: "not_applicable" } : undefined,
+    };
+    const additionalContext = encodedContext(idOnlyProjection);
+    return {
+      additionalContext,
+      projectionMode: "id_only",
+      emittedBytes: Buffer.byteLength(additionalContext, "utf8"),
+    };
   }
-  return encodedContext(projection);
+  const additionalContext = encodedContext(projection);
+  return {
+    additionalContext,
+    projectionMode,
+    emittedBytes: Buffer.byteLength(additionalContext, "utf8"),
+  };
+}
+
+function fitContext(payload: CheckpointPayload, row: CheckpointRow): string {
+  return fitContextDelivery(payload, row).additionalContext;
 }
 
 export function claimConfirmedCheckpointContext(input: CheckpointHookInput, options: CheckpointRuntimeOptions): string {
@@ -851,7 +1538,18 @@ export function claimConfirmedCheckpointContext(input: CheckpointHookInput, opti
     const checkpoint = db.claim(identity, sessionId, nowIso(now));
     if (!checkpoint) return "";
     const payload = JSON.parse(checkpoint.payload_json) as CheckpointPayload;
-    return fitContext(payload, checkpoint);
+    const delivery = fitContextDelivery(payload, checkpoint);
+    try {
+      db.recordDeliveryMetric(
+        checkpoint.checkpoint_id,
+        delivery.projectionMode,
+        delivery.emittedBytes,
+        nowIso(now),
+      );
+    } catch {
+      // Delivery has already been confirmed and claimed. Telemetry must not suppress it.
+    }
+    return delivery.additionalContext;
   } catch {
     return "";
   } finally {
@@ -863,8 +1561,12 @@ export const checkpointInternals = {
   CHECKPOINT_TTL_MS,
   AUDIT_RETENTION_MS,
   MAX_ADDITIONAL_CONTEXT_BYTES,
+  MAX_RECOVERY_BRIEF_BYTES,
   CheckpointDB,
   fitContext,
+  fitContextDelivery,
+  parseRecoveryBrief,
+  readRecoveryBriefSnapshot,
   sha256,
   sessionIdFrom,
   turnIdFrom,
