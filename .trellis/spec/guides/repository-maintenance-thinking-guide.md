@@ -19,6 +19,31 @@ published with `devel`.
 Fork-specific installations must explicitly select `devel` or a fork release
 tag. Installing from `main` intentionally selects the upstream mirror.
 
+## Fork Release Ref Contract
+
+When `main` is an upstream mirror and `devel` carries fork releases, a release
+workflow must validate a tag against `devel` or one explicitly configured fork
+release ref. It must not use `origin/main` merely because it is the conventional
+default branch name.
+
+- Fetch the annotated tag and the selected release ref in the release job.
+- Require `git merge-base --is-ancestor <tag-commit> <release-ref>` before
+  packaging.
+- Require the tag version to equal the package version, as before.
+- Fail the job if the release ref is absent, the tag is not annotated, or the
+  tag is unreachable from the selected release ref.
+
+Good: `vX.Y.Z` points to a commit reachable from `origin/devel`, while `main`
+continues to equal `upstream/main`.
+
+Bad: a workflow requires the same tag to be an ancestor of `origin/main`; this
+makes a valid `devel` release impossible unless fork commits are copied into the
+upstream mirror.
+
+Before changing a release workflow, dry-run its ancestry check with one existing
+fork tag and one deliberately invalid tag/ref pair. Confirm the success case
+does not move `main` and the failure case stops before packaging or publishing.
+
 ## Before Changing Branch Topology
 
 - [ ] Record the local, `origin`, and `upstream` branch heads.
