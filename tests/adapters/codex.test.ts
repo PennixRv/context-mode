@@ -15,6 +15,15 @@ function writeCodexPluginManifest(pluginRoot: string): void {
   }, null, 2), "utf-8");
 }
 
+function writeCodexPluginReleaseIdentity(pluginRoot: string, version: string): void {
+  const pluginDir = join(pluginRoot, ".codex-plugin");
+  mkdirSync(pluginDir, { recursive: true });
+  writeFileSync(join(pluginDir, "plugin.json"), JSON.stringify({
+    name: "context-mode",
+    version,
+  }, null, 2), "utf-8");
+}
+
 function pluginEnabledSettings(extra = ""): string {
   return `[features]
 hooks = true
@@ -807,6 +816,43 @@ trusted_hash = "sha256:stale"
         && result.message.includes(staleDoctorRoot),
       )).toBe(false);
       expect(results.some((result) => result.check === "Stop hook" && result.status === "pass")).toBe(true);
+    });
+
+    it("accepts matching releases across Codex cache and marketplace roots", () => {
+      const doctorRoot = join(codexDir, "versioned-cache-root");
+      const runtimeRoot = join(codexDir, "marketplace-root");
+      adapter = adapterWithCodexPluginRoot(runtimeRoot);
+      writeCodexPluginManifest(doctorRoot);
+      writeCodexPluginManifest(runtimeRoot);
+      writeCodexPluginReleaseIdentity(doctorRoot, "1.0.172");
+      writeCodexPluginReleaseIdentity(runtimeRoot, "1.0.172");
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const results = adapter.validateHooks(doctorRoot);
+
+      const root = results.find((result) => result.check === "Codex plugin root");
+      expect(root?.status).toBe("pass");
+      expect(root?.message).toContain(runtimeRoot);
+      expect(root?.message).toContain(doctorRoot);
+      expect(results.some((result) => result.check === "Codex plugin hooks" && result.status === "fail")).toBe(false);
+    });
+
+    it("warns when Codex cache and marketplace roots resolve to different releases", () => {
+      const doctorRoot = join(codexDir, "versioned-cache-root");
+      const runtimeRoot = join(codexDir, "marketplace-root");
+      adapter = adapterWithCodexPluginRoot(runtimeRoot);
+      writeCodexPluginManifest(doctorRoot);
+      writeCodexPluginManifest(runtimeRoot);
+      writeCodexPluginReleaseIdentity(doctorRoot, "1.0.171");
+      writeCodexPluginReleaseIdentity(runtimeRoot, "1.0.172");
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const results = adapter.validateHooks(doctorRoot);
+
+      const root = results.find((result) => result.check === "Codex plugin root");
+      expect(root?.status).toBe("warn");
+      expect(root?.message).toContain(doctorRoot);
+      expect(root?.message).toContain(runtimeRoot);
     });
 
     it("fails against the Codex plugin manager runtime root when that manifest is missing", () => {

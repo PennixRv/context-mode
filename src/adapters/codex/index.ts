@@ -146,8 +146,14 @@ interface CodexPluginHookStatus {
   runtimeRoot: string | null;
   runtimeManifestAvailable: boolean;
   rootMismatch: boolean;
+  releaseMatches: boolean;
   hooksAvailable: boolean;
   ownsHooksForUpgrade: boolean;
+}
+
+interface CodexPluginReleaseIdentity {
+  name: string;
+  version: string;
 }
 
 export function probeCodexCliVersion(runCommand: CodexVersionRunner = execFileSync): string | null {
@@ -668,13 +674,16 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     const codexPluginEnabled = pluginHookStatus.enabled;
     const codexPluginHooksAvailable = pluginHookStatus.hooksAvailable;
     if (codexPluginEnabled && pluginHookStatus.runtimeRoot) {
+      const rootDrift = pluginHookStatus.rootMismatch && !pluginHookStatus.releaseMatches;
       results.push({
         check: "Codex plugin root",
-        status: pluginHookStatus.rootMismatch ? "warn" : "pass",
-        message: pluginHookStatus.rootMismatch
+        status: rootDrift ? "warn" : "pass",
+        message: rootDrift
           ? `context-mode doctor is running from ${pluginHookStatus.configuredRoot}, but Codex plugin manager reports ${pluginHookStatus.runtimeRoot}`
+          : pluginHookStatus.rootMismatch
+            ? `Codex plugin manager reports ${pluginHookStatus.runtimeRoot}; it matches the release running from ${pluginHookStatus.configuredRoot}`
           : `Codex plugin manager reports ${pluginHookStatus.runtimeRoot}`,
-        ...(pluginHookStatus.rootMismatch
+        ...(rootDrift
           ? { fix: "Restart Codex after upgrade; run context-mode upgrade to keep native user-hook fallback until the plugin root converges" }
           : {}),
       });
@@ -1098,6 +1107,39 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return existsSync(join(pluginRoot, ".codex-plugin", "hooks.json"));
   }
 
+  private readCodexPluginReleaseIdentity(pluginRoot: string): CodexPluginReleaseIdentity | null {
+    try {
+      const manifestPath = join(pluginRoot, ".codex-plugin", "plugin.json");
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as {
+        name?: unknown;
+        version?: unknown;
+      };
+      if (typeof manifest.name !== "string" || typeof manifest.version !== "string") {
+        return null;
+      }
+      return {
+        name: manifest.name,
+        version: manifest.version,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private hasMatchingCodexPluginRelease(
+    configuredRoot: string,
+    runtimeRoot: string,
+  ): boolean {
+    const configuredRelease = this.readCodexPluginReleaseIdentity(configuredRoot);
+    const runtimeRelease = this.readCodexPluginReleaseIdentity(runtimeRoot);
+    return configuredRelease !== null
+      && runtimeRelease !== null
+      && configuredRelease.name === "context-mode"
+      && runtimeRelease.name === "context-mode"
+      && configuredRelease.name === runtimeRelease.name
+      && configuredRelease.version === runtimeRelease.version;
+  }
+
   private getCodexPluginHookStatus(
     pluginRoot: string,
     settingsRaw: string,
@@ -1113,6 +1155,9 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     const rootMismatch = runtimeRoot
       ? !this.samePath(configuredRoot, runtimeRoot)
       : false;
+    const releaseMatches = runtimeRoot !== null
+      && rootMismatch
+      && this.hasMatchingCodexPluginRelease(configuredRoot, runtimeRoot);
 
     const hooksAvailable = enabled && (
       runtimeManifestAvailable
@@ -1126,6 +1171,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       runtimeRoot,
       runtimeManifestAvailable,
       rootMismatch,
+      releaseMatches,
       hooksAvailable,
       ownsHooksForUpgrade: enabled
         && runtimeRoot !== null
