@@ -144,6 +144,8 @@ Use context-mode for ANY of these, without being asked:
 
 ## Critical Rules
 
+For explicit Codex compaction continuity, RecoveryBrief maintenance, or recovery-state inspection, use `ctx-recovery-brief` instead of treating ordinary large-output routing as semantic recovery workflow.
+
 1. **Always console.log/print your findings.** stdout is all that enters context. No output = wasted call.
 2. **Write analysis code, not just data dumps.** Don't `console.log(JSON.stringify(data))` — analyze first, print findings.
 3. **Be specific in output.** Print bug details with IDs, line numbers, exact values — not just counts.

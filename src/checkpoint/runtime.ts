@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { loadDatabase, SQLiteBase, type PreparedStatement } from "../db-base.js";
 import type {
@@ -21,8 +21,19 @@ import type {
   CompactionTrigger,
   GitEvidence,
   RecoveryBrief,
+  RecoveryBriefErrorCode,
   RecoveryBriefFact,
+  RecoveryBriefOrigin,
+  RecoveryBriefOriginCounts,
+  RecoveryBriefProviderInitResult,
+  RecoveryBriefProviderKind,
+  RecoveryBriefProviderStatus,
+  RecoveryBriefProviderUpdateResult,
+  RecoveryBriefProjectionSummary,
+  RecoveryBriefReliabilitySummary,
+  RecoveryBriefSnapshotCounts,
   RecoveryBriefStatus,
+  RecoveryBriefSourceSummary,
   TrellisArtifact,
   TrellisEvidence,
 } from "./types.js";
@@ -37,6 +48,8 @@ const MAX_ADDITIONAL_CONTEXT_BYTES = 1_200;
 const MAX_RECOVERY_BRIEF_BYTES = 12_000;
 const MAX_RECOVERY_FACT_VALUE_BYTES = 512;
 const MAX_RECOVERY_FACTS_PER_LIST = 16;
+const MAX_PROJECT_RECOVERY_SOURCES = 16;
+const MAX_PROJECT_RECOVERY_SOURCE_BYTES = 128_000;
 const GIT_TIMEOUT_MS = 1_000;
 const ARTIFACT_NAMES = new Set(["prd.md", "design.md", "implement.md", "check.md"]);
 const RECOVERY_BRIEF_SOURCE_KINDS = new Set(["trellis_task", "explicit_project_state", "git"]);
@@ -52,6 +65,15 @@ const RECOVERY_BRIEF_TOP_LEVEL_KEYS = new Set([
   "next_action",
   "project_state",
 ]);
+const PROJECT_RECOVERY_PROVIDER_TOP_LEVEL_KEYS = new Set([
+  "schema_version",
+  "storage",
+  "source_paths",
+]);
+const PROJECT_RECOVERY_SOURCE_TOP_LEVEL_KEYS = new Set(["path", "sha256"]);
+const PROJECT_RECOVERY_DIRECTORY_NAME = ".context-mode";
+const PROJECT_RECOVERY_PROVIDER_FILE_NAME = "recovery-provider.json";
+const PROJECT_RECOVERY_BRIEF_FILE_NAME = "recovery-brief.json";
 const CHECKPOINT_STATES = new Set<CheckpointState>([
   "pending",
   "confirmed",
@@ -85,8 +107,39 @@ interface CheckpointReliabilityOptions {
 
 interface RecoveryBriefSnapshot {
   status: RecoveryBriefStatus;
+  origin: RecoveryBriefOrigin;
   recoveryJson: string | null;
   recoverySha256: string | null;
+}
+
+interface ProjectRecoverySource {
+  path: string;
+  sha256: string;
+}
+
+interface ProjectRecoveryProviderConfig {
+  schema_version: 1;
+  storage: "local" | "tracked";
+  source_paths: ProjectRecoverySource[];
+}
+
+interface ProjectRecoverySourceValidation {
+  sources: ProjectRecoverySource[];
+  summary: RecoveryBriefSourceSummary;
+  drifted: boolean;
+  errorCode: RecoveryBriefErrorCode;
+}
+
+interface RecoveryBriefProviderResolution {
+  kind: RecoveryBriefProviderKind;
+  health: "available" | "absent" | "invalid";
+  task: "active" | "absent" | "not_applicable";
+  briefPath: string | null;
+  snapshot: RecoveryBriefSnapshot;
+  sources: RecoveryBriefSourceSummary;
+  sourceDrift: boolean;
+  errorCode: RecoveryBriefErrorCode;
+  projectConfig?: ProjectRecoveryProviderConfig;
 }
 
 interface RecoveryBriefContextFact {
@@ -499,57 +552,625 @@ function trustedRegularFile(trellisRoot: string, path: string): string | null {
   }
 }
 
-function readRecoveryBriefSnapshot(projectRoot: string, sessionId: string): RecoveryBriefSnapshot {
-  const absent = (): RecoveryBriefSnapshot => ({
-    status: "absent",
-    recoveryJson: null,
-    recoverySha256: null,
-  });
-  const invalid = (): RecoveryBriefSnapshot => ({
-    status: "invalid",
-    recoveryJson: null,
-    recoverySha256: null,
-  });
+function emptyRecoveryBriefSourceSummary(): RecoveryBriefSourceSummary {
+  return {
+    registered: 0,
+    verified: 0,
+    drifted: 0,
+    sourceKinds: {
+      trellis_task: 0,
+      explicit_project_state: 0,
+      git: 0,
+    },
+  };
+}
 
-  const trellisRoot = join(projectRoot, ".trellis");
+function recoveryBriefFacts(recoveryBrief: RecoveryBrief): RecoveryBriefFact[] {
+  return [
+    recoveryBrief.objective,
+    ...recoveryBrief.hard_constraints,
+    ...recoveryBrief.decisions,
+    ...recoveryBrief.completed_work,
+    ...recoveryBrief.open_work,
+    ...(recoveryBrief.latest_blocker ? [recoveryBrief.latest_blocker] : []),
+    ...(recoveryBrief.next_action ? [recoveryBrief.next_action] : []),
+    ...(recoveryBrief.project_state ? [recoveryBrief.project_state] : []),
+  ];
+}
+
+function withBriefSourceKinds(
+  summary: RecoveryBriefSourceSummary,
+  recoveryBrief: RecoveryBrief | null,
+): RecoveryBriefSourceSummary {
+  if (!recoveryBrief) return summary;
+  const sourceKinds = { ...summary.sourceKinds };
+  for (const fact of recoveryBriefFacts(recoveryBrief)) {
+    sourceKinds[fact.source_kind] += 1;
+  }
+  return { ...summary, sourceKinds };
+}
+
+function recoverySnapshot(
+  status: RecoveryBriefStatus,
+  origin: RecoveryBriefOrigin,
+  recoveryBrief?: RecoveryBrief,
+): RecoveryBriefSnapshot {
+  if (!recoveryBrief) {
+    return { status, origin, recoveryJson: null, recoverySha256: null };
+  }
+  const recoveryJson = JSON.stringify(recoveryBrief);
+  return {
+    status,
+    origin,
+    recoveryJson,
+    recoverySha256: sha256(recoveryJson),
+  };
+}
+
+function projectRecoveryPaths(projectRoot: string): {
+  directory: string;
+  providerPath: string;
+  briefPath: string;
+} {
+  const directory = join(projectRoot, PROJECT_RECOVERY_DIRECTORY_NAME);
+  return {
+    directory,
+    providerPath: join(directory, PROJECT_RECOVERY_PROVIDER_FILE_NAME),
+    briefPath: join(directory, PROJECT_RECOVERY_BRIEF_FILE_NAME),
+  };
+}
+
+function relativeProjectPath(projectRoot: string, path: string): string | null {
+  return validRelativePath(relative(projectRoot, path).replace(/\\/g, "/"));
+}
+
+function trustedProjectDirectory(projectRoot: string, path: string): string | null {
   try {
-    const trellisEntry = lstatSync(trellisRoot);
-    if (!trellisEntry.isDirectory() || trellisEntry.isSymbolicLink()) return absent();
+    const entry = lstatSync(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) return null;
+    const resolvedRoot = safeRealpath(projectRoot);
+    const resolvedPath = realpathSync.native(resolve(path));
+    return isPathInside(resolvedRoot, resolvedPath) ? resolvedPath : null;
   } catch {
-    return absent();
+    return null;
+  }
+}
+
+function trustedProjectRegularFile(projectRoot: string, path: string): string | null {
+  try {
+    const entry = lstatSync(path);
+    if (!entry.isFile() || entry.isSymbolicLink()) return null;
+    const resolvedRoot = safeRealpath(projectRoot);
+    const resolvedPath = realpathSync.native(resolve(path));
+    if (!isPathInside(resolvedRoot, resolvedPath)) return null;
+    return statSync(resolvedPath).isFile() ? resolvedPath : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseProjectRecoveryProviderConfig(value: unknown): ProjectRecoveryProviderConfig | null {
+  if (!isRecord(value)
+    || !hasExactKeys(value, PROJECT_RECOVERY_PROVIDER_TOP_LEVEL_KEYS)
+    || value.schema_version !== 1
+    || (value.storage !== "local" && value.storage !== "tracked")
+    || !Array.isArray(value.source_paths)
+    || value.source_paths.length > MAX_PROJECT_RECOVERY_SOURCES) {
+    return null;
   }
 
-  const runtimePath = join(trellisRoot, ".runtime", "sessions", `${trellisContextKey(sessionId)}.json`);
+  const sourcePaths: ProjectRecoverySource[] = [];
+  const seenPaths = new Set<string>();
+  for (const source of value.source_paths) {
+    if (!isRecord(source)
+      || !hasExactKeys(source, PROJECT_RECOVERY_SOURCE_TOP_LEVEL_KEYS)
+      || typeof source.path !== "string"
+      || typeof source.sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(source.sha256)) {
+      return null;
+    }
+    const path = validRelativePath(source.path);
+    if (!path || path.startsWith(`${PROJECT_RECOVERY_DIRECTORY_NAME}/`) || seenPaths.has(path)) {
+      return null;
+    }
+    seenPaths.add(path);
+    sourcePaths.push({ path, sha256: source.sha256 });
+  }
+
+  return {
+    schema_version: 1,
+    storage: value.storage,
+    source_paths: sourcePaths,
+  };
+}
+
+function captureProjectRecoverySources(
+  projectRoot: string,
+  sourcePaths: string[],
+): ProjectRecoverySourceValidation {
+  const summary = emptyRecoveryBriefSourceSummary();
+  if (sourcePaths.length > MAX_PROJECT_RECOVERY_SOURCES) {
+    return { sources: [], summary, drifted: false, errorCode: "PROJECT_SOURCE_INVALID" };
+  }
+
+  const sources: ProjectRecoverySource[] = [];
+  const seenPaths = new Set<string>();
+  for (const rawPath of sourcePaths) {
+    const path = validRelativePath(rawPath);
+    if (!path || path.startsWith(`${PROJECT_RECOVERY_DIRECTORY_NAME}/`) || seenPaths.has(path)) {
+      return { sources: [], summary, drifted: false, errorCode: "PROJECT_SOURCE_INVALID" };
+    }
+    seenPaths.add(path);
+    const sourcePath = trustedProjectRegularFile(projectRoot, resolve(projectRoot, path));
+    if (!sourcePath || statSync(sourcePath).size > MAX_PROJECT_RECOVERY_SOURCE_BYTES) {
+      return { sources: [], summary, drifted: false, errorCode: "PROJECT_SOURCE_INVALID" };
+    }
+    sources.push({ path, sha256: sha256(readFileSync(sourcePath)) });
+  }
+
+  return {
+    sources,
+    summary: { ...summary, registered: sources.length, verified: sources.length },
+    drifted: false,
+    errorCode: "NONE",
+  };
+}
+
+function verifyProjectRecoverySources(
+  projectRoot: string,
+  sources: ProjectRecoverySource[],
+): ProjectRecoverySourceValidation {
+  const captured = captureProjectRecoverySources(projectRoot, sources.map((source) => source.path));
+  if (captured.errorCode !== "NONE") {
+    return {
+      ...captured,
+      summary: {
+        ...captured.summary,
+        registered: sources.length,
+        drifted: sources.length,
+      },
+      drifted: true,
+    };
+  }
+
+  const expectedByPath = new Map(sources.map((source) => [source.path, source.sha256]));
+  const drifted = captured.sources.filter((source) => expectedByPath.get(source.path) !== source.sha256).length;
+  return {
+    sources: captured.sources,
+    summary: {
+      ...captured.summary,
+      registered: sources.length,
+      verified: sources.length - drifted,
+      drifted,
+    },
+    drifted: drifted > 0,
+    errorCode: drifted > 0 ? "PROJECT_SOURCE_DRIFT" : "NONE",
+  };
+}
+
+function currentGitStatusDigest(projectRoot: string): string | null {
+  const status = gitOutput(projectRoot, ["status", "--porcelain=v1", "-z"]);
+  return status === null ? null : sha256(status);
+}
+
+function validateProjectRecoveryBriefSources(
+  projectRoot: string,
+  recoveryBrief: RecoveryBrief,
+  sources: ProjectRecoverySource[],
+): RecoveryBriefErrorCode {
+  const registeredHashes = new Set(sources.map((source) => source.sha256));
+  let gitStatusDigest: string | null | undefined;
+  for (const fact of recoveryBriefFacts(recoveryBrief)) {
+    if (fact.source_kind === "trellis_task") return "PROJECT_SOURCE_MISMATCH";
+    if (fact.source_kind === "explicit_project_state" && !registeredHashes.has(fact.source_sha256)) {
+      return "PROJECT_SOURCE_MISMATCH";
+    }
+    if (fact.source_kind === "git") {
+      gitStatusDigest ??= currentGitStatusDigest(projectRoot);
+      if (gitStatusDigest === null) return "PROJECT_GIT_EVIDENCE_UNAVAILABLE";
+      if (fact.source_sha256 !== gitStatusDigest) return "PROJECT_SOURCE_MISMATCH";
+    }
+  }
+  return "NONE";
+}
+
+function readRecoveryBriefFile(
+  projectRoot: string,
+  path: string,
+  origin: RecoveryBriefOrigin,
+  trustedFile: (root: string, filePath: string) => string | null,
+): { snapshot: RecoveryBriefSnapshot; recoveryBrief: RecoveryBrief | null; bytes: number | null } {
+  if (!existsSync(path)) {
+    return { snapshot: recoverySnapshot("absent", origin), recoveryBrief: null, bytes: null };
+  }
+  const resolvedPath = trustedFile(projectRoot, path);
+  if (!resolvedPath || statSync(resolvedPath).size > MAX_RECOVERY_BRIEF_BYTES) {
+    return { snapshot: recoverySnapshot("invalid", origin), recoveryBrief: null, bytes: null };
+  }
   try {
-    if (!existsSync(runtimePath)) return absent();
+    const recoveryBrief = parseRecoveryBrief(JSON.parse(readFileSync(resolvedPath, "utf8")));
+    if (!recoveryBrief) {
+      return { snapshot: recoverySnapshot("invalid", origin), recoveryBrief: null, bytes: null };
+    }
+    return {
+      snapshot: recoverySnapshot("available", origin, recoveryBrief),
+      recoveryBrief,
+      bytes: statSync(resolvedPath).size,
+    };
+  } catch {
+    return { snapshot: recoverySnapshot("invalid", origin), recoveryBrief: null, bytes: null };
+  }
+}
+
+function trellisProviderResolution(
+  projectRoot: string,
+  sessionId: string,
+): RecoveryBriefProviderResolution | null {
+  const trellisRoot = join(projectRoot, ".trellis");
+  const runtimePath = join(trellisRoot, ".runtime", "sessions", `${trellisContextKey(sessionId)}.json`);
+  if (!existsSync(runtimePath)) return null;
+
+  const invalid = (errorCode: RecoveryBriefErrorCode, task: "active" | "absent" = "absent") => ({
+    kind: "trellis" as const,
+    health: "invalid" as const,
+    task,
+    briefPath: null,
+    snapshot: recoverySnapshot("invalid", "trellis"),
+    sources: emptyRecoveryBriefSourceSummary(),
+    sourceDrift: false,
+    errorCode,
+  });
+
+  try {
+    const trellisEntry = lstatSync(trellisRoot);
+    if (!trellisEntry.isDirectory() || trellisEntry.isSymbolicLink()) {
+      return invalid("TRELLIS_RUNTIME_INVALID");
+    }
     const resolvedRuntimePath = trustedRegularFile(trellisRoot, runtimePath);
-    if (!resolvedRuntimePath) return invalid();
+    if (!resolvedRuntimePath) return invalid("TRELLIS_RUNTIME_INVALID");
     const runtime = JSON.parse(readFileSync(resolvedRuntimePath, "utf8")) as Record<string, unknown>;
     const pointer = getPointerValue(runtime);
     const taskPath = pointer ? safeTaskPath(projectRoot, trellisRoot, pointer) : null;
-    if (!taskPath) return invalid();
+    if (!taskPath) return invalid("TRELLIS_TASK_INVALID");
 
     const taskJsonPath = basename(taskPath) === "task.json" ? taskPath : join(taskPath, "task.json");
     const resolvedTaskJsonPath = trustedRegularFile(trellisRoot, taskJsonPath);
-    if (!resolvedTaskJsonPath) return invalid();
+    if (!resolvedTaskJsonPath) return invalid("TRELLIS_TASK_INVALID");
 
-    const recoveryPath = join(resolve(resolvedTaskJsonPath, ".."), "recovery-brief.json");
-    if (!existsSync(recoveryPath)) return absent();
-    const resolvedRecoveryPath = trustedRegularFile(trellisRoot, recoveryPath);
-    if (!resolvedRecoveryPath) return invalid();
-    if (statSync(resolvedRecoveryPath).size > MAX_RECOVERY_BRIEF_BYTES) return invalid();
-
-    const recoveryBrief = parseRecoveryBrief(JSON.parse(readFileSync(resolvedRecoveryPath, "utf8")));
-    if (!recoveryBrief) return invalid();
-    const recoveryJson = JSON.stringify(recoveryBrief);
+    const recoveryPath = join(resolve(resolvedTaskJsonPath, ".."), PROJECT_RECOVERY_BRIEF_FILE_NAME);
+    const read = readRecoveryBriefFile(trellisRoot, recoveryPath, "trellis", trustedRegularFile);
+    const sources = withBriefSourceKinds(emptyRecoveryBriefSourceSummary(), read.recoveryBrief);
     return {
-      status: "available",
-      recoveryJson,
-      recoverySha256: sha256(recoveryJson),
+      kind: "trellis",
+      health: read.snapshot.status === "invalid" ? "invalid" : "available",
+      task: "active",
+      briefPath: relativeProjectPath(projectRoot, recoveryPath),
+      snapshot: read.snapshot,
+      sources,
+      sourceDrift: false,
+      errorCode: read.snapshot.status === "invalid" ? "TRELLIS_BRIEF_INVALID" : "NONE",
     };
   } catch {
-    return invalid();
+    return invalid("TRELLIS_RUNTIME_INVALID");
   }
+}
+
+function projectProviderResolution(projectRoot: string): RecoveryBriefProviderResolution {
+  const paths = projectRecoveryPaths(projectRoot);
+  if (!existsSync(paths.providerPath)) {
+    return {
+      kind: "none",
+      health: "absent",
+      task: "not_applicable",
+      briefPath: null,
+      snapshot: recoverySnapshot("absent", "none"),
+      sources: emptyRecoveryBriefSourceSummary(),
+      sourceDrift: false,
+      errorCode: "NO_PROVIDER",
+    };
+  }
+
+  const invalid = (
+    errorCode: RecoveryBriefErrorCode,
+    sources = emptyRecoveryBriefSourceSummary(),
+    sourceDrift = false,
+    projectConfig?: ProjectRecoveryProviderConfig,
+  ): RecoveryBriefProviderResolution => ({
+    kind: "project",
+    health: "invalid",
+    task: "not_applicable",
+    briefPath: relativeProjectPath(projectRoot, paths.briefPath),
+    snapshot: recoverySnapshot("invalid", "project"),
+    sources,
+    sourceDrift,
+    errorCode,
+    projectConfig,
+  });
+
+  const directory = trustedProjectDirectory(projectRoot, paths.directory);
+  const providerPath = trustedProjectRegularFile(projectRoot, paths.providerPath);
+  if (!directory || !providerPath) return invalid("UNSAFE_PROVIDER_PATH");
+
+  let config: ProjectRecoveryProviderConfig;
+  try {
+    const parsed = parseProjectRecoveryProviderConfig(JSON.parse(readFileSync(providerPath, "utf8")));
+    if (!parsed) return invalid("PROJECT_PROVIDER_INVALID");
+    config = parsed;
+  } catch {
+    return invalid("PROJECT_PROVIDER_INVALID");
+  }
+
+  const sourceValidation = verifyProjectRecoverySources(projectRoot, config.source_paths);
+  const read = readRecoveryBriefFile(projectRoot, paths.briefPath, "project", trustedProjectRegularFile);
+  const sources = withBriefSourceKinds(sourceValidation.summary, read.recoveryBrief);
+  if (read.snapshot.status === "invalid") {
+    return invalid("PROJECT_BRIEF_INVALID", sources, sourceValidation.drifted, config);
+  }
+  if (read.snapshot.status === "absent") {
+    return {
+      kind: "project",
+      health: sourceValidation.errorCode === "NONE" ? "available" : "invalid",
+      task: "not_applicable",
+      briefPath: relativeProjectPath(projectRoot, paths.briefPath),
+      snapshot: read.snapshot,
+      sources,
+      sourceDrift: sourceValidation.drifted,
+      errorCode: sourceValidation.errorCode,
+      projectConfig: config,
+    };
+  }
+  if (sourceValidation.errorCode !== "NONE") {
+    return invalid(sourceValidation.errorCode, sources, sourceValidation.drifted, config);
+  }
+  const sourceError = validateProjectRecoveryBriefSources(projectRoot, read.recoveryBrief!, config.source_paths);
+  if (sourceError !== "NONE") return invalid(sourceError, sources, false, config);
+
+  return {
+    kind: "project",
+    health: "available",
+    task: "not_applicable",
+    briefPath: relativeProjectPath(projectRoot, paths.briefPath),
+    snapshot: read.snapshot,
+    sources,
+    sourceDrift: false,
+    errorCode: "NONE",
+    projectConfig: config,
+  };
+}
+
+function resolveRecoveryBriefProvider(
+  projectRoot: string,
+  sessionId: string,
+): RecoveryBriefProviderResolution {
+  return trellisProviderResolution(projectRoot, sessionId) ?? projectProviderResolution(projectRoot);
+}
+
+function readRecoveryBriefSnapshot(projectRoot: string, sessionId: string): RecoveryBriefSnapshot {
+  return resolveRecoveryBriefProvider(projectRoot, sessionId).snapshot;
+}
+
+function recoveryBriefProviderStatusFromResolution(
+  resolution: RecoveryBriefProviderResolution,
+): RecoveryBriefProviderStatus {
+  let updatedAt: string | null = null;
+  if (resolution.snapshot.recoveryJson) {
+    try {
+      updatedAt = parseRecoveryBrief(JSON.parse(resolution.snapshot.recoveryJson))?.updated_at ?? null;
+    } catch {
+      updatedAt = null;
+    }
+  }
+  return {
+    provider: resolution.kind,
+    health: resolution.health,
+    recoveryStatus: resolution.snapshot.status,
+    origin: resolution.snapshot.origin,
+    task: resolution.task,
+    briefPath: resolution.briefPath,
+    briefSha256: resolution.snapshot.recoverySha256,
+    briefBytes: resolution.snapshot.recoveryJson
+      ? Buffer.byteLength(resolution.snapshot.recoveryJson, "utf8")
+      : null,
+    updatedAt,
+    sources: resolution.sources,
+    sourceDrift: resolution.sourceDrift,
+    errorCode: resolution.errorCode,
+  };
+}
+
+function writeAtomically(projectRoot: string, path: string, content: string): boolean {
+  const directory = trustedProjectDirectory(projectRoot, dirname(path));
+  if (!directory) return false;
+  if (existsSync(path) && !trustedProjectRegularFile(projectRoot, path)) return false;
+
+  const temporaryPath = join(directory, `.${basename(path)}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporaryPath, content, { encoding: "utf8", mode: 0o600 });
+    if (!trustedProjectRegularFile(projectRoot, temporaryPath)) return false;
+    renameSync(temporaryPath, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitExcludePath(projectRoot: string): string | null {
+  try {
+    const output = execFileSync("git", ["-C", projectRoot, "rev-parse", "--git-path", "info/exclude"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: GIT_TIMEOUT_MS,
+    }).trim();
+    return output ? resolve(projectRoot, output) : null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureProjectRecoveryExcluded(projectRoot: string): boolean {
+  const excludePath = gitExcludePath(projectRoot);
+  if (!excludePath) return false;
+  try {
+    mkdirSync(dirname(excludePath), { recursive: true });
+    const current = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
+    if (current.split(/\r?\n/).includes(`${PROJECT_RECOVERY_DIRECTORY_NAME}/`)) return true;
+    appendFileSync(excludePath, `${current && !current.endsWith("\n") ? "\n" : ""}${PROJECT_RECOVERY_DIRECTORY_NAME}/\n`, "utf8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function initializeProjectRecoveryBriefProvider(
+  projectRoot: string,
+  options: { storage: "local" | "tracked"; sourcePaths: string[] },
+): RecoveryBriefProviderInitResult {
+  const paths = projectRecoveryPaths(projectRoot);
+  if (existsSync(paths.providerPath) || existsSync(paths.briefPath)) {
+    return { ok: false, storage: null, sourceCount: 0, errorCode: "PROVIDER_ALREADY_INITIALIZED" };
+  }
+
+  const sourceValidation = captureProjectRecoverySources(projectRoot, options.sourcePaths);
+  if (sourceValidation.errorCode !== "NONE") {
+    return { ok: false, storage: null, sourceCount: 0, errorCode: sourceValidation.errorCode };
+  }
+
+  try {
+    if (existsSync(paths.directory)) {
+      if (!trustedProjectDirectory(projectRoot, paths.directory)) {
+        return { ok: false, storage: null, sourceCount: 0, errorCode: "UNSAFE_PROVIDER_PATH" };
+      }
+    } else {
+      mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
+      if (!trustedProjectDirectory(projectRoot, paths.directory)) {
+        return { ok: false, storage: null, sourceCount: 0, errorCode: "UNSAFE_PROVIDER_PATH" };
+      }
+    }
+    if (options.storage === "local" && !ensureProjectRecoveryExcluded(projectRoot)) {
+      return { ok: false, storage: null, sourceCount: 0, errorCode: "PROJECT_GIT_REQUIRED" };
+    }
+    const config: ProjectRecoveryProviderConfig = {
+      schema_version: 1,
+      storage: options.storage,
+      source_paths: sourceValidation.sources,
+    };
+    if (!writeAtomically(projectRoot, paths.providerPath, `${JSON.stringify(config, null, 2)}\n`)) {
+      return { ok: false, storage: null, sourceCount: 0, errorCode: "WRITE_FAILED" };
+    }
+    return { ok: true, storage: options.storage, sourceCount: config.source_paths.length, errorCode: "NONE" };
+  } catch {
+    return { ok: false, storage: null, sourceCount: 0, errorCode: "WRITE_FAILED" };
+  }
+}
+
+function expectedRecoveryBriefShaMatches(snapshot: RecoveryBriefSnapshot, expectedSha256: string): boolean {
+  if (expectedSha256 === "absent") return snapshot.status === "absent";
+  return /^[a-f0-9]{64}$/.test(expectedSha256)
+    && snapshot.status === "available"
+    && snapshot.recoverySha256 === expectedSha256;
+}
+
+export function getRecoveryBriefProviderStatus(
+  projectRoot: string,
+  sessionId: string | undefined,
+): RecoveryBriefProviderStatus {
+  if (!sessionId) {
+    return {
+      provider: "none",
+      health: "absent",
+      recoveryStatus: "absent",
+      origin: "none",
+      task: "not_applicable",
+      briefPath: null,
+      briefSha256: null,
+      briefBytes: null,
+      updatedAt: null,
+      sources: emptyRecoveryBriefSourceSummary(),
+      sourceDrift: false,
+      errorCode: "SESSION_UNAVAILABLE",
+    };
+  }
+  return recoveryBriefProviderStatusFromResolution(resolveRecoveryBriefProvider(projectRoot, sessionId));
+}
+
+export function updateRecoveryBriefProvider(
+  projectRoot: string,
+  sessionId: string | undefined,
+  options: { expectedSha256: string; brief: unknown; sourcePaths?: string[] },
+): RecoveryBriefProviderUpdateResult {
+  const failed = (
+    errorCode: RecoveryBriefErrorCode,
+    resolution?: RecoveryBriefProviderResolution,
+  ): RecoveryBriefProviderUpdateResult => ({
+    ok: false,
+    provider: resolution?.kind ?? "none",
+    origin: resolution?.snapshot.origin ?? "none",
+    briefSha256: null,
+    briefBytes: null,
+    updatedAt: null,
+    sourceCount: resolution?.sources.registered ?? 0,
+    errorCode,
+  });
+  if (!sessionId) return failed("SESSION_UNAVAILABLE");
+  if (options.expectedSha256 !== "absent" && !/^[a-f0-9]{64}$/.test(options.expectedSha256)) {
+    return failed("INVALID_EXPECTED_SHA256");
+  }
+  const recoveryBrief = parseRecoveryBrief(options.brief);
+  if (!recoveryBrief) return failed("INVALID_RECOVERY_BRIEF");
+
+  const resolution = resolveRecoveryBriefProvider(projectRoot, sessionId);
+  if (resolution.kind === "none") return failed("NO_PROVIDER", resolution);
+  if (!resolution.briefPath) return failed(resolution.errorCode, resolution);
+
+  const absoluteBriefPath = resolve(projectRoot, resolution.briefPath);
+  const current = resolution.kind === "trellis"
+    ? readRecoveryBriefFile(join(projectRoot, ".trellis"), absoluteBriefPath, "trellis", trustedRegularFile)
+    : readRecoveryBriefFile(projectRoot, absoluteBriefPath, "project", trustedProjectRegularFile);
+  if (current.snapshot.status === "invalid") return failed("INVALID_RECOVERY_BRIEF", resolution);
+  if (!expectedRecoveryBriefShaMatches(current.snapshot, options.expectedSha256)) {
+    return failed("CAS_CONFLICT", resolution);
+  }
+
+  let sourceCount = resolution.sources.registered;
+  let projectConfig = resolution.projectConfig;
+  if (resolution.kind === "project") {
+    if (!projectConfig) return failed(resolution.errorCode, resolution);
+    const sourceValidation = options.sourcePaths
+      ? captureProjectRecoverySources(projectRoot, options.sourcePaths)
+      : verifyProjectRecoverySources(projectRoot, projectConfig.source_paths);
+    if (sourceValidation.errorCode !== "NONE") return failed(sourceValidation.errorCode, resolution);
+    const sourceError = validateProjectRecoveryBriefSources(projectRoot, recoveryBrief, sourceValidation.sources);
+    if (sourceError !== "NONE") return failed(sourceError, resolution);
+    sourceCount = sourceValidation.sources.length;
+    projectConfig = { ...projectConfig, source_paths: sourceValidation.sources };
+  }
+
+  const serializedBrief = `${JSON.stringify(recoveryBrief, null, 2)}\n`;
+  if (Buffer.byteLength(serializedBrief, "utf8") > MAX_RECOVERY_BRIEF_BYTES) {
+    return failed("INVALID_RECOVERY_BRIEF", resolution);
+  }
+
+  if (resolution.kind === "project" && options.sourcePaths) {
+    const paths = projectRecoveryPaths(projectRoot);
+    if (!writeAtomically(projectRoot, paths.providerPath, `${JSON.stringify(projectConfig, null, 2)}\n`)) {
+      return failed("WRITE_FAILED", resolution);
+    }
+  }
+  const writeRoot = resolution.kind === "trellis" ? join(projectRoot, ".trellis") : projectRoot;
+  if (!writeAtomically(writeRoot, absoluteBriefPath, serializedBrief)) {
+    return failed("WRITE_FAILED", resolution);
+  }
+  const snapshot = recoverySnapshot("available", resolution.kind, recoveryBrief);
+  return {
+    ok: true,
+    provider: resolution.kind,
+    origin: resolution.kind,
+    briefSha256: snapshot.recoverySha256,
+    briefBytes: Buffer.byteLength(serializedBrief, "utf8"),
+    updatedAt: recoveryBrief.updated_at,
+    sourceCount,
+    errorCode: "NONE",
+  };
 }
 
 class CheckpointDB extends SQLiteBase {
@@ -572,6 +1193,7 @@ class CheckpointDB extends SQLiteBase {
         recovery_json TEXT,
         recovery_sha256 TEXT,
         recovery_status TEXT CHECK (recovery_status IS NULL OR recovery_status IN ('absent', 'invalid', 'available')),
+        recovery_origin TEXT CHECK (recovery_origin IS NULL OR recovery_origin IN ('trellis', 'project', 'none')),
         created_at TEXT NOT NULL,
         confirmed_at TEXT,
         claimed_at TEXT,
@@ -629,6 +1251,7 @@ class CheckpointDB extends SQLiteBase {
       ["recovery_json", "TEXT"],
       ["recovery_sha256", "TEXT"],
       ["recovery_status", "TEXT CHECK (recovery_status IS NULL OR recovery_status IN ('absent', 'invalid', 'available'))"],
+      ["recovery_origin", "TEXT CHECK (recovery_origin IS NULL OR recovery_origin IN ('trellis', 'project', 'none'))"],
     ] as const;
 
     for (const [columnName, definition] of migrations) {
@@ -656,8 +1279,8 @@ class CheckpointDB extends SQLiteBase {
         INSERT INTO compact_checkpoints (
           checkpoint_id, schema_version, session_id, turn_id, sequence, trigger,
           canonical_project_root, worktree_identity, state, payload_json, payload_sha256,
-          recovery_json, recovery_sha256, recovery_status, created_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+          recovery_json, recovery_sha256, recovery_status, recovery_origin, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       insertSignal: prepare(`
         INSERT INTO checkpoint_signals (
@@ -822,6 +1445,7 @@ class CheckpointDB extends SQLiteBase {
           recoveryBrief.recoveryJson,
           recoveryBrief.recoverySha256,
           recoveryBrief.status,
+          recoveryBrief.origin,
           createdAt,
           expiresAt,
         );
@@ -926,6 +1550,8 @@ interface CheckpointReliabilityRow {
   expires_at: string;
   projection_mode: CheckpointProjectionMode | null;
   emitted_bytes: number | null;
+  recovery_status: RecoveryBriefStatus | null;
+  recovery_origin: RecoveryBriefOrigin | null;
 }
 
 function emptyStateCounts(): CheckpointStateCounts {
@@ -1009,6 +1635,75 @@ function summarizeDelivery(rows: CheckpointReliabilityRow[]): CheckpointDelivery
   return delivery;
 }
 
+function emptyRecoveryBriefSnapshotCounts(): RecoveryBriefSnapshotCounts {
+  return { available: 0, absent: 0, invalid: 0, legacyUnknown: 0 };
+}
+
+function emptyRecoveryBriefOriginCounts(): RecoveryBriefOriginCounts {
+  return { trellis: 0, project: 0, none: 0, legacyUnknown: 0 };
+}
+
+function emptyRecoveryBriefProjectionSummary(): RecoveryBriefProjectionSummary {
+  return {
+    snapshots: emptyRecoveryBriefSnapshotCounts(),
+    origins: emptyRecoveryBriefOriginCounts(),
+  };
+}
+
+function emptyRecoveryBriefReliabilitySummary(): RecoveryBriefReliabilitySummary {
+  return {
+    snapshots: emptyRecoveryBriefSnapshotCounts(),
+    origins: emptyRecoveryBriefOriginCounts(),
+    byProjection: {
+      full: emptyRecoveryBriefProjectionSummary(),
+      pruned: emptyRecoveryBriefProjectionSummary(),
+      idOnly: emptyRecoveryBriefProjectionSummary(),
+      unknown: emptyRecoveryBriefProjectionSummary(),
+    },
+  };
+}
+
+function addRecoveryBriefRow(
+  summary: RecoveryBriefProjectionSummary,
+  row: CheckpointReliabilityRow,
+): void {
+  if (row.recovery_status === "available") {
+    summary.snapshots.available += 1;
+  } else if (row.recovery_status === "absent") {
+    summary.snapshots.absent += 1;
+  } else if (row.recovery_status === "invalid") {
+    summary.snapshots.invalid += 1;
+  } else {
+    summary.snapshots.legacyUnknown += 1;
+  }
+
+  if (row.recovery_origin === "trellis") {
+    summary.origins.trellis += 1;
+  } else if (row.recovery_origin === "project") {
+    summary.origins.project += 1;
+  } else if (row.recovery_origin === "none") {
+    summary.origins.none += 1;
+  } else {
+    summary.origins.legacyUnknown += 1;
+  }
+}
+
+function summarizeRecoveryBrief(rows: CheckpointReliabilityRow[]): RecoveryBriefReliabilitySummary {
+  const result = emptyRecoveryBriefReliabilitySummary();
+  for (const row of rows) {
+    addRecoveryBriefRow(result, row);
+    const projection = row.projection_mode === "full"
+      ? result.byProjection.full
+      : row.projection_mode === "pruned"
+        ? result.byProjection.pruned
+        : row.projection_mode === "id_only"
+          ? result.byProjection.idOnly
+          : result.byProjection.unknown;
+    addRecoveryBriefRow(projection, row);
+  }
+  return result;
+}
+
 function elapsedMilliseconds(start: string, end: string | null): number | null {
   if (end === null) return null;
   const elapsed = Date.parse(end) - Date.parse(start);
@@ -1038,6 +1733,7 @@ function emptyReliabilityReport(
       confirmedToClaimed: summarizeLatency([]),
     },
     delivery: summarizeDelivery([]),
+    recoveryBrief: summarizeRecoveryBrief([]),
     overduePendingCount: 0,
     warnings: [],
   };
@@ -1072,6 +1768,15 @@ export function getCheckpointReliabilityReport(
       WHERE type = 'table' AND name = 'checkpoint_delivery_metrics'
       LIMIT 1
     `).get());
+    const checkpointColumns = new Set((database.prepare("PRAGMA table_info(compact_checkpoints)").all() as Array<{
+      name: string;
+    }>).map((column) => column.name));
+    const recoveryStatusExpression = checkpointColumns.has("recovery_status")
+      ? "checkpoint.recovery_status"
+      : "NULL";
+    const recoveryOriginExpression = checkpointColumns.has("recovery_origin")
+      ? "checkpoint.recovery_origin"
+      : "NULL";
     const rows = database.prepare(`
       SELECT
         checkpoint.trigger,
@@ -1081,7 +1786,9 @@ export function getCheckpointReliabilityReport(
         checkpoint.claimed_at,
         checkpoint.expires_at,
         ${deliveryMetricsAvailable ? "delivery.projection_mode" : "NULL"} AS projection_mode,
-        ${deliveryMetricsAvailable ? "delivery.emitted_bytes" : "NULL"} AS emitted_bytes
+        ${deliveryMetricsAvailable ? "delivery.emitted_bytes" : "NULL"} AS emitted_bytes,
+        ${recoveryStatusExpression} AS recovery_status,
+        ${recoveryOriginExpression} AS recovery_origin
       FROM compact_checkpoints AS checkpoint
       ${deliveryMetricsAvailable
         ? "LEFT JOIN checkpoint_delivery_metrics AS delivery ON delivery.checkpoint_id = checkpoint.checkpoint_id"
@@ -1117,6 +1824,7 @@ export function getCheckpointReliabilityReport(
       ),
     };
     report.delivery = summarizeDelivery(rows);
+    report.recoveryBrief = summarizeRecoveryBrief(rows);
     report.overduePendingCount = rows.filter((row) =>
       row.state === "pending" && Date.parse(row.expires_at) <= now.getTime(),
     ).length;
@@ -1126,6 +1834,15 @@ export function getCheckpointReliabilityReport(
     }
     if (report.overduePendingCount > 0) {
       report.warnings.push("Pending checkpoints exceeded their TTL and await lifecycle cleanup.");
+    }
+    if (report.recoveryBrief.snapshots.invalid > 0) {
+      report.warnings.push("Some checkpoints recorded an invalid RecoveryBrief snapshot.");
+    }
+    if (report.recoveryBrief.snapshots.legacyUnknown > 0) {
+      report.warnings.push("Some checkpoints predate RecoveryBrief snapshot tracking.");
+    }
+    if (report.recoveryBrief.byProjection.idOnly.snapshots.available > 0) {
+      report.warnings.push("Some available RecoveryBrief snapshots were delivered only as checkpoint identifiers.");
     }
     return report;
   } catch {

@@ -11,7 +11,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { runPool, type PoolJob } from "./runPool.js";
-import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
+import {
+  ContentStore,
+  cleanupStaleDBs,
+  cleanupStaleContentDBs,
+  isRecoveryBriefIndexPath,
+  type SearchResult,
+  type IndexResult,
+} from "./store.js";
 import { composeFetchCacheKey } from "./fetch-cache.js";
 import {
   readBashPolicies,
@@ -64,7 +71,12 @@ import { FloodGuard } from "./search/flood-guard.js";
 import { buildNodeCommand, type HookAdapter, type PlatformId, isInProcessPluginPlatform } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { parseCodexContextModePluginRoot } from "./adapters/codex/index.js";
-import { getCheckpointReliabilityReport } from "./checkpoint/runtime.js";
+import {
+  getCheckpointReliabilityReport,
+  getRecoveryBriefProviderStatus,
+  initializeProjectRecoveryBriefProvider,
+  updateRecoveryBriefProvider,
+} from "./checkpoint/runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { stripJsonComments } from "./util/jsonc.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
@@ -2319,6 +2331,16 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
       });
     }
 
+    if (path && isRecoveryBriefIndexPath(path)) {
+      return trackResponse("ctx_index", {
+        content: [{
+          type: "text" as const,
+          text: "Error: controlled RecoveryBrief state cannot be indexed.",
+        }],
+        isError: true,
+      });
+    }
+
     // Apply Read deny-policy to prevent indexing sensitive files into the
     // FTS5 store, which would otherwise be queryable via ctx_search and
     // exfiltrate content into the model's context (issue #442). Mirrors the
@@ -2369,7 +2391,8 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
         const isWin32 = process.platform === "win32";
         const perFileDeny = (absPath: string): boolean => {
           try {
-            return evaluateFilePath(absPath, denyGlobs, isWin32, projectDir).denied;
+            return isRecoveryBriefIndexPath(absPath)
+              || evaluateFilePath(absPath, denyGlobs, isWin32, projectDir).denied;
           } catch {
             return false; // fail-open consistent with checkFilePathDenyPolicy
           }
@@ -3895,6 +3918,133 @@ ctx_checkpoint_report({ "window_days": 7 })`,
   },
 );
 
+// ── ctx-recovery-brief: controlled semantic recovery state ───────────────
+
+server.registerTool(
+  "ctx_recovery_brief_init",
+  {
+    title: "Initialize Project RecoveryBrief Provider",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    description: `Explicitly initialize the project-local RecoveryBrief fallback for projects without an active Trellis pointer.
+
+WHEN:
+- You explicitly want this project to maintain a RecoveryBrief without Trellis.
+
+WHEN NOT:
+- A valid active Trellis task exists, or you only need to inspect current recovery state.
+
+RETURNS:
+- Storage mode, registered evidence count, and a stable error code. It never creates a Brief implicitly and never returns source content.
+
+EXAMPLE:
+ctx_recovery_brief_init({ "storage": "local", "source_paths": ["docs/plan.md"] })`,
+    inputSchema: z.object({
+      storage: z.enum(["local", "tracked"]),
+      source_paths: z.array(z.string().min(1).max(512)).max(16).default([]),
+    }),
+  },
+  async ({ storage, source_paths }) => {
+    const result = initializeProjectRecoveryBriefProvider(getProjectDir(), {
+      storage,
+      sourcePaths: source_paths,
+    });
+    return trackResponse("ctx_recovery_brief_init", {
+      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      isError: !result.ok,
+    });
+  },
+);
+
+server.registerTool(
+  "ctx_recovery_brief_status",
+  {
+    title: "RecoveryBrief Provider Status",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    description: `Inspect the RecoveryBrief provider selected for the current session.
+
+WHEN:
+- You need content-free recovery state before continuation, handoff, or controlled update.
+
+WHEN NOT:
+- You need the RecoveryBrief body, checkpoint payload content, or an arbitrary session lookup.
+
+RETURNS:
+- Content-free provider health, task/path state, digest, size, timestamp, source drift, and stable error code.
+- The active Trellis runtime pointer takes precedence. Without that pointer, an explicitly initialized project provider may be selected. Unsafe or stale Trellis state fails closed and does not fall back.
+- Never returns RecoveryBrief text, checkpoint payloads, prompts, tool input/output, or artifact bodies.
+
+EXAMPLE:
+ctx_recovery_brief_status({})`,
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const sessionId = currentAttribution()?.sessionId;
+    const status = getRecoveryBriefProviderStatus(getProjectDir(), sessionId);
+    return trackResponse("ctx_recovery_brief_status", {
+      content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
+      isError: status.errorCode === "SESSION_UNAVAILABLE",
+    });
+  },
+);
+
+server.registerTool(
+  "ctx_recovery_brief_update",
+  {
+    title: "Update RecoveryBrief",
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+    description: `Compare-and-swap update for the RecoveryBrief selected for the current session.
+
+WHEN:
+- Current task facts changed and a selected live provider needs a controlled update.
+
+WHEN NOT:
+- You need to inspect state only, initialize a project provider, or reconstruct historical checkpoint content.
+
+The expected SHA-256 must match the current canonical Brief, or use "absent" only when no Brief exists. Project-provider updates validate registered explicit project evidence and current Git-status evidence before atomically writing. An optional source_paths list explicitly refreshes registered project evidence.
+
+RETURNS:
+- Content-free write result, digest, size, timestamp, source count, and stable error code.
+- Never echoes the submitted Brief or source contents.
+
+EXAMPLE:
+ctx_recovery_brief_update({ "expected_sha256": "absent", "brief": { "schema_version": 1 } })`,
+    inputSchema: z.object({
+      expected_sha256: z.union([
+        z.literal("absent"),
+        z.string().regex(/^[a-f0-9]{64}$/),
+      ]),
+      brief: z.unknown(),
+      source_paths: z.array(z.string().min(1).max(512)).max(16).optional(),
+    }),
+  },
+  async ({ expected_sha256, brief, source_paths }) => {
+    const result = updateRecoveryBriefProvider(getProjectDir(), currentAttribution()?.sessionId, {
+      expectedSha256: expected_sha256,
+      brief,
+      sourcePaths: source_paths,
+    });
+    return trackResponse("ctx_recovery_brief_update", {
+      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      isError: !result.ok,
+    });
+  },
+);
+
 // ── ctx-doctor: diagnostics (server-side) ─────────────────────────────────
 server.registerTool(
   "ctx_doctor",
@@ -4017,6 +4167,41 @@ server.registerTool(
       lines.push("[WARN] Hooks: adapter detection unavailable");
     }
 
+    // Codex checkpoint continuity is deliberately Hook-driven. This is a
+    // passive registration check only; diagnostics never read Brief content.
+    try {
+      const codexHooksPath = join(pluginRoot, ".codex-plugin", "hooks.json");
+      const codexHooks = JSON.parse(readFileSync(codexHooksPath, "utf8")) as {
+        hooks?: Record<string, unknown>;
+      };
+      const hookEntries = codexHooks.hooks ?? {};
+      const hookContains = (event: string, marker: string): boolean =>
+        JSON.stringify(hookEntries[event] ?? []).includes(marker);
+      const sessionStartEntries = JSON.stringify(hookEntries.SessionStart ?? []);
+      const preCompact = hookContains("PreCompact", "checkpoint-precompact");
+      const postCompact = hookContains("PostCompact", "checkpoint-postcompact");
+      const sessionStart = sessionStartEntries.includes("checkpoint-sessionstart")
+        && sessionStartEntries.includes("compact");
+      lines.push(`${preCompact ? "[OK]" : "[FAIL]"} Codex PreCompact checkpoint hook: ${preCompact ? "registered" : "missing"}`);
+      lines.push(`${postCompact ? "[OK]" : "[FAIL]"} Codex PostCompact checkpoint hook: ${postCompact ? "registered" : "missing"}`);
+      lines.push(`${sessionStart ? "[OK]" : "[FAIL]"} Codex SessionStart(compact) checkpoint hook: ${sessionStart ? "registered" : "missing"}`);
+      const checkpointBundlePath = join(pluginRoot, "hooks", "checkpoint.bundle.mjs");
+      lines.push(`${existsSync(checkpointBundlePath) ? "[OK]" : "[FAIL]"} Checkpoint bundle: ${checkpointBundlePath}`);
+
+      const projectDir = getProjectDir();
+      const projectProviderPath = join(projectDir, ".context-mode", "recovery-provider.json");
+      const trellisRuntimeRoot = join(projectDir, ".trellis", ".runtime", "sessions");
+      const providerState = existsSync(projectProviderPath)
+        ? "project provider configured"
+        : existsSync(trellisRuntimeRoot)
+          ? "Trellis runtime directory present"
+          : "no project provider configured";
+      lines.push(`[OK] RecoveryBrief provider availability: ${providerState}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lines.push(`[WARN] Codex checkpoint registration: ${message}`);
+    }
+
     // Version
     lines.push(`[OK] Version: v${VERSION}`);
 
@@ -4101,6 +4286,15 @@ server.registerTool(
     } else if (existsSync(fallbackPath)) {
       cmd = `${buildNodeCommand(fallbackPath, nodeOpts)} upgrade${platformFlag}`;
     } else {
+      if (platformId === "codex") {
+        return trackResponse("ctx_upgrade", {
+          content: [{
+            type: "text" as const,
+            text: "Codex marketplace-managed installs must be updated through their configured marketplace and plugin version. The legacy clone/global upgrade fallback is intentionally disabled.",
+          }],
+          isError: true,
+        });
+      }
       // Inline fallback: neither CLI file exists (e.g. marketplace installs).
       // Generate a self-contained node -e script that performs the upgrade.
       const repoUrl = "https://github.com/mksglu/context-mode.git";

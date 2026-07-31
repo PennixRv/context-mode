@@ -6488,6 +6488,9 @@ describe("ctx_* MCP tool annotations (#846)", () => {
     ctx_fetch_and_index: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true  },
     ctx_batch_execute:   { readOnlyHint: false, destructiveHint: true,  idempotentHint: false, openWorldHint: true  },
     ctx_checkpoint_report: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ctx_recovery_brief_init: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    ctx_recovery_brief_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    ctx_recovery_brief_update: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     ctx_stats:           { readOnlyHint: true,  destructiveHint: false, idempotentHint: true,  openWorldHint: false },
     ctx_doctor:          { readOnlyHint: true,  destructiveHint: false, idempotentHint: true,  openWorldHint: false },
     ctx_upgrade:         { readOnlyHint: false, destructiveHint: false, idempotentHint: true,  openWorldHint: false },
@@ -6511,7 +6514,7 @@ describe("ctx_* MCP tool annotations (#846)", () => {
   });
 
   test("read-only diagnostic/query tools are readOnlyHint:true (the #846 cancellation fix)", () => {
-    for (const name of ["ctx_search", "ctx_checkpoint_report", "ctx_stats", "ctx_doctor"]) {
+    for (const name of ["ctx_search", "ctx_checkpoint_report", "ctx_recovery_brief_status", "ctx_stats", "ctx_doctor"]) {
       expect(find(name)!.config.annotations!.readOnlyHint).toBe(true);
     }
   });
@@ -6520,6 +6523,7 @@ describe("ctx_* MCP tool annotations (#846)", () => {
     for (const name of [
       "ctx_execute", "ctx_execute_file", "ctx_batch_execute", "ctx_index",
       "ctx_fetch_and_index", "ctx_purge", "ctx_upgrade", "ctx_insight",
+      "ctx_recovery_brief_init", "ctx_recovery_brief_update",
     ]) {
       expect(find(name)!.config.annotations!.readOnlyHint).toBe(false);
     }

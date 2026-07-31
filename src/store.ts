@@ -29,6 +29,17 @@ interface Chunk {
 
 type SourceMatchMode = "like" | "exact";
 
+/**
+ * RecoveryBrief files are controlled semantic state, not ordinary FTS input.
+ * Indexing them would let mutable current state bypass checkpoint snapshots.
+ */
+export function isRecoveryBriefIndexPath(path: string): boolean {
+  const normalizedPath = path.replace(/\\/g, "/");
+  return /(?:^|\/)\.trellis\/\.runtime(?:\/|$)/.test(normalizedPath)
+    || /(?:^|\/)\.trellis(?:\/.*)?\/recovery-brief\.json$/.test(normalizedPath)
+    || /(?:^|\/)\.context-mode\/(?:recovery-provider|recovery-brief)\.json$/.test(normalizedPath);
+}
+
 type SearchRow = {
   title: string;
   content: string;
@@ -858,6 +869,9 @@ export class ContentStore {
     if (!hasContent && !path) {
       throw new Error("Either content or path must be provided");
     }
+    if (!hasContent && path && isRecoveryBriefIndexPath(path)) {
+      throw new Error(`refusing to index controlled RecoveryBrief state: ${path}`);
+    }
 
     // Read file via fd to close the TOCTOU window between the security
     // gate (security.ts evaluateFilePath calls realpathSync) and the read
@@ -928,7 +942,7 @@ export class ContentStore {
     let failed = 0;
 
     for (const file of walked.files) {
-      if (perFileDeny && perFileDeny(file)) {
+      if (isRecoveryBriefIndexPath(file) || (perFileDeny && perFileDeny(file))) {
         denied++;
         continue;
       }

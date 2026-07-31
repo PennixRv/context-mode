@@ -14,7 +14,8 @@ user-invocable: true
 1. Call the `mcp__context-mode__ctx_checkpoint_report` MCP tool.
 2. Render the complete JSON response without omitting fields.
 3. State clearly that this is a delivery-reliability report, not a semantic recovery-quality score.
-4. When `available` is `false` or `warnings` is non-empty, report those conditions before interpreting rates.
+4. Render the content-free `recoveryBrief` telemetry: snapshot state, provider origin, and projection grouping. Treat it as structural availability and delivery data only.
+5. When `available` is `false` or `warnings` is non-empty, report those conditions before interpreting rates.
 
 ## Boundaries
 

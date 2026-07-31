@@ -6,6 +6,37 @@ export type CheckpointProjectionMode = "full" | "pruned" | "id_only";
 
 export type RecoveryBriefStatus = "absent" | "invalid" | "available";
 
+/**
+ * The source selected when a checkpoint snapshots a RecoveryBrief. `null` is
+ * reserved for rows created before origin tracking was introduced.
+ */
+export type RecoveryBriefOrigin = "trellis" | "project" | "none";
+
+export type RecoveryBriefProviderKind = RecoveryBriefOrigin;
+
+export type RecoveryBriefProviderHealth = "available" | "absent" | "invalid";
+
+export type RecoveryBriefErrorCode =
+  | "NONE"
+  | "SESSION_UNAVAILABLE"
+  | "NO_PROVIDER"
+  | "TRELLIS_RUNTIME_INVALID"
+  | "TRELLIS_TASK_INVALID"
+  | "TRELLIS_BRIEF_INVALID"
+  | "PROJECT_PROVIDER_INVALID"
+  | "PROJECT_BRIEF_INVALID"
+  | "PROJECT_SOURCE_INVALID"
+  | "PROJECT_SOURCE_DRIFT"
+  | "PROJECT_SOURCE_MISMATCH"
+  | "PROJECT_GIT_EVIDENCE_UNAVAILABLE"
+  | "PROVIDER_ALREADY_INITIALIZED"
+  | "PROJECT_GIT_REQUIRED"
+  | "CAS_CONFLICT"
+  | "INVALID_EXPECTED_SHA256"
+  | "INVALID_RECOVERY_BRIEF"
+  | "UNSAFE_PROVIDER_PATH"
+  | "WRITE_FAILED";
+
 export type RecoveryBriefFactPriority = "critical" | "important" | "optional";
 
 export type RecoveryBriefSourceKind = "trellis_task" | "explicit_project_state" | "git";
@@ -122,6 +153,7 @@ export interface CheckpointRow {
   recovery_json: string | null;
   recovery_sha256: string | null;
   recovery_status: RecoveryBriefStatus | null;
+  recovery_origin: RecoveryBriefOrigin | null;
   created_at: string;
   confirmed_at: string | null;
   claimed_at: string | null;
@@ -158,6 +190,36 @@ export interface CheckpointDeliverySummary {
   emittedBytesAverage: number | null;
 }
 
+export interface RecoveryBriefSnapshotCounts {
+  available: number;
+  absent: number;
+  invalid: number;
+  legacyUnknown: number;
+}
+
+export interface RecoveryBriefOriginCounts {
+  trellis: number;
+  project: number;
+  none: number;
+  legacyUnknown: number;
+}
+
+export interface RecoveryBriefProjectionSummary {
+  snapshots: RecoveryBriefSnapshotCounts;
+  origins: RecoveryBriefOriginCounts;
+}
+
+export interface RecoveryBriefReliabilitySummary {
+  snapshots: RecoveryBriefSnapshotCounts;
+  origins: RecoveryBriefOriginCounts;
+  byProjection: {
+    full: RecoveryBriefProjectionSummary;
+    pruned: RecoveryBriefProjectionSummary;
+    idOnly: RecoveryBriefProjectionSummary;
+    unknown: RecoveryBriefProjectionSummary;
+  };
+}
+
 export interface CheckpointReliabilityReport {
   available: boolean;
   project: {
@@ -176,8 +238,50 @@ export interface CheckpointReliabilityReport {
     confirmedToClaimed: CheckpointLatencySummary;
   };
   delivery: CheckpointDeliverySummary;
+  recoveryBrief: RecoveryBriefReliabilitySummary;
   overduePendingCount: number;
   warnings: string[];
+}
+
+export interface RecoveryBriefSourceSummary {
+  registered: number;
+  verified: number;
+  drifted: number;
+  sourceKinds: Record<RecoveryBriefSourceKind, number>;
+}
+
+/** A content-free status surface used by the controlled MCP workflow. */
+export interface RecoveryBriefProviderStatus {
+  provider: RecoveryBriefProviderKind;
+  health: RecoveryBriefProviderHealth;
+  recoveryStatus: RecoveryBriefStatus;
+  origin: RecoveryBriefOrigin;
+  task: "active" | "absent" | "not_applicable";
+  briefPath: string | null;
+  briefSha256: string | null;
+  briefBytes: number | null;
+  updatedAt: string | null;
+  sources: RecoveryBriefSourceSummary;
+  sourceDrift: boolean;
+  errorCode: RecoveryBriefErrorCode;
+}
+
+export interface RecoveryBriefProviderInitResult {
+  ok: boolean;
+  storage: "local" | "tracked" | null;
+  sourceCount: number;
+  errorCode: RecoveryBriefErrorCode;
+}
+
+export interface RecoveryBriefProviderUpdateResult {
+  ok: boolean;
+  provider: RecoveryBriefProviderKind;
+  origin: RecoveryBriefOrigin;
+  briefSha256: string | null;
+  briefBytes: number | null;
+  updatedAt: string | null;
+  sourceCount: number;
+  errorCode: RecoveryBriefErrorCode;
 }
 
 export interface CheckpointHookInput {

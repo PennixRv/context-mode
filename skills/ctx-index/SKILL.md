@@ -42,5 +42,6 @@ ctx_search({ source: "project:<name>", queries: ["..."] })
 ## Safety
 
 - Do not index dependency directories, build outputs, secrets, or generated artifacts.
+- Do not index controlled RecoveryBrief state. `ctx_index` refuses Trellis runtime files, Trellis `recovery-brief.json`, and `.context-mode/recovery-provider.json` or `.context-mode/recovery-brief.json`, including when indexing a directory.
 - Prefer `--exclude` or `exclude` for project-specific noisy paths.
 - For broad repos, ask the user before raising `maxFiles` above 500.

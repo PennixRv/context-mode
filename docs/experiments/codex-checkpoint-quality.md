@@ -22,13 +22,14 @@ continuity.
 
 `CheckpointPayload v1` remains a privacy-minimal lifecycle and audit payload.
 It does not contain task semantics. A separately versioned `RecoveryBrief` is
-the only semantic source consumed by the checkpoint runtime:
+the only semantic source consumed by the checkpoint runtime. A valid active
+Trellis pointer is authoritative:
 
 ```text
 .trellis/tasks/<active-task>/recovery-brief.json
 ```
 
-The active task is resolved only through the existing session-specific Trellis
+The active Trellis task is resolved only through the existing session-specific
 runtime pointer:
 
 ```text
@@ -37,8 +38,17 @@ runtime pointer:
 
 The file must be a materialized regular file beneath that active task; task
 pointers outside `.trellis`, symlinks, malformed JSON, oversized files, and
-schema failures are rejected. The runtime never discovers state from
+schema failures are rejected. An invalid, stale, or unsafe Trellis pointer
+fails closed and never falls back. The runtime never discovers state from
 transcripts, tool output, prompts, or Trellis artifact bodies.
+
+When no Trellis runtime pointer exists, a project may explicitly initialize
+`.context-mode/recovery-provider.json`; its live Brief is
+`.context-mode/recovery-brief.json`. This fallback is never initialized
+implicitly. Project `explicit_project_state` facts must match registered source
+hashes, and `git` facts must match current Git-status evidence. Later source
+drift invalidates only live-provider use; it cannot alter a historical SQLite
+snapshot.
 
 Schema version `1` has these exact top-level fields:
 
