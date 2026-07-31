@@ -23,6 +23,7 @@ These guides help you **ask the right questions before coding**.
 |-------|---------|-------------|
 | [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
 | [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+| [Repository Maintenance Thinking Guide](./repository-maintenance-thinking-guide.md) | Preserve fork/upstream and automation boundaries | Branch, release, or workflow-maintenance work |
 
 ---
 
@@ -50,6 +51,15 @@ These guides help you **ask the right questions before coding**.
 - [ ] Multiple branches update the same derived state from `kind` / `action`
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
+
+### When to Think About Repository Maintenance
+
+- [ ] Changing a default branch, remote branch, release tag, or branch protection
+- [ ] Synchronizing a fork branch with upstream
+- [ ] Enabling or changing an automated workflow with `contents: write`
+- [ ] Deciding which development artifacts are shared versus local-only
+
+→ Read [Repository Maintenance Thinking Guide](./repository-maintenance-thinking-guide.md)
 
 ### When Verifying AI Cross-Review Results
 
