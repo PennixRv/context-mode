@@ -71,6 +71,30 @@ workflow exists:
 5. Fetch the remote, set its symbolic `HEAD`, and verify that local `main`,
    `origin/main`, and `upstream/main` have zero divergence.
 
+## Trellis Channel Capacity Recovery
+
+When a named Trellis channel worker reports a transient provider-capacity
+failure such as `Selected model is at capacity`, continue the same worker
+directly before replacing it.
+
+1. Preserve the worker's channel, app-server process, thread, event log, and
+   any task-local report it already wrote.
+2. Send a concise continuation instruction to the **same** worker through the
+   existing channel. Tell it to use evidence already gathered, avoid restarting
+   broad discovery, and finish its assigned task-local report.
+3. Do not kill, respawn, rename, or duplicate the worker solely because of the
+   first capacity error. Those actions discard useful thread-local evidence and
+   create duplicate research ownership.
+4. Inspect the raw event log and report path after the continuation. Escalate
+   only if direct continuation also cannot make progress, and record the
+   provider failure separately from product behavior.
+
+Good: `trellis channel send <channel> --as main --to <same-worker> \
+--text-file <continuation-brief> --delivery-mode requireRunningWorker`.
+
+Bad: kill the worker and spawn a fresh replacement immediately, then repeat
+the entire investigation without its collected evidence.
+
 ## Final Verification
 
 - [ ] Only `main` and `devel` are fork-managed local and `origin` branches.

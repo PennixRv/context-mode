@@ -58,6 +58,7 @@ These guides help you **ask the right questions before coding**.
 - [ ] Synchronizing a fork branch with upstream
 - [ ] Enabling or changing an automated workflow with `contents: write`
 - [ ] Deciding which development artifacts are shared versus local-only
+- [ ] Recovering a Trellis channel worker after a transient provider-capacity error
 
 → Read [Repository Maintenance Thinking Guide](./repository-maintenance-thinking-guide.md)
 
