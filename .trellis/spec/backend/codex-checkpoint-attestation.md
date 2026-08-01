@@ -203,6 +203,11 @@ annotated release tag must point to `E`.
   those bytes with the digests attested from `C`. The evidence commit must add
   only the regular direct-child attestation path, and verification must fail
   before release publication on any mismatch.
+- The offline archive digest is a byte-level contract. The builder must define
+  sorted tar records, timestamps, ownership, modes, gzip header/trailer, and
+  deflate bytes without inheriting ambient `SOURCE_DATE_EPOCH`, filesystem
+  timestamps, or a host zlib implementation. Content-manifest equality alone
+  is insufficient because it cannot prove archive-byte equality.
 
 ### 4. Validation And Error Matrix
 

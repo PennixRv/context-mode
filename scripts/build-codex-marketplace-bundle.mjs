@@ -9,7 +9,6 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { gzipSync } from "node:zlib";
 import {
   cpSync,
   existsSync,
@@ -60,6 +59,36 @@ const codexPayloadEntries = [
   "README.md",
   "LICENSE",
 ];
+const RELEASE_TAR_MTIME_SECONDS = 0;
+const MAX_STORED_DEFLATE_BLOCK_BYTES = 0xffff;
+const GZIP_HEADER = Buffer.from([
+  0x1f,
+  0x8b,
+  0x08,
+  0x00,
+  0x00,
+  0x00,
+  0x00,
+  0x00,
+  0x00,
+  0xff,
+]);
+
+function createCrc32Table() {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index++) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit++) {
+      value = (value & 1) === 1
+        ? (value >>> 1) ^ 0xedb88320
+        : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+}
+
+const crc32Table = createCrc32Table();
 
 function normalizePath(path) {
   return path.split(sep).join("/");
@@ -67,6 +96,14 @@ function normalizePath(path) {
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function crc32(content) {
+  let value = 0xffffffff;
+  for (const byte of content) {
+    value = crc32Table[(value ^ byte) & 0xff] ^ (value >>> 8);
+  }
+  return (value ^ 0xffffffff) >>> 0;
 }
 
 function parseArguments(argv) {
@@ -337,12 +374,26 @@ function createTarHeader(relativePath, type, size, mtime) {
   return header;
 }
 
-function createArchive(stagingRoot, archivePath) {
-  const sourceDateEpoch = Number.parseInt(process.env.SOURCE_DATE_EPOCH ?? "0", 10);
-  if (!Number.isSafeInteger(sourceDateEpoch) || sourceDateEpoch < 0) {
-    throw new Error("SOURCE_DATE_EPOCH must be a non-negative integer");
+function createDeterministicGzip(tar) {
+  const blockCount = Math.max(1, Math.ceil(tar.length / MAX_STORED_DEFLATE_BLOCK_BYTES));
+  const deflateParts = [];
+  for (let blockIndex = 0; blockIndex < blockCount; blockIndex++) {
+    const offset = blockIndex * MAX_STORED_DEFLATE_BLOCK_BYTES;
+    const length = Math.min(MAX_STORED_DEFLATE_BLOCK_BYTES, tar.length - offset);
+    const header = Buffer.alloc(5);
+    header[0] = blockIndex === blockCount - 1 ? 0x01 : 0x00;
+    header.writeUInt16LE(length, 1);
+    header.writeUInt16LE((~length) & 0xffff, 3);
+    deflateParts.push(header, tar.subarray(offset, offset + length));
   }
 
+  const trailer = Buffer.alloc(8);
+  trailer.writeUInt32LE(crc32(tar), 0);
+  trailer.writeUInt32LE(tar.length % 2 ** 32, 4);
+  return Buffer.concat([GZIP_HEADER, ...deflateParts, trailer]);
+}
+
+function createArchive(stagingRoot, archivePath) {
   const filePaths = listFiles(stagingRoot);
   const directoryPaths = new Set();
   for (const relativePath of filePaths) {
@@ -354,20 +405,18 @@ function createArchive(stagingRoot, archivePath) {
 
   const archiveParts = [];
   for (const relativePath of [...directoryPaths].sort()) {
-    archiveParts.push(createTarHeader(relativePath, "directory", 0, sourceDateEpoch));
+    archiveParts.push(createTarHeader(relativePath, "directory", 0, RELEASE_TAR_MTIME_SECONDS));
   }
   for (const relativePath of filePaths) {
     const content = readFileSync(join(stagingRoot, relativePath));
     const remainder = content.length % 512;
-    archiveParts.push(createTarHeader(relativePath, "file", content.length, sourceDateEpoch));
+    archiveParts.push(createTarHeader(relativePath, "file", content.length, RELEASE_TAR_MTIME_SECONDS));
     archiveParts.push(content);
     if (remainder !== 0) archiveParts.push(Buffer.alloc(512 - remainder));
   }
   archiveParts.push(Buffer.alloc(1024));
 
-  const compressed = gzipSync(Buffer.concat(archiveParts), { level: 9, mtime: 0 });
-  compressed[9] = 255;
-  writeFileSync(archivePath, compressed);
+  writeFileSync(archivePath, createDeterministicGzip(Buffer.concat(archiveParts)));
 }
 
 function moveArchiveToOutput(temporaryArchivePath, outputArchivePath) {

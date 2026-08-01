@@ -92,6 +92,13 @@ and content manifest. The attestation records the archive and manifest digests
 produced from the source commit, while the release payload allowlists exclude
 `docs/releases/attestations`; matching the rebuilt evidence-commit digests
 therefore proves the evidence-only commit did not alter the published payload.
+
+Archive byte reproducibility is stricter than content-manifest parity. The
+offline builder writes sorted portable USTAR records with fixed timestamps,
+modes, ownership, and a repository-defined gzip stream. It must not inherit
+`SOURCE_DATE_EPOCH` or delegate the final deflate bytes to a host zlib version.
+Regression coverage builds isolated source copies with different file timestamps
+and `SOURCE_DATE_EPOCH` values, then requires equal archive SHA-256 values.
 The verifier also validates the raw-file and canonical-payload digests, checks
 the immutable tag bindings and the pinned
 Node `26.5.0` / Codex CLI `0.146.0` tuple, and fails before `gh release

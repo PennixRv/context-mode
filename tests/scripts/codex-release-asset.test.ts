@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -9,14 +9,48 @@ const repositoryRoot = resolve(__dirname, "..", "..");
 const builderPath = resolve(repositoryRoot, "scripts", "build-codex-marketplace-bundle.mjs");
 const verifierPath = resolve(repositoryRoot, "scripts", "verify-codex-release-asset.mjs");
 
-function buildArchive(outputDirectory: string): string {
-  const result = spawnSync(process.execPath, [builderPath, "--output-dir", outputDirectory], {
-    cwd: repositoryRoot,
+function buildArchive(
+  outputDirectory: string,
+  options: {
+    sourceRoot?: string;
+    sourceDateEpoch?: string;
+  } = {},
+): string {
+  const sourceRoot = options.sourceRoot ?? repositoryRoot;
+  const result = spawnSync(process.execPath, [
+    resolve(sourceRoot, "scripts", "build-codex-marketplace-bundle.mjs"),
+    "--output-dir",
+    outputDirectory,
+  ], {
+    cwd: sourceRoot,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      ...(options.sourceDateEpoch === undefined
+        ? {}
+        : { SOURCE_DATE_EPOCH: options.sourceDateEpoch }),
+    },
     timeout: 60_000,
   });
   expect(result.status, result.stderr).toBe(0);
   return JSON.parse(result.stdout).archive as string;
+}
+
+function copyReleaseSource(destinationDirectory: string): void {
+  cpSync(repositoryRoot, destinationDirectory, {
+    recursive: true,
+    filter(sourcePath) {
+      const relativePath = relative(repositoryRoot, sourcePath).split(sep).join("/");
+      return relativePath === "" || ![
+        ".git",
+        ".trellis",
+        "node_modules",
+        "release",
+      ].some((excludedPath) => (
+        relativePath === excludedPath || relativePath.startsWith(`${excludedPath}/`)
+      ));
+    },
+  });
 }
 
 function buildArchiveWithPnpmSeparator(outputDirectory: string): string {
@@ -112,11 +146,16 @@ describe("Codex offline marketplace release asset", () => {
     try {
       const archive = readFileSync(buildArchive(outputDirectory));
       const tar = gunzipSync(archive);
+      const builderSource = readFileSync(builderPath, "utf8");
 
       expect(archive.subarray(4, 8).equals(Buffer.alloc(4))).toBe(true);
+      expect(archive[8]).toBe(0);
       expect(archive[9]).toBe(255);
       expect(tar.subarray(257, 263).toString("ascii")).toBe("ustar\0");
       expect(tar.subarray(263, 265).toString("ascii")).toBe("00");
+      expect(builderSource).toContain("function createDeterministicGzip");
+      expect(builderSource).not.toContain("gzipSync");
+      expect(builderSource).not.toContain("SOURCE_DATE_EPOCH");
     } finally {
       rmSync(outputDirectory, { recursive: true, force: true });
     }
@@ -132,6 +171,40 @@ describe("Codex offline marketplace release asset", () => {
     } finally {
       rmSync(firstDirectory, { recursive: true, force: true });
       rmSync(secondDirectory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test("rebuilds byte-for-byte across isolated source timestamps and environment", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "context-mode-release-reproducible-"));
+    const firstSourceRoot = join(temporaryRoot, "first-source");
+    const secondSourceRoot = join(temporaryRoot, "second-source");
+    const firstOutputDirectory = join(temporaryRoot, "first-output");
+    const secondOutputDirectory = join(temporaryRoot, "second-output");
+    try {
+      copyReleaseSource(firstSourceRoot);
+      copyReleaseSource(secondSourceRoot);
+      for (const relativePath of [
+        "package.json",
+        "README.md",
+        "server.bundle.mjs",
+        "hooks/checkpoint.bundle.mjs",
+      ]) {
+        utimesSync(join(firstSourceRoot, relativePath), new Date("2020-01-01T00:00:00.000Z"), new Date("2020-01-01T00:00:00.000Z"));
+        utimesSync(join(secondSourceRoot, relativePath), new Date("2040-01-01T00:00:00.000Z"), new Date("2040-01-01T00:00:00.000Z"));
+      }
+
+      const firstArchive = buildArchive(firstOutputDirectory, {
+        sourceRoot: firstSourceRoot,
+        sourceDateEpoch: "0",
+      });
+      const secondArchive = buildArchive(secondOutputDirectory, {
+        sourceRoot: secondSourceRoot,
+        sourceDateEpoch: "2208988800",
+      });
+
+      expect(readFileSync(firstArchive).equals(readFileSync(secondArchive))).toBe(true);
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 120_000);
 });
