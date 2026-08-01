@@ -8,7 +8,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -22,6 +22,9 @@ const TURN_TIMEOUT_MS = 120_000;
 const COMPACTION_START_TIMEOUT_MS = 30_000;
 const COMPACTION_COMPLETE_TIMEOUT_MS = 120_000;
 const NORMAL_CODEX_HOME = resolve(homedir(), ".codex");
+const RELEASE_PLUGIN_ID = "context-mode@context-mode-offline";
+const RELEASE_HOOK_KEY_PATTERN = /^context-mode@context-mode-offline:\.codex-plugin\/hooks\.json:[a-z_]+:\d+:\d+$/;
+const SHA256_VALUE_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const RESPONSE_ITEM_TYPES = new Set([
   "agentMessage",
@@ -218,7 +221,6 @@ function verifyCompletedCheckpointHooks(hookEvents) {
 
 export function createClient(options, report) {
   const appServerArguments = [
-    "--dangerously-bypass-hook-trust",
     "-c",
     "features.hooks=true",
     "-c",
@@ -351,6 +353,80 @@ export function createClient(options, report) {
   }
 
   return { close, events, request, responseTextByTurn, send, waitFor };
+}
+
+function countReleaseHookHandlers(releasePluginRoot) {
+  const hooksPath = join(releasePluginRoot, ".codex-plugin", "hooks.json");
+  const hookConfig = readJson(hooksPath, "release plugin hook configuration");
+  if (!hookConfig.hooks || typeof hookConfig.hooks !== "object") {
+    throw new Error("release plugin hook configuration must define hooks");
+  }
+  return Object.values(hookConfig.hooks).reduce((total, entries) => {
+    if (!Array.isArray(entries)) throw new Error("release plugin hook event must contain entries");
+    return total + entries.reduce((eventTotal, entry) => {
+      if (!Array.isArray(entry?.hooks)) throw new Error("release plugin hook entry must contain handlers");
+      return eventTotal + entry.hooks.length;
+    }, 0);
+  }, 0);
+}
+
+export function formatReleaseHookTrustState(releasePluginRoot, hooksResponse) {
+  const expectedSourcePath = resolve(releasePluginRoot, ".codex-plugin", "hooks.json");
+  const expectedHookCount = countReleaseHookHandlers(releasePluginRoot);
+  const hooks = (hooksResponse?.data ?? [])
+    .flatMap((entry) => Array.isArray(entry?.hooks) ? entry.hooks : [])
+    .filter((hook) => hook.pluginId === RELEASE_PLUGIN_ID);
+  if (hooks.length !== expectedHookCount || hooks.length === 0) {
+    throw new Error("Codex hook discovery did not return every release plugin hook");
+  }
+  const keys = new Set();
+  for (const hook of hooks) {
+    if (
+      hook.source !== "plugin"
+      || hook.trustStatus !== "untrusted"
+      || resolve(hook.sourcePath ?? "") !== expectedSourcePath
+      || !RELEASE_HOOK_KEY_PATTERN.test(hook.key ?? "")
+      || !SHA256_VALUE_PATTERN.test(hook.currentHash ?? "")
+      || keys.has(hook.key)
+    ) {
+      throw new Error("Codex hook discovery returned an unsafe release hook record");
+    }
+    keys.add(hook.key);
+  }
+  return hooks
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map((hook) => `[hooks.state."${hook.key}"]\ntrusted_hash = "${hook.currentHash}"`)
+    .join("\n\n");
+}
+
+export async function provisionReleaseHookTrust(options) {
+  const client = createClient(options, createReport(options));
+  try {
+    await client.request("initialize", {
+      clientInfo: {
+        name: "context-mode-release-hook-trust",
+        version: "1.0",
+      },
+      capabilities: { experimentalApi: true },
+    });
+    client.send({ method: "initialized", params: {} });
+    const trustState = formatReleaseHookTrustState(
+      options.releasePluginRoot,
+      await client.request("hooks/list", { cwds: [options.projectPath] }),
+    );
+    const configPath = join(options.validationHome, "config.toml");
+    if (!lstatSync(configPath).isFile() || (lstatSync(configPath).mode & 0o777) !== 0o600) {
+      throw new Error("disposable CODEX_HOME provider config must be a regular mode-0600 file");
+    }
+    if (readFileSync(configPath, "utf8").includes("[hooks.state.")) {
+      throw new Error("disposable CODEX_HOME must not contain hook trust state before release provisioning");
+    }
+    appendFileSync(configPath, `\n${trustState}\n`, "utf8");
+    chmodSync(configPath, 0o600);
+    return trustState.split("\n\n").length;
+  } finally {
+    await client.close();
+  }
 }
 
 function checkpointAttestationPrompt() {
@@ -579,6 +655,10 @@ export async function run(options, report, verification = null) {
 
 async function main() {
   const options = resolveOptions();
+  if (process.env.CONTEXT_MODE_PROVISION_HOOK_TRUST === "1") {
+    console.log(JSON.stringify({ trustedHookCount: await provisionReleaseHookTrust(options) }));
+    return;
+  }
   const report = createReport(options);
   writeReport(options.reportPath, report);
 

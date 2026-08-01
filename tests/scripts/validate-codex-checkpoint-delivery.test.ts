@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { formatReleaseHookTrustState } from "../../scripts/validate-codex-checkpoint-delivery.mjs";
 
 const repositoryRoot = resolve(__dirname, "..", "..");
 const validatorSource = readFileSync(
@@ -17,9 +18,31 @@ describe("Codex checkpoint delivery attestation release boundary", () => {
     expect(validatorSource).toContain("release payload must not contain node_modules");
   });
 
-  test("enables and trusts hooks only for the temporary native validator server", () => {
-    expect(validatorSource).toContain('"--dangerously-bypass-hook-trust"');
+  test("derives temporary hook trust only from Codex-discovered release hooks", () => {
+    const releasePluginRoot = repositoryRoot;
+    const hookConfig = JSON.parse(readFileSync(
+      resolve(releasePluginRoot, ".codex-plugin", "hooks.json"),
+      "utf8",
+    ));
+    const hooks = Object.entries(hookConfig.hooks).flatMap(([eventName, entries]) => entries.flatMap(
+      (entry: { hooks: unknown[] }, entryIndex: number) => entry.hooks.map((_, hookIndex) => ({
+        pluginId: "context-mode@context-mode-offline",
+        source: "plugin",
+        trustStatus: "untrusted",
+        sourcePath: resolve(releasePluginRoot, ".codex-plugin", "hooks.json"),
+        key: `context-mode@context-mode-offline:.codex-plugin/hooks.json:${eventName.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`).replace(/^_/, "")}:${entryIndex}:${hookIndex}`,
+        currentHash: `sha256:${"a".repeat(64)}`,
+      })),
+    ));
+    const trustState = formatReleaseHookTrustState(releasePluginRoot, { data: [{ hooks }] });
+
+    expect(trustState).toContain('[hooks.state."context-mode@context-mode-offline:.codex-plugin/hooks.json:pre_compact:0:0"]');
+    expect(trustState).toContain(`trusted_hash = "sha256:${"a".repeat(64)}"`);
+    expect(() => formatReleaseHookTrustState(releasePluginRoot, {
+      data: [{ hooks: hooks.slice(1) }],
+    })).toThrow(/every release plugin hook/);
+    expect(validatorSource).toContain('client.request("hooks/list", { cwds: [options.projectPath] })');
     expect(validatorSource).toContain('"features.hooks=true"');
-    expect(validatorSource).toContain('"features.code_mode_host=true"');
+    expect(validatorSource).not.toContain('"--dangerously-bypass-hook-trust"');
   });
 });

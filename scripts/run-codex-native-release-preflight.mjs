@@ -412,16 +412,27 @@ function main() {
     );
     if (!existsSync(pluginRoot)) throw new Error("offline plugin was not installed");
 
+    const validatorEnvironment = {
+      ...codexEnv,
+      CONTEXT_MODE_VALIDATION_HOME: validationHome,
+      CONTEXT_MODE_PROJECT_PATH: projectRoot,
+      CONTEXT_MODE_RELEASE_PLUGIN_ROOT: pluginRoot,
+    };
+    run(process.execPath, [join(repositoryRoot, "scripts/validate-codex-checkpoint-delivery.mjs")], {
+      env: {
+        ...validatorEnvironment,
+        CONTEXT_MODE_CHECKPOINT_TRIGGER: "manual",
+        CONTEXT_MODE_PROVISION_HOOK_TRUST: "1",
+      },
+    });
+
     const triggers = {};
     for (const trigger of ["manual", "auto"]) {
       const reportPath = join(validationHome, `native-${trigger}.json`);
       try {
         run(process.execPath, [join(repositoryRoot, "scripts/validate-codex-checkpoint-delivery.mjs")], {
           env: {
-            ...codexEnv,
-            CONTEXT_MODE_VALIDATION_HOME: validationHome,
-            CONTEXT_MODE_PROJECT_PATH: projectRoot,
-            CONTEXT_MODE_RELEASE_PLUGIN_ROOT: pluginRoot,
+            ...validatorEnvironment,
             CONTEXT_MODE_CHECKPOINT_TRIGGER: trigger,
             CONTEXT_MODE_REPORT_PATH: reportPath,
           },

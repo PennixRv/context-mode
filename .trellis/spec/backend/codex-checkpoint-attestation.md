@@ -189,12 +189,16 @@ annotated release tag must point to `E`.
   accepts an auth-file option, reads or copies a normal auth file, or passes
   `OPENAI_API_KEY` to Codex child processes. Raw trigger reports, the generated
   auth file, and the temporary root are removed in success and failure paths.
-- The archive-installed validator invokes only its temporary `app-server` with
-  `--dangerously-bypass-hook-trust`, `-c features.hooks=true`, and its existing
-  code-mode setting. Codex otherwise requires normal-profile per-hook trust
-  state, which must never be copied into the gate. This exception is permitted
-  only after archive verification and inside the disposable `CODEX_HOME`; it
-  does not weaken normal installed-plugin trust behavior.
+- Before either trigger, the preflight starts only its temporary `app-server`
+  with `-c features.hooks=true` and requests `hooks/list`. It accepts exactly
+  the archive-installed `context-mode@context-mode-offline` plugin hooks that
+  are `untrusted`, sourced from the materialized `.codex-plugin/hooks.json`,
+  and carry a Codex-provided SHA-256 `currentHash`. It writes those exact
+  returned hashes as the disposable profile's `hooks.state`; it must reject a
+  missing, duplicate, pretrusted, foreign, unsafe, or incomplete record. The
+  preflight never calculates, imports, or copies normal-profile hook trust.
+  The temporary validator uses the same invocation-scoped hook feature
+  override; normal installed-plugin trust behavior remains unchanged.
 - CI checks out `E`, rebuilds the archive and content manifest, then compares
   those bytes with the digests attested from `C`. The evidence commit must add
   only the regular direct-child attestation path, and verification must fail
