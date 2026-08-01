@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   checkpointInternals,
+  claimConfirmedCheckpointContext,
+  confirmPendingCheckpoint,
   createPendingCheckpoint,
   getCheckpointReliabilityReport,
   getRecoveryBriefProviderStatus,
@@ -20,10 +22,20 @@ import type { CheckpointHookInput, RecoveryBrief, RecoveryBriefFact } from "../.
 
 const BASE_TIME = new Date("2026-07-30T00:00:00.000Z");
 const CLEANUP_DIRECTORIES: string[] = [];
+const PROJECT_PROVIDER_SENTINEL = "PROJECT-PROVIDER-SENTINEL";
 
 interface Fixture {
   configDir: string;
   projectDir: string;
+}
+
+interface InvalidTrellisPointerCase {
+  name: string;
+  errorCode:
+    | "TRELLIS_RUNTIME_INVALID"
+    | "TRELLIS_TASK_INVALID"
+    | "TRELLIS_BRIEF_INVALID";
+  invalidate: (projectDir: string, sessionId: string, taskDir: string) => void;
 }
 
 function sha256(value: string | Buffer): string {
@@ -94,9 +106,126 @@ function createActiveTrellisTask(projectDir: string, sessionId: string): string 
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
   writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: "task-1" }), "utf8");
-  writeFileSync(join(runtimeDir, `codex_${sessionId}.json`), JSON.stringify({ current_task: "tasks/task-1" }), "utf8");
+  writeFileSync(trellisRuntimePath(projectDir, sessionId), JSON.stringify({ current_task: "tasks/task-1" }), "utf8");
   return taskDir;
 }
+
+function trellisRuntimePath(projectDir: string, sessionId: string): string {
+  return join(projectDir, ".trellis", ".runtime", "sessions", `codex_${sessionId}.json`);
+}
+
+function configureProjectRecoveryProvider(current: Fixture, sessionId: string): void {
+  writeFileSync(join(current.projectDir, "evidence.md"), "fallback evidence", "utf8");
+  expect(initializeProjectRecoveryBriefProvider(current.projectDir, {
+    storage: "tracked",
+    sourcePaths: ["evidence.md"],
+  }).ok).toBe(true);
+  expect(updateRecoveryBriefProvider(current.projectDir, sessionId, {
+    expectedSha256: "absent",
+    brief: {
+      ...brief("explicit_project_state", providerSourceHash(current.projectDir)),
+      objective: fact(
+        PROJECT_PROVIDER_SENTINEL,
+        "critical",
+        "explicit_project_state",
+        providerSourceHash(current.projectDir),
+      ),
+    },
+  }).ok).toBe(true);
+}
+
+function expectInvalidTrellisCheckpoint(
+  current: Fixture,
+  sessionId: string,
+  turnId: string,
+  errorCode: InvalidTrellisPointerCase["errorCode"],
+): void {
+  expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId)).toMatchObject({
+    provider: "trellis",
+    health: "invalid",
+    recoveryStatus: "invalid",
+    origin: "trellis",
+    errorCode,
+  });
+
+  createPendingCheckpoint(input(current.projectDir, sessionId, turnId), {
+    configDir: current.configDir,
+    now: BASE_TIME,
+  });
+  const identity = resolveCheckpointIdentity(current.projectDir, current.configDir);
+  const Database = loadDatabase();
+  const database = new Database(identity.dbPath);
+  try {
+    expect(database.prepare(
+      "SELECT recovery_status, recovery_origin, recovery_json, recovery_sha256 FROM compact_checkpoints WHERE turn_id = ?",
+    ).get(turnId)).toEqual({
+      recovery_status: "invalid",
+      recovery_origin: "trellis",
+      recovery_json: null,
+      recovery_sha256: null,
+    });
+  } finally {
+    database.close();
+  }
+
+  const checkpointInput = input(current.projectDir, sessionId, turnId);
+  expect(confirmPendingCheckpoint(checkpointInput, {
+    configDir: current.configDir,
+    now: new Date(BASE_TIME.getTime() + 1),
+  })).toBe(true);
+  const context = claimConfirmedCheckpointContext(checkpointInput, {
+    configDir: current.configDir,
+    now: new Date(BASE_TIME.getTime() + 2),
+  });
+  expect(context).not.toContain("\"recovery_brief\"");
+  expect(context).not.toContain(PROJECT_PROVIDER_SENTINEL);
+}
+
+const INVALID_TRELLIS_POINTER_CASES: InvalidTrellisPointerCase[] = [
+  {
+    name: "the runtime JSON is malformed",
+    errorCode: "TRELLIS_RUNTIME_INVALID",
+    invalidate: (projectDir, sessionId) => {
+      writeFileSync(trellisRuntimePath(projectDir, sessionId), "{", "utf8");
+    },
+  },
+  {
+    name: "the runtime pointer leaves the Trellis root",
+    errorCode: "TRELLIS_TASK_INVALID",
+    invalidate: (projectDir, sessionId) => {
+      writeFileSync(
+        trellisRuntimePath(projectDir, sessionId),
+        JSON.stringify({ current_task: "../../outside" }),
+        "utf8",
+      );
+    },
+  },
+  {
+    name: "the runtime points to a stale task directory",
+    errorCode: "TRELLIS_TASK_INVALID",
+    invalidate: (projectDir, sessionId) => {
+      writeFileSync(
+        trellisRuntimePath(projectDir, sessionId),
+        JSON.stringify({ current_task: "tasks/task-missing" }),
+        "utf8",
+      );
+    },
+  },
+  {
+    name: "the active task reference has no trusted task manifest",
+    errorCode: "TRELLIS_TASK_INVALID",
+    invalidate: (_projectDir, _sessionId, taskDir) => {
+      rmSync(join(taskDir, "task.json"));
+    },
+  },
+  {
+    name: "the Trellis RecoveryBrief is malformed",
+    errorCode: "TRELLIS_BRIEF_INVALID",
+    invalidate: (_projectDir, _sessionId, taskDir) => {
+      writeFileSync(join(taskDir, "recovery-brief.json"), "{", "utf8");
+    },
+  },
+];
 
 afterEach(() => {
   while (CLEANUP_DIRECTORIES.length > 0) {
@@ -249,44 +378,29 @@ describe("RecoveryBrief providers", () => {
     expect(existsSync(join(current.projectDir, ".context-mode", "recovery-brief.json"))).toBe(false);
   });
 
-  it("gives a valid Trellis pointer precedence and fails closed when that pointer becomes unsafe", () => {
-    const current = fixture();
-    writeFileSync(join(current.projectDir, "evidence.md"), "fallback evidence", "utf8");
-    initializeProjectRecoveryBriefProvider(current.projectDir, {
-      storage: "tracked",
-      sourcePaths: ["evidence.md"],
-    });
-    const sourceHash = providerSourceHash(current.projectDir);
-    expect(updateRecoveryBriefProvider(current.projectDir, "session-trellis", {
-      expectedSha256: "absent",
-      brief: brief("explicit_project_state", sourceHash),
-    }).ok).toBe(true);
+  for (const [index, invalidCase] of INVALID_TRELLIS_POINTER_CASES.entries()) {
+    it(`keeps a generic project provider isolated when ${invalidCase.name}`, () => {
+      const current = fixture();
+      const sessionId = `session-trellis-${index}`;
+      const turnId = `turn-trellis-${index}`;
+      configureProjectRecoveryProvider(current, sessionId);
 
-    const taskDir = createActiveTrellisTask(current.projectDir, "session-trellis");
-    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(
-      brief("trellis_task", "c".repeat(64)),
-    ), "utf8");
-    expect(getRecoveryBriefProviderStatus(current.projectDir, "session-trellis")).toMatchObject({
-      provider: "trellis",
-      health: "available",
-      recoveryStatus: "available",
-      origin: "trellis",
-      task: "active",
-    });
+      const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+      writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(
+        brief("trellis_task", "c".repeat(64)),
+      ), "utf8");
+      expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId)).toMatchObject({
+        provider: "trellis",
+        health: "available",
+        recoveryStatus: "available",
+        origin: "trellis",
+        task: "active",
+      });
 
-    writeFileSync(
-      join(current.projectDir, ".trellis", ".runtime", "sessions", "codex_session-trellis.json"),
-      JSON.stringify({ current_task: "../../outside" }),
-      "utf8",
-    );
-    expect(getRecoveryBriefProviderStatus(current.projectDir, "session-trellis")).toMatchObject({
-      provider: "trellis",
-      health: "invalid",
-      recoveryStatus: "invalid",
-      origin: "trellis",
-      errorCode: "TRELLIS_TASK_INVALID",
+      invalidCase.invalidate(current.projectDir, sessionId, taskDir);
+      expectInvalidTrellisCheckpoint(current, sessionId, turnId, invalidCase.errorCode);
     });
-  });
+  }
 
   it("reports origins and snapshot availability without exposing checkpoint content", () => {
     const current = fixture();
