@@ -1,7 +1,18 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -17,6 +28,10 @@ import {
   resolveCheckpointIdentity,
 } from "../../src/checkpoint/runtime.js";
 import { loadDatabase } from "../../src/db-base.js";
+import {
+  recordCheckpointSessionStartDiagnostic,
+  resolveCheckpointDiagnosticIdentity,
+} from "../../hooks/checkpoint-diagnostics.mjs";
 import type {
   CheckpointHookInput,
   CheckpointPayload,
@@ -100,6 +115,76 @@ function checkpointCount(configDir: string, projectDir: string): number {
   } finally {
     database.close();
   }
+}
+
+function startDiagnosticWriter(
+  configDir: string,
+  projectDir: string,
+  readyPath: string,
+  releasePath: string,
+  code: "DELIVERED" | "PROJECTION_FAILED",
+  createdAt: Date,
+): Promise<number | null> {
+  const diagnosticModuleUrl = pathToFileURL(join(
+    process.cwd(),
+    "hooks",
+    "checkpoint-diagnostics.mjs",
+  )).href;
+  const childSource = `
+    import { appendFileSync, existsSync } from "node:fs";
+    import { recordCheckpointSessionStartDiagnostic } from ${JSON.stringify(diagnosticModuleUrl)};
+
+    const readinessBuffer = new Int32Array(new SharedArrayBuffer(4));
+    appendFileSync(process.env.DIAGNOSTIC_READY_PATH, "ready\\n");
+    while (!existsSync(process.env.DIAGNOSTIC_RELEASE_PATH)) {
+      Atomics.wait(readinessBuffer, 0, 0, 8);
+    }
+
+    const recorded = recordCheckpointSessionStartDiagnostic(
+      {
+        cwd: process.env.DIAGNOSTIC_PROJECT_DIR,
+        session_id: "concurrent-diagnostic-session",
+        turn_id: "concurrent-diagnostic-turn",
+        source: "compact",
+      },
+      process.env.DIAGNOSTIC_CONFIG_DIR,
+      {
+        outcome: process.env.DIAGNOSTIC_CODE === "DELIVERED" ? "delivered" : "failed",
+        code: process.env.DIAGNOSTIC_CODE,
+      },
+      { now: new Date(process.env.DIAGNOSTIC_CREATED_AT) },
+    );
+    process.exitCode = recorded ? 0 : 1;
+  `;
+
+  return new Promise((resolve) => {
+    const childProcess = spawn(process.execPath, ["--input-type=module", "--eval", childSource], {
+      env: {
+        ...process.env,
+        DIAGNOSTIC_CODE: code,
+        DIAGNOSTIC_CONFIG_DIR: configDir,
+        DIAGNOSTIC_CREATED_AT: createdAt.toISOString(),
+        DIAGNOSTIC_PROJECT_DIR: projectDir,
+        DIAGNOSTIC_READY_PATH: readyPath,
+        DIAGNOSTIC_RELEASE_PATH: releasePath,
+      },
+      stdio: "ignore",
+    });
+    childProcess.once("error", () => resolve(null));
+    childProcess.once("close", (exitCode) => resolve(exitCode));
+  });
+}
+
+async function waitForDiagnosticWriters(readyPath: string, expectedCount: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (existsSync(readyPath)) {
+      const readyCount = readFileSync(readyPath, "utf8").trim().split("\n").filter(Boolean).length;
+      if (readyCount >= expectedCount) return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 8));
+  }
+  throw new Error("concurrent diagnostic writers did not reach the test barrier");
 }
 
 function recoveryFact(
@@ -256,6 +341,61 @@ describe("confirmed Codex compaction checkpoints", () => {
       });
     } finally {
       database.close();
+    }
+  });
+
+  it("invalidates a malformed confirmed payload without recording a claim or delivery", () => {
+    const fixture = createFixture();
+    const input = hookInput(fixture.projectDir, "session-invalid-payload", "turn-invalid-payload");
+    const created = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
+    expect(confirmPendingCheckpoint(input, { configDir: fixture.configDir, now: at(1) })).toBe(true);
+
+    const database = openDatabase(fixture.configDir, fixture.projectDir);
+    try {
+      database.prepare("UPDATE compact_checkpoints SET payload_json = ? WHERE checkpoint_id = ?")
+        .run("{not-valid-json", created.checkpoint_id);
+    } finally {
+      database.close();
+    }
+
+    const result = checkpointInternals.claimConfirmedCheckpointContextResult(input, {
+      configDir: fixture.configDir,
+      now: at(2),
+    });
+    expect(result).toEqual({
+      additionalContext: "",
+      outcome: "failed",
+      code: "PAYLOAD_INVALID",
+    });
+
+    const inspectedDatabase = openDatabase(fixture.configDir, fixture.projectDir);
+    try {
+      const row = inspectedDatabase.prepare(`
+        SELECT state, claimed_at FROM compact_checkpoints WHERE checkpoint_id = ?
+      `).get(created.checkpoint_id) as { state: string; claimed_at: string | null };
+      const transitions = inspectedDatabase.prepare(`
+        SELECT from_state, to_state, reason FROM checkpoint_transitions WHERE checkpoint_id = ?
+      `).all(created.checkpoint_id) as Array<{
+        from_state: string;
+        to_state: string;
+        reason: string;
+      }>;
+      const deliveryMetricCount = inspectedDatabase.prepare(`
+        SELECT COUNT(*) AS count FROM checkpoint_delivery_metrics WHERE checkpoint_id = ?
+      `).get(created.checkpoint_id) as { count: number };
+
+      expect(row).toEqual({ state: "invalid", claimed_at: null });
+      expect(transitions).toContainEqual({
+        from_state: "confirmed",
+        to_state: "invalid",
+        reason: "payload_invalid",
+      });
+      expect(transitions).not.toContainEqual(expect.objectContaining({
+        reason: "sessionstart_context_emitted",
+      }));
+      expect(deliveryMetricCount.count).toBe(0);
+    } finally {
+      inspectedDatabase.close();
     }
   });
 
@@ -816,5 +956,138 @@ describe("confirmed Codex compaction checkpoints", () => {
     expect(legacyReport.warnings).toContain(
       "Delivery telemetry is unavailable until a post-upgrade checkpoint is claimed.",
     );
+  });
+
+  it("aggregates content-free compact diagnostics without opening a checkpoint database", () => {
+    const fixture = createFixture();
+    const otherProjectDir = join(fixture.rootDir, "other-project");
+    mkdirSync(otherProjectDir, { recursive: true });
+    const input = {
+      ...hookInput(fixture.projectDir, "diagnostic-session", "diagnostic-turn"),
+      source: "compact",
+      prompt: "DIAGNOSTIC-PROMPT-SENTINEL",
+    };
+    const otherInput = {
+      ...hookInput(otherProjectDir, "other-session", "other-turn"),
+      source: "compact",
+    };
+
+    expect(recordCheckpointSessionStartDiagnostic(
+      input,
+      fixture.configDir,
+      { outcome: "expected_empty", code: "EMPTY_NO_CONFIRMED_CHECKPOINT" },
+      { now: at(100) },
+    )).toBe(true);
+    expect(recordCheckpointSessionStartDiagnostic(
+      otherInput,
+      fixture.configDir,
+      { outcome: "failed", code: "PROJECTION_FAILED" },
+      { now: at(200) },
+    )).toBe(true);
+
+    const identity = resolveCheckpointDiagnosticIdentity(input, fixture.configDir);
+    expect(identity).not.toBeNull();
+    expect(statSync(identity!.filePath).mode & 0o777).toBe(0o600);
+
+    const report = getCheckpointReliabilityReport(fixture.projectDir, fixture.configDir, {
+      now: at(300),
+      windowDays: 1,
+    });
+    expect(report.available).toBe(false);
+    expect(report.warnings).toContain("No checkpoint database exists for this project worktree.");
+    expect(report.diagnostics).toEqual({
+      total: 1,
+      byOutcome: {
+        delivered: 0,
+        expected_empty: 1,
+        failed: 0,
+      },
+      byCode: {
+        DELIVERED: 0,
+        EMPTY_NO_CONFIRMED_CHECKPOINT: 1,
+        DEPENDENCY_UNAVAILABLE: 0,
+        CHECKPOINT_DB_UNAVAILABLE: 0,
+        PAYLOAD_INVALID: 0,
+        PROJECTION_FAILED: 0,
+      },
+      latest: {
+        phase: "compact_session_start",
+        outcome: "expected_empty",
+        code: "EMPTY_NO_CONFIRMED_CHECKPOINT",
+        createdAt: at(100).toISOString(),
+      },
+    });
+    expect(JSON.stringify(report)).not.toContain("DIAGNOSTIC-PROMPT-SENTINEL");
+
+    const checkpointIdentity = resolveCheckpointIdentity(fixture.projectDir, fixture.configDir, {
+      createDirectory: false,
+    });
+    writeFileSync(checkpointIdentity.dbPath, "NOT-A-SQLITE-DATABASE", "utf8");
+    const unreadableDatabaseReport = getCheckpointReliabilityReport(fixture.projectDir, fixture.configDir, {
+      now: at(300),
+      windowDays: 1,
+    });
+    expect(unreadableDatabaseReport.available).toBe(false);
+    expect(unreadableDatabaseReport.warnings).toContain("Checkpoint reliability data could not be read safely.");
+    expect(unreadableDatabaseReport.diagnostics).toEqual(report.diagnostics);
+  });
+
+  it("retains each simultaneous compact diagnostic outcome", async () => {
+    const fixture = createFixture();
+    const input = {
+      ...hookInput(fixture.projectDir, "concurrent-diagnostic-session", "concurrent-diagnostic-turn"),
+      source: "compact",
+    };
+    const identity = resolveCheckpointDiagnosticIdentity(input, fixture.configDir)!;
+    const retainedRow = {
+      phase: "compact_session_start",
+      outcome: "expected_empty",
+      code: "EMPTY_NO_CONFIRMED_CHECKPOINT",
+      created_at: at(0).toISOString(),
+      project_sha256: identity.projectHash,
+      worktree_sha256: identity.worktreeHash,
+    };
+    const retainedRows = Array.from({ length: 4_096 }, () => JSON.stringify(retainedRow));
+    mkdirSync(join(fixture.configDir, "context-mode", "checkpoints"), { recursive: true });
+    writeFileSync(identity.filePath, `${retainedRows.join("\n")}\n`, { mode: 0o600 });
+
+    const readyPath = join(fixture.rootDir, "diagnostic-writers-ready");
+    const releasePath = join(fixture.rootDir, "diagnostic-writers-release");
+    const writers = [
+      startDiagnosticWriter(fixture.configDir, fixture.projectDir, readyPath, releasePath, "DELIVERED", at(1)),
+      startDiagnosticWriter(fixture.configDir, fixture.projectDir, readyPath, releasePath, "PROJECTION_FAILED", at(2)),
+    ];
+
+    await waitForDiagnosticWriters(readyPath, writers.length);
+    writeFileSync(releasePath, "release\n", { mode: 0o600 });
+    expect(await Promise.all(writers)).toEqual([0, 0]);
+
+    const rows = readFileSync(identity.filePath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(retainedRows.length + writers.length);
+    expect(rows.filter((row) => row.code === "DELIVERED")).toHaveLength(1);
+    expect(rows.filter((row) => row.code === "PROJECTION_FAILED")).toHaveLength(1);
+    expect(statSync(identity.filePath).mode & 0o777).toBe(0o600);
+  });
+
+  it("reclaims a diagnostic lock left by a terminated writer", () => {
+    const fixture = createFixture();
+    const input = {
+      ...hookInput(fixture.projectDir, "stale-lock-session", "stale-lock-turn"),
+      source: "compact",
+    };
+    const identity = resolveCheckpointDiagnosticIdentity(input, fixture.configDir)!;
+    const lockPath = `${identity.filePath}.lock`;
+    mkdirSync(join(fixture.configDir, "context-mode", "checkpoints"), { recursive: true });
+    writeFileSync(lockPath, "99999999\n", { mode: 0o600 });
+    utimesSync(lockPath, at(0), at(0));
+
+    expect(recordCheckpointSessionStartDiagnostic(
+      input,
+      fixture.configDir,
+      { outcome: "failed", code: "CHECKPOINT_DB_UNAVAILABLE" },
+      { now: at(1) },
+    )).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(readFileSync(identity.filePath, "utf8")).toContain("CHECKPOINT_DB_UNAVAILABLE");
   });
 });

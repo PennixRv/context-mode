@@ -97,6 +97,7 @@ describe("Codex offline marketplace release asset", () => {
 
       const payloadRoot = join(extractionDirectory, "plugins", "context-mode");
       expect(existsSync(join(payloadRoot, "fetch-worker.bundle.cjs"))).toBe(true);
+      expect(existsSync(join(payloadRoot, "hooks", "checkpoint-diagnostics.mjs"))).toBe(true);
       for (const forbidden of [".git", ".github", ".claude", "configs", "node_modules", "src", "tests", "build"]) {
         expect(existsSync(join(payloadRoot, forbidden)), forbidden).toBe(false);
       }

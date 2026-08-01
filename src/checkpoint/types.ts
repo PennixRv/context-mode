@@ -239,8 +239,32 @@ export interface CheckpointReliabilityReport {
   };
   delivery: CheckpointDeliverySummary;
   recoveryBrief: RecoveryBriefReliabilitySummary;
+  diagnostics: CheckpointSessionStartDiagnosticSummary;
   overduePendingCount: number;
   warnings: string[];
+}
+
+export type CheckpointSessionStartDiagnosticOutcome = "delivered" | "expected_empty" | "failed";
+
+export type CheckpointSessionStartDiagnosticCode =
+  | "DELIVERED"
+  | "EMPTY_NO_CONFIRMED_CHECKPOINT"
+  | "DEPENDENCY_UNAVAILABLE"
+  | "CHECKPOINT_DB_UNAVAILABLE"
+  | "PAYLOAD_INVALID"
+  | "PROJECTION_FAILED";
+
+/** Content-free aggregate for compact SessionStart diagnostics only. */
+export interface CheckpointSessionStartDiagnosticSummary {
+  total: number;
+  byOutcome: Record<CheckpointSessionStartDiagnosticOutcome, number>;
+  byCode: Record<CheckpointSessionStartDiagnosticCode, number>;
+  latest: {
+    phase: "compact_session_start";
+    outcome: CheckpointSessionStartDiagnosticOutcome;
+    code: CheckpointSessionStartDiagnosticCode;
+    createdAt: string;
+  } | null;
 }
 
 export interface RecoveryBriefSourceSummary {
@@ -291,6 +315,7 @@ export interface CheckpointHookInput {
   turn_id?: unknown;
   turnId?: unknown;
   cwd?: unknown;
+  source?: unknown;
   trigger?: unknown;
   tool_name?: unknown;
   tool_input?: unknown;

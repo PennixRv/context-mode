@@ -3897,7 +3897,7 @@ WHEN NOT:
 - You need checkpoint payload content, semantic recovery scoring, or a cross-project report.
 
 RETURNS:
-- Local JSON aggregates for one to thirty days. It never returns checkpoint payloads, prompts, tool input, tool output, or Trellis artifact contents.
+- Local JSON aggregates for one to thirty days, including content-free compact SessionStart diagnostic counts. It never returns checkpoint payloads, prompts, tool input, tool output, or Trellis artifact contents. A diagnostic code of DELIVERED means only that the handler emitted additionalContext; it does not acknowledge host persistence or model consumption.
 
 EXAMPLE:
 ctx_checkpoint_report({ "window_days": 7 })`,

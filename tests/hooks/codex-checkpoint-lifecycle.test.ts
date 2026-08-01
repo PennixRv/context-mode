@@ -1,11 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { loadDatabase } from "../../src/db-base.js";
+import { getCheckpointReliabilityReport } from "../../src/checkpoint/runtime.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CHECKPOINT_USER_PROMPT_PATH = join(__dirname, "..", "..", "hooks", "codex", "checkpoint-userpromptsubmit.mjs");
@@ -14,6 +15,17 @@ const CHECKPOINT_PRECOMPACT_PATH = join(__dirname, "..", "..", "hooks", "codex",
 const CHECKPOINT_POSTCOMPACT_PATH = join(__dirname, "..", "..", "hooks", "codex", "checkpoint-postcompact.mjs");
 const CHECKPOINT_SESSIONSTART_PATH = join(__dirname, "..", "..", "hooks", "codex", "checkpoint-sessionstart.mjs");
 const LEGACY_SESSIONSTART_PATH = join(__dirname, "..", "..", "hooks", "codex", "sessionstart.mjs");
+const REPOSITORY_ROOT = join(__dirname, "..", "..");
+const CHECKPOINT_HOOK_RUNTIME_FILES = [
+  "hooks/codex/checkpoint-sessionstart.mjs",
+  "hooks/codex/platform.mjs",
+  "hooks/checkpoint-diagnostics.mjs",
+  "hooks/checkpoint.bundle.mjs",
+  "hooks/ensure-deps.mjs",
+  "hooks/session-db.bundle.mjs",
+  "hooks/session-helpers.mjs",
+  "hooks/suppress-stderr.mjs",
+];
 
 function runHook(path: string, input: Record<string, unknown>, env: Record<string, string>) {
   return spawnSync(process.execPath, [path], {
@@ -22,6 +34,20 @@ function runHook(path: string, input: Record<string, unknown>, env: Record<strin
     timeout: 30_000,
     env: { ...process.env, ...env },
   });
+}
+
+function copyCheckpointHookRuntime(rootDir: string) {
+  const runtimeRoot = join(rootDir, "checkpoint-hook-runtime");
+  for (const relativePath of CHECKPOINT_HOOK_RUNTIME_FILES) {
+    const destination = join(runtimeRoot, relativePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(REPOSITORY_ROOT, relativePath), destination);
+  }
+  return {
+    sessionStartPath: join(runtimeRoot, "hooks", "codex", "checkpoint-sessionstart.mjs"),
+    checkpointBundlePath: join(runtimeRoot, "hooks", "checkpoint.bundle.mjs"),
+    ensureDepsPath: join(runtimeRoot, "hooks", "ensure-deps.mjs"),
+  };
 }
 
 function initializeGitProject(projectDir: string): void {
@@ -83,6 +109,7 @@ describe("hooks/codex - confirmed checkpoint lifecycle", () => {
       session_id: sessionId,
       turn_id: "turn-1",
       cwd: projectDir,
+      source: "compact",
     };
     writeTrellisRuntime(projectDir, sessionId);
 
@@ -154,5 +181,134 @@ describe("hooks/codex - confirmed checkpoint lifecycle", () => {
 
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toBe("");
+  });
+
+});
+
+describe("hooks/codex - compact SessionStart diagnostics", () => {
+  let fakeHome: string;
+  let projectDir: string;
+  let codexHome: string;
+  let env: Record<string, string>;
+
+  beforeEach(() => {
+    fakeHome = mkdtempSync(join(tmpdir(), "ctx-codex-checkpoint-diagnostic-"));
+    projectDir = join(fakeHome, "project");
+    codexHome = join(fakeHome, ".codex");
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(codexHome, { recursive: true });
+    env = {
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CODEX_HOME: codexHome,
+    };
+  });
+
+  afterEach(() => {
+    rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  test("records a fixed diagnostic when dependency bootstrap fails before runtime loading", () => {
+    const input = {
+      session_id: "bootstrap-diagnostic-session",
+      turn_id: "bootstrap-diagnostic-turn",
+      source: "compact",
+      cwd: projectDir,
+      prompt: "EARLY-DEPENDENCY-FAILURE-SENTINEL",
+    };
+    const runtime = copyCheckpointHookRuntime(fakeHome);
+    const unavailablePath = `${runtime.ensureDepsPath}.p3-test-unavailable`;
+    let result;
+    renameSync(runtime.ensureDepsPath, unavailablePath);
+    try {
+      result = runHook(runtime.sessionStartPath, input, env);
+    } finally {
+      renameSync(unavailablePath, runtime.ensureDepsPath);
+    }
+
+    expect(result!.status, result!.stderr || result!.stdout).toBe(0);
+    expect(JSON.parse(result!.stdout).hookSpecificOutput).toEqual({
+      hookEventName: "SessionStart",
+      additionalContext: "",
+    });
+
+    const report = getCheckpointReliabilityReport(projectDir, codexHome);
+    expect(report.diagnostics.byCode.DEPENDENCY_UNAVAILABLE).toBe(1);
+    expect(JSON.stringify(report)).not.toContain("EARLY-DEPENDENCY-FAILURE-SENTINEL");
+  });
+
+  test("records compact empty and runtime failures with fixed content-free diagnostics", () => {
+    const input = {
+      session_id: "diagnostic-session",
+      turn_id: "diagnostic-turn",
+      source: "compact",
+      cwd: projectDir,
+      prompt: "SESSIONSTART-FAILURE-SENTINEL",
+    };
+    const runtime = copyCheckpointHookRuntime(fakeHome);
+    const unavailablePath = `${runtime.checkpointBundlePath}.p3-test-unavailable`;
+    let failureResult;
+    renameSync(runtime.checkpointBundlePath, unavailablePath);
+    try {
+      failureResult = runHook(runtime.sessionStartPath, input, env);
+    } finally {
+      renameSync(unavailablePath, runtime.checkpointBundlePath);
+    }
+
+    expect(failureResult!.status, failureResult!.stderr || failureResult!.stdout).toBe(0);
+    expect(JSON.parse(failureResult!.stdout).hookSpecificOutput).toEqual({
+      hookEventName: "SessionStart",
+      additionalContext: "",
+    });
+
+    const unavailableReport = getCheckpointReliabilityReport(projectDir, codexHome);
+    expect(unavailableReport.available).toBe(false);
+    expect(unavailableReport.warnings).toContain("No checkpoint database exists for this project worktree.");
+    expect(unavailableReport.diagnostics.byCode.DEPENDENCY_UNAVAILABLE).toBe(1);
+    expect(unavailableReport.diagnostics.latest).toMatchObject({
+      phase: "compact_session_start",
+      outcome: "failed",
+      code: "DEPENDENCY_UNAVAILABLE",
+    });
+
+    const expectedEmptyResult = runHook(CHECKPOINT_SESSIONSTART_PATH, input, env);
+    expect(expectedEmptyResult.status, expectedEmptyResult.stderr || expectedEmptyResult.stdout).toBe(0);
+    expect(JSON.parse(expectedEmptyResult.stdout).hookSpecificOutput.additionalContext).toBe("");
+
+    const checkpointDir = join(codexHome, "context-mode", "checkpoints");
+    const diagnosticFile = readdirSync(checkpointDir).find((file) => file.endsWith(".sessionstart-diagnostics.jsonl"));
+    expect(diagnosticFile).toBeDefined();
+    const diagnosticPath = join(checkpointDir, diagnosticFile!);
+    const rows = readFileSync(diagnosticPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: "compact_session_start",
+        outcome: "failed",
+        code: "DEPENDENCY_UNAVAILABLE",
+      }),
+      expect.objectContaining({
+        phase: "compact_session_start",
+        outcome: "expected_empty",
+        code: "EMPTY_NO_CONFIRMED_CHECKPOINT",
+      }),
+    ]));
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual([
+        "code",
+        "created_at",
+        "outcome",
+        "phase",
+        "project_sha256",
+        "worktree_sha256",
+      ]);
+    }
+    expect(statSync(diagnosticPath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(diagnosticPath, "utf8")).not.toContain("SESSIONSTART-FAILURE-SENTINEL");
+
+    const expectedEmptyReport = getCheckpointReliabilityReport(projectDir, codexHome);
+    expect(expectedEmptyReport.diagnostics.byCode.EMPTY_NO_CONFIRMED_CHECKPOINT).toBe(1);
+    expect(expectedEmptyReport.diagnostics.byOutcome.failed).toBe(1);
+    expect(expectedEmptyReport.diagnostics.byOutcome.expected_empty).toBe(1);
   });
 });

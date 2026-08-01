@@ -7,6 +7,9 @@ import { loadDatabase, SQLiteBase, type PreparedStatement } from "../db-base.js"
 import type {
   ChangedPath,
   CheckpointDeliverySummary,
+  CheckpointSessionStartDiagnosticCode,
+  CheckpointSessionStartDiagnosticOutcome,
+  CheckpointSessionStartDiagnosticSummary,
   CheckpointHookInput,
   CheckpointIdentity,
   CheckpointLatencySummary,
@@ -51,6 +54,8 @@ const MAX_RECOVERY_FACTS_PER_LIST = 16;
 const MAX_PROJECT_RECOVERY_SOURCES = 16;
 const MAX_PROJECT_RECOVERY_SOURCE_BYTES = 128_000;
 const GIT_TIMEOUT_MS = 1_000;
+const CHECKPOINT_DIAGNOSTIC_PHASE = "compact_session_start" as const;
+const CHECKPOINT_DIAGNOSTIC_FILE_SUFFIX = ".sessionstart-diagnostics.jsonl";
 const ARTIFACT_NAMES = new Set(["prd.md", "design.md", "implement.md", "check.md"]);
 const RECOVERY_BRIEF_SOURCE_KINDS = new Set(["trellis_task", "explicit_project_state", "git"]);
 const RECOVERY_BRIEF_TOP_LEVEL_KEYS = new Set([
@@ -84,6 +89,7 @@ const CHECKPOINT_STATES = new Set<CheckpointState>([
 
 interface CheckpointStatements {
   getPending: PreparedStatement;
+  getConfirmed: PreparedStatement;
   insertPending: PreparedStatement;
   insertSignal: PreparedStatement;
   nextSequence: PreparedStatement;
@@ -92,12 +98,28 @@ interface CheckpointStatements {
   confirm: PreparedStatement;
   insertTransition: PreparedStatement;
   claim: PreparedStatement;
+  invalidate: PreparedStatement;
   insertDeliveryMetric: PreparedStatement;
 }
 
 interface CheckpointRuntimeOptions {
   configDir: string;
   now?: Date;
+}
+
+interface CheckpointClaimResult {
+  additionalContext: string;
+  outcome: CheckpointSessionStartDiagnosticOutcome;
+  code: CheckpointSessionStartDiagnosticCode;
+}
+
+interface CheckpointSessionStartDiagnosticRow {
+  phase: typeof CHECKPOINT_DIAGNOSTIC_PHASE;
+  outcome: CheckpointSessionStartDiagnosticOutcome;
+  code: CheckpointSessionStartDiagnosticCode;
+  created_at: string;
+  project_sha256: string;
+  worktree_sha256: string;
 }
 
 interface CheckpointReliabilityOptions {
@@ -1275,6 +1297,12 @@ class CheckpointDB extends SQLiteBase {
         WHERE session_id = ? AND turn_id = ? AND canonical_project_root = ? AND worktree_identity = ?
         LIMIT 1
       `),
+      getConfirmed: prepare(`
+        SELECT * FROM compact_checkpoints
+        WHERE session_id = ? AND canonical_project_root = ? AND worktree_identity = ? AND state = 'confirmed'
+        ORDER BY sequence ASC, created_at ASC
+        LIMIT 1
+      `),
       insertPending: prepare(`
         INSERT INTO compact_checkpoints (
           checkpoint_id, schema_version, session_id, turn_id, sequence, trigger,
@@ -1314,14 +1342,14 @@ class CheckpointDB extends SQLiteBase {
       claim: prepare(`
         UPDATE compact_checkpoints
         SET state = 'claimed', claimed_at = ?
-        WHERE checkpoint_id = (
-          SELECT checkpoint_id FROM compact_checkpoints
-          WHERE session_id = ? AND canonical_project_root = ? AND worktree_identity = ?
-            AND state = 'confirmed'
-          ORDER BY sequence ASC, created_at ASC
-          LIMIT 1
-        ) AND state = 'confirmed'
+        WHERE checkpoint_id = ? AND state = 'confirmed'
         RETURNING *
+      `),
+      invalidate: prepare(`
+        UPDATE compact_checkpoints
+        SET state = 'invalid'
+        WHERE checkpoint_id = ? AND state = 'confirmed'
+        RETURNING checkpoint_id
       `),
       insertDeliveryMetric: prepare(`
         INSERT INTO checkpoint_delivery_metrics (
@@ -1493,20 +1521,46 @@ class CheckpointDB extends SQLiteBase {
     });
   }
 
-  claim(identity: CheckpointIdentity, sessionId: string, claimedAt: string): CheckpointRow | null {
+  getConfirmed(identity: CheckpointIdentity, sessionId: string): CheckpointRow | null {
+    return this.statements.getConfirmed.get(
+      sessionId,
+      identity.canonicalProjectRoot,
+      identity.worktreeIdentity,
+    ) as CheckpointRow | undefined ?? null;
+  }
+
+  claim(checkpointId: string, claimedAt: string): CheckpointRow | null {
     return this.withRetry(() => {
       const transaction = this.db.transaction(() => {
         const claimed = this.statements.claim.get(
           claimedAt,
-          sessionId,
-          identity.canonicalProjectRoot,
-          identity.worktreeIdentity,
+          checkpointId,
         ) as CheckpointRow | undefined;
         if (!claimed) return null;
         this.statements.insertTransition.run(claimed.checkpoint_id, "confirmed", "claimed", "sessionstart_context_emitted", claimedAt);
         return claimed;
       });
       return transaction() as CheckpointRow | null;
+    });
+  }
+
+  invalidate(checkpointId: string, invalidatedAt: string, reason: string): void {
+    this.withRetry(() => {
+      const transaction = this.db.transaction(() => {
+        const invalidated = this.statements.invalidate.get(
+          checkpointId,
+        ) as { checkpoint_id: string } | undefined;
+        if (invalidated) {
+          this.statements.insertTransition.run(
+            checkpointId,
+            "confirmed",
+            "invalid",
+            reason,
+            invalidatedAt,
+          );
+        }
+      });
+      transaction();
     });
   }
 
@@ -1539,6 +1593,129 @@ class CheckpointDB extends SQLiteBase {
 function getIdentity(input: CheckpointHookInput, configDir: string): CheckpointIdentity | null {
   const cwd = stringField(input.cwd);
   return cwd ? resolveCheckpointIdentity(cwd, configDir) : null;
+}
+
+const CHECKPOINT_DIAGNOSTIC_CODES = [
+  "DELIVERED",
+  "EMPTY_NO_CONFIRMED_CHECKPOINT",
+  "DEPENDENCY_UNAVAILABLE",
+  "CHECKPOINT_DB_UNAVAILABLE",
+  "PAYLOAD_INVALID",
+  "PROJECTION_FAILED",
+] as const satisfies readonly CheckpointSessionStartDiagnosticCode[];
+
+const CHECKPOINT_DIAGNOSTIC_OUTCOMES = ["delivered", "expected_empty", "failed"] as const satisfies readonly CheckpointSessionStartDiagnosticOutcome[];
+
+const CHECKPOINT_DIAGNOSTIC_CODE_OUTCOMES: Record<
+  CheckpointSessionStartDiagnosticCode,
+  CheckpointSessionStartDiagnosticOutcome
+> = {
+  DELIVERED: "delivered",
+  EMPTY_NO_CONFIRMED_CHECKPOINT: "expected_empty",
+  DEPENDENCY_UNAVAILABLE: "failed",
+  CHECKPOINT_DB_UNAVAILABLE: "failed",
+  PAYLOAD_INVALID: "failed",
+  PROJECTION_FAILED: "failed",
+};
+
+function checkpointDiagnosticPath(identity: CheckpointIdentity): string {
+  return join(
+    dirname(identity.dbPath),
+    `${identity.projectHash}--${identity.worktreeHash}${CHECKPOINT_DIAGNOSTIC_FILE_SUFFIX}`,
+  );
+}
+
+function isCheckpointDiagnosticCode(value: unknown): value is CheckpointSessionStartDiagnosticCode {
+  return typeof value === "string" && (CHECKPOINT_DIAGNOSTIC_CODES as readonly string[]).includes(value);
+}
+
+function isCheckpointDiagnosticOutcome(value: unknown): value is CheckpointSessionStartDiagnosticOutcome {
+  return typeof value === "string" && (CHECKPOINT_DIAGNOSTIC_OUTCOMES as readonly string[]).includes(value);
+}
+
+function isCheckpointSessionStartDiagnosticRow(
+  value: unknown,
+  identity: CheckpointIdentity,
+): value is CheckpointSessionStartDiagnosticRow {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "phase",
+    "outcome",
+    "code",
+    "created_at",
+    "project_sha256",
+    "worktree_sha256",
+  ]);
+  const keys = Object.keys(row);
+  if (keys.length !== allowedKeys.size || keys.some((key) => !allowedKeys.has(key))) return false;
+  if (row.phase !== CHECKPOINT_DIAGNOSTIC_PHASE) return false;
+  if (row.project_sha256 !== identity.projectHash || row.worktree_sha256 !== identity.worktreeHash) return false;
+  if (!isCheckpointDiagnosticOutcome(row.outcome) || !isCheckpointDiagnosticCode(row.code)) return false;
+  if (CHECKPOINT_DIAGNOSTIC_CODE_OUTCOMES[row.code] !== row.outcome) return false;
+  return typeof row.created_at === "string" && Number.isFinite(Date.parse(row.created_at));
+}
+
+function emptyCheckpointSessionStartDiagnosticSummary(): CheckpointSessionStartDiagnosticSummary {
+  return {
+    total: 0,
+    byOutcome: {
+      delivered: 0,
+      expected_empty: 0,
+      failed: 0,
+    },
+    byCode: {
+      DELIVERED: 0,
+      EMPTY_NO_CONFIRMED_CHECKPOINT: 0,
+      DEPENDENCY_UNAVAILABLE: 0,
+      CHECKPOINT_DB_UNAVAILABLE: 0,
+      PAYLOAD_INVALID: 0,
+      PROJECTION_FAILED: 0,
+    },
+    latest: null,
+  };
+}
+
+function readCheckpointSessionStartDiagnostics(
+  identity: CheckpointIdentity,
+  startAt: string,
+  endAt: string,
+): CheckpointSessionStartDiagnosticSummary {
+  const summary = emptyCheckpointSessionStartDiagnosticSummary();
+  const startMs = Date.parse(startAt);
+  const endMs = Date.parse(endAt);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return summary;
+
+  let raw: string;
+  try {
+    raw = readFileSync(checkpointDiagnosticPath(identity), "utf8");
+  } catch {
+    return summary;
+  }
+
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const candidate = JSON.parse(line) as unknown;
+      if (!isCheckpointSessionStartDiagnosticRow(candidate, identity)) continue;
+      const createdMs = Date.parse(candidate.created_at);
+      if (createdMs < startMs || createdMs > endMs) continue;
+      summary.total += 1;
+      summary.byOutcome[candidate.outcome] += 1;
+      summary.byCode[candidate.code] += 1;
+      if (!summary.latest || candidate.created_at > summary.latest.createdAt) {
+        summary.latest = {
+          phase: candidate.phase,
+          outcome: candidate.outcome,
+          code: candidate.code,
+          createdAt: candidate.created_at,
+        };
+      }
+    } catch {
+      // The sidecar is diagnostic-only. Ignore malformed rows without exposing them.
+    }
+  }
+  return summary;
 }
 
 interface CheckpointReliabilityRow {
@@ -1734,6 +1911,7 @@ function emptyReliabilityReport(
     },
     delivery: summarizeDelivery([]),
     recoveryBrief: summarizeRecoveryBrief([]),
+    diagnostics: emptyCheckpointSessionStartDiagnosticSummary(),
     overduePendingCount: 0,
     warnings: [],
   };
@@ -1753,6 +1931,7 @@ export function getCheckpointReliabilityReport(
   const startAt = addMilliseconds(now, -windowDays * 24 * 60 * 60 * 1_000);
   const identity = resolveCheckpointIdentity(projectDir, configDir, { createDirectory: false });
   const report = emptyReliabilityReport(identity, startAt, endAt);
+  report.diagnostics = readCheckpointSessionStartDiagnostics(identity, startAt, endAt);
 
   if (!existsSync(identity.dbPath)) {
     report.warnings.push("No checkpoint database exists for this project worktree.");
@@ -2243,22 +2422,60 @@ function fitContext(payload: CheckpointPayload, row: CheckpointRow): string {
   return fitContextDelivery(payload, row).additionalContext;
 }
 
-export function claimConfirmedCheckpointContext(input: CheckpointHookInput, options: CheckpointRuntimeOptions): string {
-  const identity = getIdentity(input, options.configDir);
-  const sessionId = sessionIdFrom(input);
-  if (!identity || !sessionId) return "";
+function checkpointClaimResult(
+  additionalContext: string,
+  outcome: CheckpointSessionStartDiagnosticOutcome,
+  code: CheckpointSessionStartDiagnosticCode,
+): CheckpointClaimResult {
+  return { additionalContext, outcome, code };
+}
 
-  const db = new CheckpointDB(identity.dbPath);
+function claimConfirmedCheckpointContextResult(
+  input: CheckpointHookInput,
+  options: CheckpointRuntimeOptions,
+): CheckpointClaimResult {
+  let identity: CheckpointIdentity | null;
   try {
+    identity = getIdentity(input, options.configDir);
+  } catch {
+    return checkpointClaimResult("", "failed", "CHECKPOINT_DB_UNAVAILABLE");
+  }
+  const sessionId = sessionIdFrom(input);
+  if (!identity || !sessionId) return checkpointClaimResult("", "failed", "PAYLOAD_INVALID");
+
+  let db: CheckpointDB | undefined;
+  try {
+    db = new CheckpointDB(identity.dbPath);
     const now = options.now ?? new Date();
     db.purgeExpired(now);
-    const checkpoint = db.claim(identity, sessionId, nowIso(now));
-    if (!checkpoint) return "";
-    const payload = JSON.parse(checkpoint.payload_json) as CheckpointPayload;
-    const delivery = fitContextDelivery(payload, checkpoint);
+    const checkpoint = db.getConfirmed(identity, sessionId);
+    if (!checkpoint) return checkpointClaimResult("", "expected_empty", "EMPTY_NO_CONFIRMED_CHECKPOINT");
+
+    let payload: CheckpointPayload;
+    try {
+      const parsed = JSON.parse(checkpoint.payload_json) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        db.invalidate(checkpoint.checkpoint_id, nowIso(now), "payload_invalid");
+        return checkpointClaimResult("", "failed", "PAYLOAD_INVALID");
+      }
+      payload = parsed as CheckpointPayload;
+    } catch {
+      db.invalidate(checkpoint.checkpoint_id, nowIso(now), "payload_invalid");
+      return checkpointClaimResult("", "failed", "PAYLOAD_INVALID");
+    }
+
+    let delivery: ReturnType<typeof fitContextDelivery>;
+    try {
+      delivery = fitContextDelivery(payload, checkpoint);
+    } catch {
+      db.invalidate(checkpoint.checkpoint_id, nowIso(now), "projection_failed");
+      return checkpointClaimResult("", "failed", "PROJECTION_FAILED");
+    }
+    const claimed = db.claim(checkpoint.checkpoint_id, nowIso(now));
+    if (!claimed) return checkpointClaimResult("", "expected_empty", "EMPTY_NO_CONFIRMED_CHECKPOINT");
     try {
       db.recordDeliveryMetric(
-        checkpoint.checkpoint_id,
+        claimed.checkpoint_id,
         delivery.projectionMode,
         delivery.emittedBytes,
         nowIso(now),
@@ -2266,12 +2483,16 @@ export function claimConfirmedCheckpointContext(input: CheckpointHookInput, opti
     } catch {
       // Delivery has already been confirmed and claimed. Telemetry must not suppress it.
     }
-    return delivery.additionalContext;
+    return checkpointClaimResult(delivery.additionalContext, "delivered", "DELIVERED");
   } catch {
-    return "";
+    return checkpointClaimResult("", "failed", "CHECKPOINT_DB_UNAVAILABLE");
   } finally {
-    db.close();
+    try { db?.close(); } catch { /* fail-open for compact SessionStart */ }
   }
+}
+
+export function claimConfirmedCheckpointContext(input: CheckpointHookInput, options: CheckpointRuntimeOptions): string {
+  return claimConfirmedCheckpointContextResult(input, options).additionalContext;
 }
 
 export const checkpointInternals = {
@@ -2280,6 +2501,7 @@ export const checkpointInternals = {
   MAX_ADDITIONAL_CONTEXT_BYTES,
   MAX_RECOVERY_BRIEF_BYTES,
   CheckpointDB,
+  claimConfirmedCheckpointContextResult,
   fitContext,
   fitContextDelivery,
   parseRecoveryBrief,

@@ -104,6 +104,7 @@ export function resolveOptions() {
     ".codex-plugin/plugin.json",
     ".codex-plugin/hooks.json",
     "hooks/checkpoint.bundle.mjs",
+    "hooks/checkpoint-diagnostics.mjs",
     "start.mjs",
     "server.bundle.mjs",
     "fetch-worker.bundle.cjs",

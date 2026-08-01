@@ -105,6 +105,7 @@ function assertBuildInputs(packageJson) {
     ".codex-plugin/mcp.json",
     ".codex-plugin/hooks.json",
     "hooks/checkpoint.bundle.mjs",
+    "hooks/checkpoint-diagnostics.mjs",
   ];
   for (const relativePath of requiredPaths) {
     const absolutePath = resolve(repositoryRoot, relativePath);
