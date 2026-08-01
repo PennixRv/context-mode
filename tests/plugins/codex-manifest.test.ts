@@ -133,7 +133,9 @@ describe(".codex-plugin/hooks.json", () => {
           const platformImport = hookSource.indexOf('import "./platform.mjs";');
           const firstSharedImport = hookSource.indexOf('import "../');
           expect(platformImport).toBeGreaterThanOrEqual(0);
-          expect(firstSharedImport).toBeGreaterThan(platformImport);
+          if (firstSharedImport >= 0) {
+            expect(firstSharedImport).toBeGreaterThan(platformImport);
+          }
         }
       }
     }

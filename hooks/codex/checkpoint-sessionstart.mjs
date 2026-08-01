@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./platform.mjs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
