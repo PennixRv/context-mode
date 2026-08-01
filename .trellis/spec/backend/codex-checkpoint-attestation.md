@@ -182,10 +182,13 @@ annotated release tag must point to `E`.
   only `name`, HTTPS `base_url`, supported `wire_api`, and
   `requires_openai_auth: true`. The preflight rejects normal-profile paths,
   unknown fields, unsafe values, and preexisting disposable-profile state; it
-  serializes only those fields into its generated `config.toml`. Operator-
-  supplied local authorization may remain in the environment, but normal
-  `CODEX_HOME` data and any auth file are never read or copied. Raw trigger
-  reports and the temporary root are removed in success and failure paths.
+  serializes only those fields into its generated `config.toml`.
+  `OPENAI_API_KEY` is required only in the preflight process environment. Once
+  that generated config is the sole profile state, the preflight creates a
+  regular mode-`0600` `auth.json` containing exactly that one field. It never
+  accepts an auth-file option, reads or copies a normal auth file, or passes
+  `OPENAI_API_KEY` to Codex child processes. Raw trigger reports, the generated
+  auth file, and the temporary root are removed in success and failure paths.
 - CI checks out `E`, rebuilds the archive and content manifest, then compares
   those bytes with the digests attested from `C`. The evidence commit must add
   only the regular direct-child attestation path, and verification must fail

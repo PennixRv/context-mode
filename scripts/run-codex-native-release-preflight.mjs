@@ -89,6 +89,7 @@ function createProject(root) {
 export function createDisposableEnvironment(validationHome, sourceEnvironment = process.env) {
   const environment = { ...sourceEnvironment, CODEX_HOME: validationHome };
   for (const key of [
+    "OPENAI_API_KEY",
     "CODEX_CONFIG",
     "CONTEXT_MODE_DIR",
     "CONTEXT_MODE_PROJECT_PATH",
@@ -261,6 +262,34 @@ export function writeDisposableProviderConfig(validationHome, projection) {
   return configPath;
 }
 
+export function writeDisposableProviderAuth(validationHome, sourceEnvironment = process.env) {
+  assertProviderEnvironmentAuthorization(sourceEnvironment);
+  const resolvedHome = resolve(validationHome);
+  assertNoSymbolicLinkTraversal(resolvedHome, "disposable CODEX_HOME");
+  if (!existsSync(resolvedHome) || !lstatSync(resolvedHome).isDirectory()) {
+    throw new Error("disposable CODEX_HOME must be a directory");
+  }
+  const entries = readdirSync(resolvedHome);
+  if (entries.length !== 1 || entries[0] !== "config.toml") {
+    throw new Error("disposable CODEX_HOME must contain only generated provider config before auth projection");
+  }
+  const configPath = join(resolvedHome, "config.toml");
+  if (!lstatSync(configPath).isFile() || (lstatSync(configPath).mode & 0o777) !== 0o600) {
+    throw new Error("disposable CODEX_HOME provider config must be a regular mode-0600 file");
+  }
+  const authPath = join(resolvedHome, "auth.json");
+  writeFileSync(authPath, `${JSON.stringify({ OPENAI_API_KEY: sourceEnvironment.OPENAI_API_KEY })}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
+  chmodSync(authPath, 0o600);
+  if (!lstatSync(authPath).isFile() || (lstatSync(authPath).mode & 0o777) !== 0o600) {
+    throw new Error("disposable CODEX_HOME provider auth must be a regular mode-0600 file");
+  }
+  return authPath;
+}
+
 export function assertProviderEnvironmentAuthorization(sourceEnvironment = process.env) {
   if (typeof sourceEnvironment.OPENAI_API_KEY !== "string" || sourceEnvironment.OPENAI_API_KEY.length === 0) {
     throw new Error("provider projection requires OPENAI_API_KEY in the process environment");
@@ -352,7 +381,10 @@ function main() {
     mkdirSync(archiveDirectory, { recursive: true });
     mkdirSync(validationHome, { recursive: true });
     createProject(projectRoot);
-    if (providerProjection) writeDisposableProviderConfig(validationHome, providerProjection);
+    if (providerProjection) {
+      writeDisposableProviderConfig(validationHome, providerProjection);
+      writeDisposableProviderAuth(validationHome);
+    }
     const archiveOutput = JSON.parse(run(process.execPath, [
       join(repositoryRoot, "scripts/build-codex-marketplace-bundle.mjs"),
       "--output-dir",

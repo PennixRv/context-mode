@@ -35,6 +35,7 @@ import {
   loadProviderProjection,
   parsePreflightArguments,
   resolvePreflightOutput,
+  writeDisposableProviderAuth,
   writeDisposableProviderConfig,
 } from "../../scripts/run-codex-native-release-preflight.mjs";
 
@@ -230,7 +231,6 @@ describe("native release workflow guards", () => {
     expect(environment).toEqual({
       PATH: "/usr/bin",
       CODEX_HOME: "/tmp/disposable-codex-home",
-      OPENAI_API_KEY: "operator-controlled-provider-authorization",
     });
   });
 
@@ -282,6 +282,19 @@ describe("native release workflow guards", () => {
       ].join("\n"));
       expect(statSync(configPath).mode & 0o777).toBe(0o600);
       expect(readdirSync(validationHome)).toEqual(["config.toml"]);
+      expect(() => writeDisposableProviderAuth(validationHome, {})).toThrow(/OPENAI_API_KEY/);
+
+      const authPath = writeDisposableProviderAuth(validationHome, {
+        OPENAI_API_KEY: "operator-controlled-provider-authorization",
+      });
+      expect(readFileSync(authPath, "utf8")).toBe(`${JSON.stringify({
+        OPENAI_API_KEY: "operator-controlled-provider-authorization",
+      })}\n`);
+      expect(statSync(authPath).mode & 0o777).toBe(0o600);
+      expect(readdirSync(validationHome)).toEqual(["auth.json", "config.toml"]);
+      expect(() => writeDisposableProviderAuth(validationHome, {
+        OPENAI_API_KEY: "operator-controlled-provider-authorization",
+      })).toThrow(/only generated provider config/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

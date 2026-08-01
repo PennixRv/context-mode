@@ -42,10 +42,14 @@ unknown fields, non-HTTPS URLs, unsupported wire APIs, and unsafe values. It
 serializes the validated fields as the only initial
 `$CODEX_HOME/config.toml`; it does not import normal hooks, plugins, MCP
 servers, project trust, history, or arbitrary configuration. The operator
-supplies authorization only as an inherited process environment variable (for
-this tuple, `OPENAI_API_KEY`) and never through an auth-file option. Delete the
-temporary projection after the run; the preflight removes its generated
-disposable profile and all raw validator reports on both success and failure.
+supplies authorization only as the preflight process's inherited
+`OPENAI_API_KEY`. The preflight derives a fresh one-field
+`$CODEX_HOME/auth.json` from that value only after the generated configuration
+exists; it is a regular mode-`0600` file and is removed with the disposable
+profile. No auth-file option exists, no normal auth file is read or copied, and
+Codex child processes do not inherit `OPENAI_API_KEY`. Delete the temporary
+projection after the run; the preflight removes its generated disposable
+profile and all raw validator reports on both success and failure.
 
 The operator must authorize only the disposable profile. The preflight builds
 and verifies the marketplace archive, installs that archive as
