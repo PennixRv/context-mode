@@ -15,7 +15,7 @@ import { createInterface } from "node:readline";
 import { DatabaseSync as Database } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const AUTOMATIC_HISTORY_WORD_COUNT = 5_000;
+const AUTOMATIC_HISTORY_WORD_COUNT = 3_000;
 const AUTOMATIC_TOKEN_LIMIT = 2_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const TURN_TIMEOUT_MS = 120_000;

@@ -71,6 +71,12 @@ reports, provider state, prompts, payloads, task artifacts, and the temporary
 profile are removed before the command exits. Only the content-free JSON
 attestation remains.
 
+The automatic validator injects 3,000 neutral words against its 2,000-token
+test-only compact threshold. This is enough to exercise host-driven automatic
+compaction while avoiding an artificial provider-throughput load test; the
+gate still requires the same lifecycle and opaque-ID evidence as manual
+compaction.
+
 The command prints one sanitized tag metadata line. Commit the generated JSON
 as the only added path in a direct child of the source commit, then create the
 annotated release tag on that evidence commit. Add the exact metadata line to

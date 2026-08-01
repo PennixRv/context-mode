@@ -45,4 +45,17 @@ describe("Codex checkpoint delivery attestation release boundary", () => {
     expect(validatorSource).toContain('"features.hooks=true"');
     expect(validatorSource).not.toContain('"--dangerously-bypass-hook-trust"');
   });
+
+  test("keeps automatic synthetic history above the compact threshold without excess provider load", () => {
+    const historyWordCount = Number(
+      validatorSource.match(/AUTOMATIC_HISTORY_WORD_COUNT = ([0-9_]+)/)?.[1].replaceAll("_", ""),
+    );
+    const tokenLimit = Number(
+      validatorSource.match(/AUTOMATIC_TOKEN_LIMIT = ([0-9_]+)/)?.[1].replaceAll("_", ""),
+    );
+
+    expect(historyWordCount).toBe(3_000);
+    expect(tokenLimit).toBe(2_000);
+    expect(historyWordCount).toBeGreaterThan(tokenLimit);
+  });
 });

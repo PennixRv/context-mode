@@ -250,6 +250,11 @@ annotated release tag must point to `E`.
 - Before advertising a supported tuple, an operator must run the real manual
   and host-driven automatic validators in the disposable authorized profile.
   Static CI evidence cannot substitute for that provider-native run.
+- The automatic fixture uses 3,000 neutral words with a test-only
+  2,000-token compact threshold. It is deliberately above the threshold but
+  is not a provider throughput benchmark; reducing it below the threshold or
+  replacing host-driven compaction with `thread/compact/start` invalidates the
+  automatic gate.
 
 ### 7. Wrong Vs Correct
 
