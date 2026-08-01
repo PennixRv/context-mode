@@ -189,6 +189,12 @@ annotated release tag must point to `E`.
   accepts an auth-file option, reads or copies a normal auth file, or passes
   `OPENAI_API_KEY` to Codex child processes. Raw trigger reports, the generated
   auth file, and the temporary root are removed in success and failure paths.
+- The archive-installed validator invokes only its temporary `app-server` with
+  `--dangerously-bypass-hook-trust`, `-c features.hooks=true`, and its existing
+  code-mode setting. Codex otherwise requires normal-profile per-hook trust
+  state, which must never be copied into the gate. This exception is permitted
+  only after archive verification and inside the disposable `CODEX_HOME`; it
+  does not weaken normal installed-plugin trust behavior.
 - CI checks out `E`, rebuilds the archive and content manifest, then compares
   those bytes with the digests attested from `C`. The evidence commit must add
   only the regular direct-child attestation path, and verification must fail

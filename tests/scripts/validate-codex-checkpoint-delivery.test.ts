@@ -16,4 +16,10 @@ describe("Codex checkpoint delivery attestation release boundary", () => {
     expect(validatorSource).toContain('"hooks/checkpoint-diagnostics.mjs"');
     expect(validatorSource).toContain("release payload must not contain node_modules");
   });
+
+  test("enables and trusts hooks only for the temporary native validator server", () => {
+    expect(validatorSource).toContain('"--dangerously-bypass-hook-trust"');
+    expect(validatorSource).toContain('"features.hooks=true"');
+    expect(validatorSource).toContain('"features.code_mode_host=true"');
+  });
 });

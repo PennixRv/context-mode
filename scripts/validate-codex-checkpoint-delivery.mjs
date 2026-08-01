@@ -218,6 +218,9 @@ function verifyCompletedCheckpointHooks(hookEvents) {
 
 export function createClient(options, report) {
   const appServerArguments = [
+    "--dangerously-bypass-hook-trust",
+    "-c",
+    "features.hooks=true",
     "-c",
     "features.code_mode_host=true",
     ...(options.trigger === "auto"

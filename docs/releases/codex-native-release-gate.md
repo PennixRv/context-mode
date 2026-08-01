@@ -51,6 +51,14 @@ Codex child processes do not inherit `OPENAI_API_KEY`. Delete the temporary
 projection after the run; the preflight removes its generated disposable
 profile and all raw validator reports on both success and failure.
 
+The native validator starts only its archive-installed temporary `app-server`
+with `-c features.hooks=true` and `--dangerously-bypass-hook-trust`. Codex
+normally requires a user-maintained per-hook trust state; the validator must
+not copy that state from a normal profile. This narrow automation exception is
+valid only after the local archive and release payload have been verified, and
+only inside the disposable `CODEX_HOME`; a normal user installation retains
+the standard Codex hook-trust workflow.
+
 The operator must authorize only the disposable profile. The preflight builds
 and verifies the marketplace archive, installs that archive as
 `context-mode-offline`, runs the existing validator for both `manual` and
