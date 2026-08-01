@@ -25,7 +25,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.23.2"
+          node-version: "26.5.0"
 
       - name: Verify pinned Corepack bootstrap
         run: node scripts/run-pnpm.mjs --version
@@ -102,7 +102,7 @@ jobs:
         run: node scripts/run-pnpm.mjs test
 
       - name: Install the pinned Codex CLI
-        run: npm install --global @openai/codex@0.145.0
+        run: npm install --global @openai/codex@0.146.0
 
       - name: Build and verify release assets
         id: assets

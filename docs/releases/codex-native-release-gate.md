@@ -16,7 +16,7 @@ copies the normal profile's credentials and never uploads provider material.
 ```bash
 node scripts/run-codex-native-release-preflight.mjs \
   --tag vX.Y.Z \
-  --provider-tuple codex-0.145.0-local \
+  --provider-tuple codex-0.146.0-local \
   --output docs/releases/attestations/vX.Y.Z.json
 ```
 
@@ -52,6 +52,6 @@ produced from the source commit, while the release payload allowlists exclude
 therefore proves the evidence-only commit did not alter the published payload.
 The verifier also validates the raw-file and canonical-payload digests, checks
 the immutable tag bindings and the pinned
-Node `22.23.2` / Codex CLI `0.145.0` tuple, and fails before `gh release
+Node `26.5.0` / Codex CLI `0.146.0` tuple, and fails before `gh release
 create` on any missing, malformed, stale, or mismatched evidence. CI never
 runs the provider-authorized native preflight.

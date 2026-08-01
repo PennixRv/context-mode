@@ -129,7 +129,7 @@ release tag:
 ```sh
 node scripts/run-codex-native-release-preflight.mjs \
   --tag vX.Y.Z \
-  --provider-tuple codex-0.145.0-local \
+  --provider-tuple codex-0.146.0-local \
   --output docs/releases/attestations/vX.Y.Z.json
 ```
 
@@ -163,8 +163,8 @@ annotated release tag must point to `E`.
   and every digest/commit uses lowercase hexadecimal SHA-256/40-character Git
   formats.
 - `environment` contains exactly `node_version`, `codex_cli_version`, and a
-  sanitized `provider_tuple`. The supported release tuple is Node `22.23.2`
-  and Codex CLI `0.145.0`; the provider tuple must not contain credentials or
+  sanitized `provider_tuple`. The supported release tuple is Node `26.5.0`
+  and Codex CLI `0.146.0`; the provider tuple must not contain credentials or
   sensitive identifiers.
 - `triggers.manual` and `triggers.automatic` each contain only the ordered
   lifecycle `pending`, `confirmed`, `claimed` and the opaque-ID attestation

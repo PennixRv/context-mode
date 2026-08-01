@@ -28,6 +28,7 @@ const MANIFEST_SHA256 = "b".repeat(64);
 const OPAQUE_SHA256 = "c".repeat(64);
 const TAG = "v1.0.176";
 const CREATED_AT = "2026-08-01T00:00:00.000Z";
+const PROVIDER_TUPLE = "codex-0.146.0-local";
 
 function makeAttestation(sourceCommit = COMMIT) {
   return createNativeReleaseAttestation({
@@ -42,7 +43,7 @@ function makeAttestation(sourceCommit = COMMIT) {
     environment: {
       node_version: SUPPORTED_NODE_VERSION,
       codex_cli_version: SUPPORTED_CODEX_CLI_VERSION,
-      provider_tuple: "codex-0.145.0-local",
+      provider_tuple: PROVIDER_TUPLE,
     },
     triggers: {
       manual: {
@@ -71,6 +72,11 @@ function tagMessage(attestation: ReturnType<typeof makeAttestation>, rawSha256: 
 }
 
 describe("native release attestation schema", () => {
+  test("pins the native release gate to the current runtime tuple", () => {
+    expect(SUPPORTED_NODE_VERSION).toBe("26.5.0");
+    expect(SUPPORTED_CODEX_CLI_VERSION).toBe("0.146.0");
+  });
+
   test("keeps the canonical payload digest distinct from the raw tracked-file digest", () => {
     const attestation = makeAttestation();
     const text = serializeNativeReleaseAttestation(attestation);
@@ -107,7 +113,7 @@ describe("native release attestation schema", () => {
       content_manifest_sha256: MANIFEST_SHA256,
       node_version: SUPPORTED_NODE_VERSION,
       codex_cli_version: SUPPORTED_CODEX_CLI_VERSION,
-      provider_tuple: "codex-0.145.0-local",
+      provider_tuple: PROVIDER_TUPLE,
     });
   });
 

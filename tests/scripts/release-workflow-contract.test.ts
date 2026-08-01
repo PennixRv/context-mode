@@ -5,6 +5,15 @@ import { resolve } from "node:path";
 const workflowPath = resolve(__dirname, "../../.github/workflows/release.yml");
 
 describe("release workflow fork-ref contract", () => {
+  test("uses the current native release runtime tuple", () => {
+    const workflow = readFileSync(workflowPath, "utf8");
+
+    expect(workflow).toContain('node-version: "26.5.0"');
+    expect(workflow).toContain("npm install --global @openai/codex@0.146.0");
+    expect(workflow).not.toContain('node-version: "22.23.2"');
+    expect(workflow).not.toContain("npm install --global @openai/codex@0.145.0");
+  });
+
   test("fetches and validates origin/devel before checkout and package work", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     const fetchRefspec = "devel:refs/remotes/origin/devel";

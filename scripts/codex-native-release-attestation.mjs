@@ -4,8 +4,8 @@ export const NATIVE_RELEASE_ATTESTATION_SCHEMA_VERSION = 1;
 export const NATIVE_RELEASE_DELIVERY_SCOPE = "same-session delivery only";
 export const NATIVE_RELEASE_ATTESTATION_DIRECTORY = "docs/releases/attestations";
 export const NATIVE_RELEASE_TAG_METADATA_PREFIX = "Codex-Native-Delivery-Attestation:";
-export const SUPPORTED_CODEX_CLI_VERSION = "0.145.0";
-export const SUPPORTED_NODE_VERSION = "22.23.2";
+export const SUPPORTED_CODEX_CLI_VERSION = "0.146.0";
+export const SUPPORTED_NODE_VERSION = "26.5.0";
 export const MAX_ATTESTATION_AGE_MS = 24 * 60 * 60 * 1_000;
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
