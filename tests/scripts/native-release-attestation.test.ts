@@ -1,6 +1,17 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -18,8 +29,13 @@ import {
 import { verifyNativeReleaseAttestation } from "../../scripts/verify-codex-native-release-attestation.mjs";
 import {
   assertCleanSourceTree,
+  assertProviderEnvironmentAuthorization,
   createDisposableEnvironment,
+  createNonProviderEnvironment,
+  loadProviderProjection,
+  parsePreflightArguments,
   resolvePreflightOutput,
+  writeDisposableProviderConfig,
 } from "../../scripts/run-codex-native-release-preflight.mjs";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -216,6 +232,185 @@ describe("native release workflow guards", () => {
       CODEX_HOME: "/tmp/disposable-codex-home",
       OPENAI_API_KEY: "operator-controlled-provider-authorization",
     });
+  });
+
+  test("scrubs provider authorization from non-runtime child environments", () => {
+    expect(createNonProviderEnvironment({
+      PATH: "/usr/bin",
+      OPENAI_API_KEY: "operator-controlled-provider-authorization",
+      CODEX_HOME: "/normal/codex-home",
+    })).toEqual({
+      PATH: "/usr/bin",
+      CODEX_HOME: "/normal/codex-home",
+    });
+  });
+
+  test("accepts only the minimal provider projection and materializes a disposable config", () => {
+    const root = mkdtempSync(join(tmpdir(), "native-release-provider-projection-"));
+    try {
+      const repositoryRoot = join(root, "repository");
+      const projectionPath = join(root, "provider-projection.json");
+      const validationHome = join(root, "codex-home");
+      const projection = {
+        model_provider: "local-openai",
+        provider: {
+          name: "Local OpenAI",
+          base_url: "https://provider.example.invalid/v1",
+          wire_api: "responses",
+          requires_openai_auth: true,
+        },
+      };
+      mkdirSync(repositoryRoot);
+      mkdirSync(validationHome);
+      writeFileSync(projectionPath, JSON.stringify(projection));
+      chmodSync(projectionPath, 0o600);
+
+      expect(loadProviderProjection(projectionPath, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: join(root, "normal-home") },
+      })).toEqual(projection);
+      const configPath = writeDisposableProviderConfig(validationHome, projection);
+      expect(readFileSync(configPath, "utf8")).toBe([
+        'model_provider = "local-openai"',
+        "",
+        "[model_providers.local-openai]",
+        'name = "Local OpenAI"',
+        'base_url = "https://provider.example.invalid/v1"',
+        'wire_api = "responses"',
+        "requires_openai_auth = true",
+        "",
+      ].join("\n"));
+      expect(statSync(configPath).mode & 0o777).toBe(0o600);
+      expect(readdirSync(validationHome)).toEqual(["config.toml"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects unsafe provider projections before configuration is generated", () => {
+    const root = mkdtempSync(join(tmpdir(), "native-release-provider-rejections-"));
+    try {
+      const repositoryRoot = join(root, "repository");
+      const projectionPath = join(root, "provider-projection.json");
+      const normalHome = join(root, "normal-home");
+      const defaultProjection = {
+        model_provider: "local-openai",
+        provider: {
+          name: "Local OpenAI",
+          base_url: "https://provider.example.invalid/v1",
+          wire_api: "responses",
+          requires_openai_auth: true,
+        },
+      };
+      const writeProjection = (value: unknown) => {
+        writeFileSync(projectionPath, JSON.stringify(value));
+        chmodSync(projectionPath, 0o600);
+      };
+      mkdirSync(repositoryRoot);
+
+      for (const invalidProjection of [
+        { ...defaultProjection, unexpected: true },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, extra: "state" } },
+        { ...defaultProjection, model_provider: "Unsafe Provider" },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, name: "unsafe\nprovider" } },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, base_url: "http://provider.example.invalid/v1" } },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, base_url: "https://token@provider.example.invalid/v1" } },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, base_url: 'https://provider.example.invalid/"unsafe' } },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, wire_api: "unknown" } },
+        { ...defaultProjection, provider: { ...defaultProjection.provider, requires_openai_auth: false } },
+      ]) {
+        writeProjection(invalidProjection);
+        expect(() => loadProviderProjection(projectionPath, {
+          repository: repositoryRoot,
+          sourceEnvironment: { HOME: normalHome },
+        })).toThrow(/provider projection/);
+      }
+
+      writeProjection(defaultProjection);
+      expect(() => loadProviderProjection(projectionPath, {
+        repository: root,
+        sourceEnvironment: { HOME: normalHome },
+      })).toThrow(/outside the repository/);
+
+      const normalProjection = join(normalHome, ".codex", "provider-projection.json");
+      mkdirSync(dirname(normalProjection), { recursive: true });
+      writeFileSync(normalProjection, JSON.stringify(defaultProjection));
+      chmodSync(normalProjection, 0o600);
+      expect(() => loadProviderProjection(normalProjection, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: normalHome },
+      })).toThrow(/normal Codex profile/);
+
+      const configuredProfile = join(root, "configured-profile");
+      const configuredProjection = join(configuredProfile, "provider-projection.json");
+      mkdirSync(configuredProfile);
+      writeFileSync(configuredProjection, JSON.stringify(defaultProjection));
+      chmodSync(configuredProjection, 0o600);
+      expect(() => loadProviderProjection(configuredProjection, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: normalHome, CODEX_HOME: configuredProfile },
+      })).toThrow(/normal Codex profile/);
+
+      const normalHomeTarget = join(root, "normal-home-target");
+      const normalHomeLink = join(root, "normal-home-link");
+      const targetProjection = join(normalHomeTarget, ".codex", "provider-projection.json");
+      mkdirSync(dirname(targetProjection), { recursive: true });
+      symlinkSync(normalHomeTarget, normalHomeLink);
+      writeFileSync(targetProjection, JSON.stringify(defaultProjection));
+      chmodSync(targetProjection, 0o600);
+      expect(realpathSync(normalHomeLink)).toBe(normalHomeTarget);
+      expect(() => loadProviderProjection(targetProjection, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: normalHomeLink },
+      })).toThrow(/normal Codex profile/);
+
+      const linkPath = join(root, "provider-projection-link.json");
+      symlinkSync(projectionPath, linkPath);
+      expect(() => loadProviderProjection(linkPath, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: normalHome },
+      })).toThrow(/symbolic link/);
+
+      const insecureProjection = join(root, "insecure-provider-projection.json");
+      writeFileSync(insecureProjection, JSON.stringify(defaultProjection));
+      expect(() => loadProviderProjection(insecureProjection, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: normalHome },
+      })).toThrow(/mode 0600/);
+
+      const validationHome = join(root, "codex-home");
+      mkdirSync(validationHome);
+      writeFileSync(join(validationHome, "auth.json"), "must-not-be-used");
+      expect(() => writeDisposableProviderConfig(validationHome, defaultProjection)).toThrow(/must not contain profile state/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("requires provider authorization only from the inherited environment", () => {
+    expect(() => assertProviderEnvironmentAuthorization({})).toThrow(/OPENAI_API_KEY/);
+    expect(() => assertProviderEnvironmentAuthorization({ OPENAI_API_KEY: "" })).toThrow(/OPENAI_API_KEY/);
+    expect(() => assertProviderEnvironmentAuthorization({ OPENAI_API_KEY: "operator-controlled-provider-authorization" })).not.toThrow();
+  });
+
+  test("accepts a projection option but rejects an auth-file option", () => {
+    expect(parsePreflightArguments([
+      "--tag", TAG,
+      "--provider-tuple", PROVIDER_TUPLE,
+      "--provider-projection", "/tmp/provider-projection.json",
+      "--output", "docs/releases/attestations/v1.0.176.json",
+    ])).toMatchObject({ provider_projection: "/tmp/provider-projection.json" });
+    expect(() => parsePreflightArguments([
+      "--tag", TAG,
+      "--provider-tuple", PROVIDER_TUPLE,
+      "--output", "docs/releases/attestations/v1.0.176.json",
+    ])).toThrow(/provider-projection/);
+    expect(() => parsePreflightArguments([
+      "--tag", TAG,
+      "--provider-tuple", PROVIDER_TUPLE,
+      "--auth-file", "/tmp/auth.json",
+      "--output", "docs/releases/attestations/v1.0.176.json",
+    ])).toThrow(/unsupported argument/);
   });
 
   test("requires an exact clean source tree", () => {

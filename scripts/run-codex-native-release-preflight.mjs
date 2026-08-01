@@ -6,16 +6,19 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   SUPPORTED_CODEX_CLI_VERSION,
@@ -28,24 +31,37 @@ import {
 } from "./codex-native-release-attestation.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PROVIDER_PROJECTION_KEYS = ["model_provider", "provider"];
+const PROVIDER_CONFIGURATION_KEYS = ["name", "base_url", "wire_api", "requires_openai_auth"];
+const SUPPORTED_PROVIDER_WIRE_APIS = new Set(["chat", "completions", "responses"]);
+const PROVIDER_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$/;
+const PREFLIGHT_OPTION_KEYS = new Set(["tag", "provider_tuple", "output", "source_commit", "provider_projection"]);
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function parseArguments(argv) {
-  const options = {};
+export function createNonProviderEnvironment(sourceEnvironment = process.env) {
+  const environment = { ...sourceEnvironment };
+  delete environment.OPENAI_API_KEY;
+  return environment;
+}
+
+export function parsePreflightArguments(argv) {
+  const options = Object.create(null);
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--") continue;
     if (!value.startsWith("--")) throw new Error(`unsupported argument: ${value}`);
     const key = value.slice(2).replace(/-/g, "_");
+    if (!PREFLIGHT_OPTION_KEYS.has(key)) throw new Error(`unsupported argument: ${value}`);
     const argumentValue = argv[++index];
     if (!argumentValue || argumentValue.startsWith("--")) throw new Error(`${value} requires a value`);
     if (options[key] !== undefined) throw new Error(`${value} may be specified only once`);
     options[key] = argumentValue;
   }
-  for (const key of ["tag", "provider_tuple", "output"]) {
+  for (const key of ["tag", "provider_tuple", "provider_projection", "output"]) {
     if (!options[key]) throw new Error(`--${key.replace(/_/g, "-")} is required`);
   }
   return options;
@@ -56,6 +72,7 @@ function run(command, args, options = {}) {
     cwd: repositoryRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: createNonProviderEnvironment(),
     ...options,
   });
   if (result.status !== 0) {
@@ -83,6 +100,171 @@ export function createDisposableEnvironment(validationHome, sourceEnvironment = 
     delete environment[key];
   }
   return environment;
+}
+
+function hasExactKeys(value, expectedKeys) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  return keys.length === expectedKeys.length && keys.every((key, index) => key === expectedKeys.slice().sort()[index]);
+}
+
+function isPathInside(path, parent) {
+  return path === parent || path.startsWith(`${parent}${sep}`);
+}
+
+function assertNoSymbolicLinkTraversal(path, label) {
+  const absolutePath = resolve(path);
+  const root = parse(absolutePath).root;
+  let current = root;
+  for (const segment of relative(root, absolutePath).split(sep).filter(Boolean)) {
+    current = join(current, segment);
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new Error(`${label} must not traverse a symbolic link`);
+    }
+  }
+}
+
+function providerProjectionProfilePaths(sourceEnvironment) {
+  const home = resolve(sourceEnvironment.HOME || homedir());
+  const paths = [join(home, ".codex")];
+  if (sourceEnvironment.CODEX_HOME) paths.push(resolve(sourceEnvironment.CODEX_HOME));
+  if (sourceEnvironment.CODEX_CONFIG) paths.push(resolve(sourceEnvironment.CODEX_CONFIG));
+  return [...new Set(paths.flatMap((profilePath) => {
+    const aliases = [profilePath];
+    try {
+      aliases.push(realpathSync(profilePath));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        throw new Error("normal Codex profile path could not be validated");
+      }
+      // A missing normal-profile path has no state to protect yet.
+    }
+    return aliases;
+  }))];
+}
+
+function assertSafeProviderProjectionPath(projectionPath, {
+  repository = repositoryRoot,
+  sourceEnvironment = process.env,
+} = {}) {
+  const resolvedProjection = resolve(projectionPath);
+  const resolvedRepository = resolve(repository);
+  if (isPathInside(resolvedProjection, resolvedRepository)) {
+    throw new Error("provider projection must be outside the repository");
+  }
+  if (providerProjectionProfilePaths(sourceEnvironment).some((profilePath) => isPathInside(resolvedProjection, profilePath))) {
+    throw new Error("provider projection must not use a normal Codex profile path");
+  }
+  assertNoSymbolicLinkTraversal(resolvedProjection, "provider projection");
+  if (!existsSync(resolvedProjection)) throw new Error("provider projection must exist");
+  const stats = lstatSync(resolvedProjection);
+  if (!stats.isFile()) throw new Error("provider projection must be a regular file");
+  if ((stats.mode & 0o7777) !== 0o600) throw new Error("provider projection must have mode 0600");
+  return resolvedProjection;
+}
+
+function assertSafeProviderString(value, pattern, label) {
+  if (typeof value !== "string" || value !== value.trim() || !pattern.test(value)) {
+    throw new Error(`provider projection has an invalid ${label}`);
+  }
+}
+
+function assertSafeProviderUrl(value) {
+  if (
+    typeof value !== "string" ||
+    value.length > 2048 ||
+    value !== value.trim() ||
+    /[\u0000-\u001f\u007f"\\]/.test(value)
+  ) {
+    throw new Error("provider projection has an invalid base_url");
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("provider projection has an invalid base_url");
+  }
+  if (
+    url.protocol !== "https:" ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("provider projection has an invalid base_url");
+  }
+}
+
+export function validateProviderProjection(projection) {
+  if (!hasExactKeys(projection, PROVIDER_PROJECTION_KEYS)) {
+    throw new Error("provider projection must contain only model_provider and provider");
+  }
+  if (!hasExactKeys(projection.provider, PROVIDER_CONFIGURATION_KEYS)) {
+    throw new Error("provider projection must contain only the supported provider fields");
+  }
+  assertSafeProviderString(projection.model_provider, PROVIDER_IDENTIFIER_PATTERN, "model_provider");
+  assertSafeProviderString(projection.provider.name, PROVIDER_NAME_PATTERN, "provider name");
+  assertSafeProviderUrl(projection.provider.base_url);
+  if (!SUPPORTED_PROVIDER_WIRE_APIS.has(projection.provider.wire_api)) {
+    throw new Error("provider projection has an unsupported wire_api");
+  }
+  if (projection.provider.requires_openai_auth !== true) {
+    throw new Error("provider projection must require OpenAI environment authorization");
+  }
+  return {
+    model_provider: projection.model_provider,
+    provider: {
+      name: projection.provider.name,
+      base_url: projection.provider.base_url,
+      wire_api: projection.provider.wire_api,
+      requires_openai_auth: true,
+    },
+  };
+}
+
+export function loadProviderProjection(projectionPath, options = {}) {
+  const resolvedProjection = assertSafeProviderProjectionPath(projectionPath, options);
+  let projection;
+  try {
+    projection = JSON.parse(readFileSync(resolvedProjection, "utf8"));
+  } catch {
+    throw new Error("provider projection must contain valid JSON");
+  }
+  return validateProviderProjection(projection);
+}
+
+export function writeDisposableProviderConfig(validationHome, projection) {
+  const validatedProjection = validateProviderProjection(projection);
+  const resolvedHome = resolve(validationHome);
+  assertNoSymbolicLinkTraversal(resolvedHome, "disposable CODEX_HOME");
+  if (!existsSync(resolvedHome) || !lstatSync(resolvedHome).isDirectory()) {
+    throw new Error("disposable CODEX_HOME must be a directory");
+  }
+  if (readdirSync(resolvedHome).length !== 0) {
+    throw new Error("disposable CODEX_HOME must not contain profile state before provider configuration");
+  }
+  const configPath = join(resolvedHome, "config.toml");
+  const config = [
+    `model_provider = "${validatedProjection.model_provider}"`,
+    "",
+    `[model_providers.${validatedProjection.model_provider}]`,
+    `name = "${validatedProjection.provider.name}"`,
+    `base_url = "${validatedProjection.provider.base_url}"`,
+    `wire_api = "${validatedProjection.provider.wire_api}"`,
+    "requires_openai_auth = true",
+    "",
+  ].join("\n");
+  writeFileSync(configPath, config, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  // Ensure an unusual process umask cannot weaken the disposable config mode.
+  chmodSync(configPath, 0o600);
+  return configPath;
+}
+
+export function assertProviderEnvironmentAuthorization(sourceEnvironment = process.env) {
+  if (typeof sourceEnvironment.OPENAI_API_KEY !== "string" || sourceEnvironment.OPENAI_API_KEY.length === 0) {
+    throw new Error("provider projection requires OPENAI_API_KEY in the process environment");
+  }
 }
 
 export function assertCleanSourceTree(runGit = run) {
@@ -143,10 +325,12 @@ function readTriggerEvidence(reportPath, trigger) {
 }
 
 function main() {
-  const options = parseArguments(process.argv.slice(2));
+  const options = parsePreflightArguments(process.argv.slice(2));
   const tag = options.tag;
   validateNativeReleaseProviderTuple(options.provider_tuple);
   const output = resolvePreflightOutput(repositoryRoot, tag, options.output);
+  const providerProjection = loadProviderProjection(options.provider_projection);
+  assertProviderEnvironmentAuthorization();
   if (process.versions.node !== SUPPORTED_NODE_VERSION) {
     throw new Error(`native preflight requires Node ${SUPPORTED_NODE_VERSION}`);
   }
@@ -168,6 +352,7 @@ function main() {
     mkdirSync(archiveDirectory, { recursive: true });
     mkdirSync(validationHome, { recursive: true });
     createProject(projectRoot);
+    if (providerProjection) writeDisposableProviderConfig(validationHome, providerProjection);
     const archiveOutput = JSON.parse(run(process.execPath, [
       join(repositoryRoot, "scripts/build-codex-marketplace-bundle.mjs"),
       "--output-dir",

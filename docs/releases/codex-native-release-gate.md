@@ -17,8 +17,35 @@ copies the normal profile's credentials and never uploads provider material.
 node scripts/run-codex-native-release-preflight.mjs \
   --tag vX.Y.Z \
   --provider-tuple codex-0.146.0-local \
+  --provider-projection /secure-temporary-path/provider-projection.json \
   --output docs/releases/attestations/vX.Y.Z.json
 ```
+
+For the supported provider tuple, `--provider-projection` is required. It is a
+mode-`0600` JSON file outside the repository and must contain exactly the selected provider and its
+non-secret configuration:
+
+```json
+{
+  "model_provider": "provider-id",
+  "provider": {
+    "name": "Provider Name",
+    "base_url": "https://provider.example.invalid/v1",
+    "wire_api": "responses",
+    "requires_openai_auth": true
+  }
+}
+```
+
+The preflight rejects normal-profile paths, symbolic links, non-`0600` files,
+unknown fields, non-HTTPS URLs, unsupported wire APIs, and unsafe values. It
+serializes the validated fields as the only initial
+`$CODEX_HOME/config.toml`; it does not import normal hooks, plugins, MCP
+servers, project trust, history, or arbitrary configuration. The operator
+supplies authorization only as an inherited process environment variable (for
+this tuple, `OPENAI_API_KEY`) and never through an auth-file option. Delete the
+temporary projection after the run; the preflight removes its generated
+disposable profile and all raw validator reports on both success and failure.
 
 The operator must authorize only the disposable profile. The preflight builds
 and verifies the marketplace archive, installs that archive as

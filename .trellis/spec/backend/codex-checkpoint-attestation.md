@@ -130,6 +130,7 @@ release tag:
 node scripts/run-codex-native-release-preflight.mjs \
   --tag vX.Y.Z \
   --provider-tuple codex-0.146.0-local \
+  --provider-projection <mode-0600-json-outside-repository> \
   --output docs/releases/attestations/vX.Y.Z.json
 ```
 
@@ -175,10 +176,16 @@ annotated release tag must point to `E`.
   of the exact tracked JSON bytes; neither digest may self-reference the tag
   message.
 - The preflight creates a fresh `CODEX_HOME`, installs the archive payload, and
-  removes inherited normal-profile/context-mode paths. Operator-supplied local
-  authorization may remain in the environment, but normal `CODEX_HOME` data is
-  never read or copied. Raw trigger reports and the temporary root are removed
-  in success and failure paths.
+  removes inherited normal-profile/context-mode paths. The required provider
+  projection is a mode-`0600`, non-symlink JSON file outside the
+  repository with exactly `model_provider` and a `provider` object containing
+  only `name`, HTTPS `base_url`, supported `wire_api`, and
+  `requires_openai_auth: true`. The preflight rejects normal-profile paths,
+  unknown fields, unsafe values, and preexisting disposable-profile state; it
+  serializes only those fields into its generated `config.toml`. Operator-
+  supplied local authorization may remain in the environment, but normal
+  `CODEX_HOME` data and any auth file are never read or copied. Raw trigger
+  reports and the temporary root are removed in success and failure paths.
 - CI checks out `E`, rebuilds the archive and content manifest, then compares
   those bytes with the digests attested from `C`. The evidence commit must add
   only the regular direct-child attestation path, and verification must fail
