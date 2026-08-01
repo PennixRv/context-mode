@@ -30,7 +30,7 @@ jobs:
       - name: Verify pinned Corepack bootstrap
         run: node scripts/run-pnpm.mjs --version
 
-      - name: Resolve annotated release tag and source commit
+      - name: Resolve source and evidence commits
         id: release_tag
         env:
           RELEASE_TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
@@ -48,15 +48,34 @@ jobs:
             echo "Release tags must be annotated so the content-manifest digest is auditable." >&2
             exit 1
           fi
-          tag_commit="$(git rev-parse "refs/tags/$tag_name^{commit}")"
+          evidence_commit="$(git rev-parse "refs/tags/$tag_name^{commit}")"
           node scripts/validate-fork-release-tag.mjs "$tag_name"
-          git checkout --detach "$tag_commit"
+          read -ra commit_line <<< "$(git rev-list --parents -n 1 "$evidence_commit")"
+          if [[ "${#commit_line[@]}" -ne 2 ]]; then
+            echo "Release evidence commit must have exactly one parent." >&2
+            exit 1
+          fi
+          source_commit="${commit_line[1]}"
+          attestation_path="docs/releases/attestations/$tag_name.json"
+          expected_change=$'A\t'"$attestation_path"
+          actual_change="$(git diff-tree --no-commit-id --name-status -r "$source_commit" "$evidence_commit")"
+          if [[ "$actual_change" != "$expected_change" ]]; then
+            echo "Release evidence commit must add only $attestation_path." >&2
+            exit 1
+          fi
+          if [[ ! "$(git ls-tree "$evidence_commit" -- "$attestation_path")" =~ ^100644[[:space:]]blob[[:space:]][0-9a-f]{40}[[:space:]] ]]; then
+            echo "Release attestation must be a regular tracked file." >&2
+            exit 1
+          fi
+          git checkout --detach "$evidence_commit"
           package_version="$(node --input-type=module -e 'import packageJson from "./package.json" with { type: "json" }; console.log(packageJson.version)')"
           if [[ "$tag_name" != "v$package_version" ]]; then
             echo "Tag $tag_name does not match package version v$package_version" >&2
             exit 1
           fi
           echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "evidence_commit=$evidence_commit" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: node scripts/run-pnpm.mjs install --frozen-lockfile
@@ -108,7 +127,26 @@ jobs:
             echo "Annotated tag content-manifest digest does not match the built offline asset." >&2
             exit 1
           fi
+          marketplace_archive="$(find "$release_directory/codex" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          echo "marketplace_archive=$marketplace_archive" >> "$GITHUB_OUTPUT"
+          echo "content_manifest=$release_directory/CONTENT-MANIFEST.json" >> "$GITHUB_OUTPUT"
           echo "release_directory=$release_directory" >> "$GITHUB_OUTPUT"
+
+      - name: Verify immutable native compact attestation
+        shell: bash
+        run: |
+          tag_message_path="$RUNNER_TEMP/context-mode-release-tag-message"
+          git for-each-ref --format='%(contents)' \
+            "refs/tags/${{ steps.release_tag.outputs.tag_name }}" > "$tag_message_path"
+          node scripts/verify-codex-native-release-attestation.mjs \
+            --archive "${{ steps.assets.outputs.marketplace_archive }}" \
+            --attestation "docs/releases/attestations/${{ steps.release_tag.outputs.tag_name }}.json" \
+            --content-manifest "${{ steps.assets.outputs.content_manifest }}" \
+            --evidence-commit "${{ steps.release_tag.outputs.evidence_commit }}" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --source-commit "${{ steps.release_tag.outputs.source_commit }}" \
+            --tag "${{ steps.release_tag.outputs.tag_name }}" \
+            --tag-message "$tag_message_path"
 
       - name: Create GitHub Release
         env:

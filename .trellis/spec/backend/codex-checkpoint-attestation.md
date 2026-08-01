@@ -110,6 +110,147 @@ Run the automatic trigger separately only after the disposable profile has an
 explicitly authorized provider. Never solve a missing provider by copying the
 normal profile's authentication or configuration.
 
+## Scenario: Immutable Native Compact Release Attestation
+
+### 1. Scope / Trigger
+
+Use this contract before publishing a fork release that claims native Codex
+compact delivery. The operator preflight proves the final archive in a fresh,
+provider-authorized disposable profile; CI verifies only content-free evidence
+and never receives provider credentials. This gate proves bounded same-session
+delivery for a pinned compatibility tuple. It does not prove task-semantic
+recovery, cross-session continuity, or hostile-operator independence.
+
+### 2. Signatures
+
+The operator command must be run from a clean source commit before creating the
+release tag:
+
+```sh
+node scripts/run-codex-native-release-preflight.mjs \
+  --tag vX.Y.Z \
+  --provider-tuple codex-0.145.0-local \
+  --output docs/releases/attestations/vX.Y.Z.json
+```
+
+The release workflow invokes the check-only verifier with these required
+bindings:
+
+```sh
+node scripts/verify-codex-native-release-attestation.mjs \
+  --archive <rebuilt-archive> \
+  --attestation docs/releases/attestations/<tag>.json \
+  --content-manifest <rebuilt-content-manifest> \
+  --evidence-commit <E> \
+  --repository-root "$GITHUB_WORKSPACE" \
+  --source-commit <C> \
+  --tag <tag> \
+  --tag-message <annotated-tag-message-file>
+```
+
+`C` is the clean source commit that produced the attestation. `E` is its
+one-parent direct child containing only the tracked attestation file; the
+annotated release tag must point to `E`.
+
+### 3. Contracts
+
+- The JSON schema is version `1` and has only `schema_version`, `scope`,
+  `created_at`, `candidate`, `environment`, `triggers`, and
+  `attestation_sha256` at the top level. `scope` is exactly
+  `same-session delivery only`.
+- `candidate` contains exactly `tag`, `version`, `source_commit`,
+  `archive_sha256`, and `content_manifest_sha256`; `tag` must equal `v<version>`
+  and every digest/commit uses lowercase hexadecimal SHA-256/40-character Git
+  formats.
+- `environment` contains exactly `node_version`, `codex_cli_version`, and a
+  sanitized `provider_tuple`. The supported release tuple is Node `22.23.2`
+  and Codex CLI `0.145.0`; the provider tuple must not contain credentials or
+  sensitive identifiers.
+- `triggers.manual` and `triggers.automatic` each contain only the ordered
+  lifecycle `pending`, `confirmed`, `claimed` and the opaque-ID attestation
+  digest. Raw reports, prompts, payloads, transcripts, task artifacts, tool
+  output, credentials, and session/thread identifiers are forbidden.
+- `attestation_sha256` is the SHA-256 of the canonical JSON payload excluding
+  the digest field. The tag metadata separately records `raw_sha256`, the hash
+  of the exact tracked JSON bytes; neither digest may self-reference the tag
+  message.
+- The preflight creates a fresh `CODEX_HOME`, installs the archive payload, and
+  removes inherited normal-profile/context-mode paths. Operator-supplied local
+  authorization may remain in the environment, but normal `CODEX_HOME` data is
+  never read or copied. Raw trigger reports and the temporary root are removed
+  in success and failure paths.
+- CI checks out `E`, rebuilds the archive and content manifest, then compares
+  those bytes with the digests attested from `C`. The evidence commit must add
+  only the regular direct-child attestation path, and verification must fail
+  before release publication on any mismatch.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Dirty source tree, malformed commit/tag, or output outside the exact attestation path | Preflight fails before provider work and writes no attestation |
+| Output ancestry contains a symbolic link | Preflight fails closed |
+| Missing, extra, forbidden, stale, or non-canonical attestation field | Verifier rejects the evidence |
+| `C`/`E` are not a one-parent direct-child pair or `E` changes any other path | Verifier rejects before archive publication |
+| Rebuilt archive or content manifest differs from the attested digest | Verifier rejects before `gh release create` |
+| Node/Codex/provider tuple or tag metadata does not match | Verifier rejects the candidate |
+| Manual or automatic trigger lacks `pending -> confirmed -> claimed` or opaque-ID evidence | Preflight fails; no semantic recovery claim is allowed |
+| Provider authorization is unavailable | Record a blocked local gate; never copy normal profile state or treat it as a pass |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a clean `C` produces the archive and both native trigger results, the
+  attestation is the only file in direct-child `E`, the tag metadata matches,
+  and CI rebuilds `E` with identical archive/manifest digests.
+- Base: static evidence checks pass but the operator has no authorized
+  provider; the release remains unclaimed for native delivery until the local
+  preflight succeeds.
+- Bad: validating the source tree, using the normal `CODEX_HOME`, putting the
+  attestation inside the marketplace payload, tagging before the evidence
+  commit, or treating a malformed/blocked run as a recovery pass.
+
+### 6. Tests Required
+
+- `tests/scripts/native-release-attestation.test.ts` must assert exact schema
+  keys, canonical-vs-raw digest separation, forbidden content, stale evidence,
+  every tag/archive/manifest/commit mismatch, environment scrubbing, clean-tree
+  rejection, output-path and symlink rejection, and the restore-platform
+  initialization regression.
+- `tests/scripts/release-workflow-contract.test.ts` must assert that `E` is
+  checked out before asset construction, `C` and `E` are both passed to the
+  verifier, and evidence verification precedes release creation.
+- Existing archive, tag, marketplace-layout, and installed-delivery tests must
+  remain green; direct local `tsc --noEmit`, `node --check` for new scripts,
+  and `git diff --check` are required before commit.
+- Before advertising a supported tuple, an operator must run the real manual
+  and host-driven automatic validators in the disposable authorized profile.
+  Static CI evidence cannot substitute for that provider-native run.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```sh
+CONTEXT_MODE_RELEASE_PLUGIN_ROOT="$PWD" \
+CODEX_HOME="$HOME/.codex" \
+node scripts/validate-codex-checkpoint-delivery.mjs
+```
+
+This validates source code and normal user state, and it cannot bind the
+published archive to an immutable release evidence commit.
+
+#### Correct
+
+```text
+C (clean source) -> local disposable preflight -> attestation JSON
+  -> E (direct child, attestation only) -> annotated tag -> CI rebuild E
+  -> verify C/E, raw/canonical digests, archive, manifest, and tag metadata
+  -> publish only after all checks pass
+```
+
+The result supports only the claim that the pinned installed artifact passed
+manual and automatic same-session delivery checks under the operator-run model.
+
 ## Scenario: Compact SessionStart Content-Free Diagnostics
 
 ### 1. Scope / Trigger
