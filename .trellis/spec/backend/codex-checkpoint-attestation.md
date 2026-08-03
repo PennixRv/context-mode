@@ -463,6 +463,10 @@ The hook emits the standard Codex response shape:
 - The local hook never writes task artifacts, task runtime state, or a
   RecoveryBrief, and it never determines post-compaction continuation behavior
   or instruction precedence.
+- Shared active-task resolution treats filesystem errors while probing a task
+  pointer as a stale pointer. The hook keeps its bounded, zero-exit orientation
+  response instead of allowing an overlong or inaccessible path to erase all
+  context through the outer fail-open handler.
 
 ### 4. Validation And Error Matrix
 
@@ -471,6 +475,7 @@ The hook emits the standard Codex response shape:
 | `startup`, `resume`, `clear`, or `compact` with a valid task | Bounded orientation with task status and artifact-name index only |
 | No active task | Bounded orientation with `Task: none; status=none.` |
 | Active pointer is stale | Bounded orientation with `status=stale-pointer`; no task write |
+| Active pointer cannot be probed (`OSError`, including an overlong path) | Bounded orientation with `status=stale-pointer`; no task write |
 | Trellis runtime or script dependency is unavailable | Valid zero-exit SessionStart JSON with empty `additionalContext` |
 | Task pointer or status field is unusually long | UTF-8 output remains at or below 900 bytes |
 | Plugin checkpoint hook fails or is empty | Trellis hook makes no transport claim and does not alter plugin behavior |
@@ -492,7 +497,8 @@ The hook emits the standard Codex response shape:
 - `tests/hooks/trellis-session-start.test.ts` asserts one local bounded
   registration, unchanged plugin compact registration, all four source values,
   no-active and stale-pointer behavior, no task/Brief body exposure, no task
-  writes, unavailable-runtime fail-open output, and an overlong pointer cap.
+  writes, unavailable-runtime fail-open output, and an overlong pointer cap
+  that remains a stale-pointer response.
 - `tests/plugins/codex-manifest.test.ts` continues to assert the packaged
   context-mode plugin lifecycle and its 1500-byte compact budget.
 - Run `python3 -m py_compile .codex/hooks/session-start.py`, the focused Vitest
@@ -521,3 +527,85 @@ Trellis coordinator workflow   -> semantic RecoveryBrief synchronization
 
 The three paths have separate outputs and authority. A model-facing global
 continuation policy remains outside all three hook/provider paths.
+
+## Scenario: Canonical Trellis Project Roots
+
+### 1. Scope / Trigger
+
+Use this contract when changing `readTrellisEvidence`, RecoveryBrief provider
+status/CAS operations, or their checkpoint transport callers. These paths read
+the same active Trellis runtime but have different authority: transport records
+content-free evidence, while the coordinator controls semantic Brief updates.
+
+### 2. Signatures
+
+```ts
+readTrellisEvidence(projectRoot, sessionId);
+getRecoveryBriefProviderStatus(projectRoot, sessionId);
+updateRecoveryBriefProvider(projectRoot, sessionId, options);
+```
+
+### 3. Contracts
+
+- Canonicalize `projectRoot` once with the repository's safe realpath helper
+  before deriving `.trellis`, resolving a task pointer, checking the Brief
+  path, or atomically writing a provider/Brief file.
+- A directory alias to the same project is valid. Canonicalization does not
+  relax trust checks: the runtime, task JSON, and Brief must still be regular,
+  non-symlink files contained below the canonical Trellis root.
+- Status and CAS update must use the same canonical root. A valid alias may
+  read an active Trellis provider and write its source-bound Brief; it must not
+  fall back to a project provider.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Canonical root and project alias name the same worktree | Active Trellis evidence/provider resolves identically; source-bound CAS may write the active task Brief |
+| Runtime, task, or Brief escapes the canonical Trellis root or is a symlink | Existing invalid/stale Trellis result; no project-provider fallback |
+| Runtime JSON is malformed or task pointer is invalid | Existing fail-closed Trellis provider result; checkpoint transport retains its bounded non-semantic behavior |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a macOS `/var` project path resolves to its `/private/var` canonical
+  root, then both checkpoint evidence and Trellis RecoveryBrief CAS find the
+  same active task.
+- Base: callers already provide the canonical project root; behavior is
+  unchanged.
+- Bad: resolving the runtime through a canonical path but checking containment
+  against the alias string, which rejects a legitimate active task; accepting a
+  runtime or Brief symlink because the top-level project alias was valid.
+
+### 6. Tests Required
+
+- `tests/checkpoint/runtime.test.ts` must prove a valid active Trellis task is
+  reported through a project directory alias.
+- `tests/checkpoint/recovery-brief-provider.test.ts` must prove status and a
+  source-bound CAS update both succeed through the same alias.
+- Existing malformed-runtime, outside-pointer, and symlink tests must continue
+  to fail closed. Run focused Vitest, TypeScript no-emit, generated-bundle
+  verification, and `git diff --check`.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```ts
+const trellisRoot = join(projectRoot, ".trellis");
+const runtimePath = safeRealpath(join(trellisRoot, ".runtime", "sessions", key));
+isPathInside(trellisRoot, runtimePath);
+```
+
+This compares a real path to an alias path and can reject a valid runtime on
+platforms with filesystem aliases.
+
+#### Correct
+
+```ts
+const canonicalProjectRoot = safeRealpath(projectRoot);
+const trellisRoot = join(canonicalProjectRoot, ".trellis");
+const runtimePath = trustedRegularFile(trellisRoot, runtimeCandidate);
+```
+
+Canonicalize the root first, then retain the regular-file, non-symlink, and
+contained-path checks at every Trellis boundary.

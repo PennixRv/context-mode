@@ -432,7 +432,8 @@ function canonicalTrellisSourceSha256(
 }
 
 export function readTrellisEvidence(projectRoot: string, sessionId: string): TrellisEvidence {
-  const trellisRoot = join(projectRoot, ".trellis");
+  const canonicalProjectRoot = safeRealpath(projectRoot);
+  const trellisRoot = join(canonicalProjectRoot, ".trellis");
   if (!existsSync(trellisRoot)) {
     return { bridgeStatus: "absent", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
   }
@@ -446,7 +447,7 @@ export function readTrellisEvidence(projectRoot: string, sessionId: string): Tre
   try {
     const runtime = JSON.parse(readFileSync(runtimePath, "utf8")) as Record<string, unknown>;
     const pointer = getPointerValue(runtime);
-    const taskPath = pointer ? safeTaskPath(projectRoot, trellisRoot, pointer) : null;
+    const taskPath = pointer ? safeTaskPath(canonicalProjectRoot, trellisRoot, pointer) : null;
     if (!taskPath) {
       return { bridgeStatus: "stale", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
     }
@@ -873,7 +874,8 @@ function trellisProviderResolution(
   projectRoot: string,
   sessionId: string,
 ): RecoveryBriefProviderResolution | null {
-  const trellisRoot = join(projectRoot, ".trellis");
+  const canonicalProjectRoot = safeRealpath(projectRoot);
+  const trellisRoot = join(canonicalProjectRoot, ".trellis");
   const runtimePath = join(trellisRoot, ".runtime", "sessions", `${trellisContextKey(sessionId)}.json`);
   if (!existsSync(runtimePath)) return null;
 
@@ -899,7 +901,7 @@ function trellisProviderResolution(
     if (!resolvedRuntimePath) return invalid("TRELLIS_RUNTIME_INVALID");
     const runtime = JSON.parse(readFileSync(resolvedRuntimePath, "utf8")) as Record<string, unknown>;
     const pointer = getPointerValue(runtime);
-    const taskPath = pointer ? safeTaskPath(projectRoot, trellisRoot, pointer) : null;
+    const taskPath = pointer ? safeTaskPath(canonicalProjectRoot, trellisRoot, pointer) : null;
     if (!taskPath) return invalid("TRELLIS_TASK_INVALID");
 
     const taskJsonPath = basename(taskPath) === "task.json" ? taskPath : join(taskPath, "task.json");
@@ -922,7 +924,7 @@ function trellisProviderResolution(
         kind: "trellis",
         health: "invalid",
         task: "active",
-        briefPath: relativeProjectPath(projectRoot, recoveryPath),
+        briefPath: relativeProjectPath(canonicalProjectRoot, recoveryPath),
         snapshot: read.snapshot,
         currentBriefSha256: null,
         trellisSourceSha256,
@@ -936,7 +938,7 @@ function trellisProviderResolution(
         kind: "trellis",
         health: "invalid",
         task: "active",
-        briefPath: relativeProjectPath(projectRoot, recoveryPath),
+        briefPath: relativeProjectPath(canonicalProjectRoot, recoveryPath),
         snapshot: recoverySnapshot("invalid", "trellis"),
         currentBriefSha256: read.snapshot.recoverySha256,
         trellisSourceSha256,
@@ -949,7 +951,7 @@ function trellisProviderResolution(
       kind: "trellis",
       health: "available",
       task: "active",
-      briefPath: relativeProjectPath(projectRoot, recoveryPath),
+      briefPath: relativeProjectPath(canonicalProjectRoot, recoveryPath),
       snapshot: read.snapshot,
       currentBriefSha256: read.snapshot.recoverySha256,
       trellisSourceSha256,
@@ -1207,7 +1209,10 @@ export function getRecoveryBriefProviderStatus(
       errorCode: "SESSION_UNAVAILABLE",
     };
   }
-  return recoveryBriefProviderStatusFromResolution(resolveRecoveryBriefProvider(projectRoot, sessionId));
+  const canonicalProjectRoot = safeRealpath(projectRoot);
+  return recoveryBriefProviderStatusFromResolution(
+    resolveRecoveryBriefProvider(canonicalProjectRoot, sessionId),
+  );
 }
 
 export function updateRecoveryBriefProvider(
@@ -1235,14 +1240,15 @@ export function updateRecoveryBriefProvider(
   const recoveryBrief = parseRecoveryBrief(options.brief);
   if (!recoveryBrief) return failed("INVALID_RECOVERY_BRIEF");
 
-  const resolution = resolveRecoveryBriefProvider(projectRoot, sessionId);
+  const canonicalProjectRoot = safeRealpath(projectRoot);
+  const resolution = resolveRecoveryBriefProvider(canonicalProjectRoot, sessionId);
   if (resolution.kind === "none") return failed("NO_PROVIDER", resolution);
   if (!resolution.briefPath) return failed(resolution.errorCode, resolution);
 
-  const absoluteBriefPath = resolve(projectRoot, resolution.briefPath);
+  const absoluteBriefPath = resolve(canonicalProjectRoot, resolution.briefPath);
   const current = resolution.kind === "trellis"
-    ? readRecoveryBriefFile(join(projectRoot, ".trellis"), absoluteBriefPath, "trellis", trustedRegularFile)
-    : readRecoveryBriefFile(projectRoot, absoluteBriefPath, "project", trustedProjectRegularFile);
+    ? readRecoveryBriefFile(join(canonicalProjectRoot, ".trellis"), absoluteBriefPath, "trellis", trustedRegularFile)
+    : readRecoveryBriefFile(canonicalProjectRoot, absoluteBriefPath, "project", trustedProjectRegularFile);
   if (current.snapshot.status === "invalid") return failed("INVALID_RECOVERY_BRIEF", resolution);
   if (!expectedRecoveryBriefShaMatches(current.snapshot, options.expectedSha256)) {
     return failed("CAS_CONFLICT", resolution);
@@ -1258,10 +1264,10 @@ export function updateRecoveryBriefProvider(
   } else if (resolution.kind === "project") {
     if (!projectConfig) return failed(resolution.errorCode, resolution);
     const sourceValidation = options.sourcePaths
-      ? captureProjectRecoverySources(projectRoot, options.sourcePaths)
-      : verifyProjectRecoverySources(projectRoot, projectConfig.source_paths);
+      ? captureProjectRecoverySources(canonicalProjectRoot, options.sourcePaths)
+      : verifyProjectRecoverySources(canonicalProjectRoot, projectConfig.source_paths);
     if (sourceValidation.errorCode !== "NONE") return failed(sourceValidation.errorCode, resolution);
-    const sourceError = validateProjectRecoveryBriefSources(projectRoot, recoveryBrief, sourceValidation.sources);
+    const sourceError = validateProjectRecoveryBriefSources(canonicalProjectRoot, recoveryBrief, sourceValidation.sources);
     if (sourceError !== "NONE") return failed(sourceError, resolution);
     sourceCount = sourceValidation.sources.length;
     projectConfig = { ...projectConfig, source_paths: sourceValidation.sources };
@@ -1273,12 +1279,14 @@ export function updateRecoveryBriefProvider(
   }
 
   if (resolution.kind === "project" && options.sourcePaths) {
-    const paths = projectRecoveryPaths(projectRoot);
-    if (!writeAtomically(projectRoot, paths.providerPath, `${JSON.stringify(projectConfig, null, 2)}\n`)) {
+    const paths = projectRecoveryPaths(canonicalProjectRoot);
+    if (!writeAtomically(canonicalProjectRoot, paths.providerPath, `${JSON.stringify(projectConfig, null, 2)}\n`)) {
       return failed("WRITE_FAILED", resolution);
     }
   }
-  const writeRoot = resolution.kind === "trellis" ? join(projectRoot, ".trellis") : projectRoot;
+  const writeRoot = resolution.kind === "trellis"
+    ? join(canonicalProjectRoot, ".trellis")
+    : canonicalProjectRoot;
   if (!writeAtomically(writeRoot, absoluteBriefPath, serializedBrief)) {
     return failed("WRITE_FAILED", resolution);
   }

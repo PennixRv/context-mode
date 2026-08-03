@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -125,6 +125,13 @@ function trellisRuntimePath(projectDir: string, sessionId: string): string {
   return join(projectDir, ".trellis", ".runtime", "sessions", `codex_${sessionId}.json`);
 }
 
+function createProjectAlias(projectDir: string): string {
+  const projectAlias = `${projectDir}-alias`;
+  symlinkSync(projectDir, projectAlias, process.platform === "win32" ? "junction" : "dir");
+  CLEANUP_DIRECTORIES.push(projectAlias);
+  return projectAlias;
+}
+
 function configureProjectRecoveryProvider(current: Fixture, sessionId: string): void {
   writeFileSync(join(current.projectDir, "evidence.md"), "fallback evidence", "utf8");
   expect(initializeProjectRecoveryBriefProvider(current.projectDir, {
@@ -245,6 +252,32 @@ afterEach(() => {
 });
 
 describe("RecoveryBrief providers", () => {
+  it("accepts a valid Trellis runtime through a canonical project alias", () => {
+    const current = fixture();
+    const sessionId = "session-trellis-project-alias";
+    createActiveTrellisTask(current.projectDir, sessionId);
+    const projectAlias = createProjectAlias(current.projectDir);
+
+    expect(getRecoveryBriefProviderStatus(projectAlias, sessionId)).toMatchObject({
+      provider: "trellis",
+      health: "available",
+      recoveryStatus: "absent",
+      task: "active",
+      errorCode: "NONE",
+    });
+    expect(updateRecoveryBriefProvider(projectAlias, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("trellis_task", currentTrellisSourceSha256(projectAlias, sessionId)),
+    })).toMatchObject({ ok: true, provider: "trellis", errorCode: "NONE" });
+    expect(getRecoveryBriefProviderStatus(projectAlias, sessionId)).toMatchObject({
+      provider: "trellis",
+      health: "available",
+      recoveryStatus: "available",
+      task: "active",
+      errorCode: "NONE",
+    });
+  });
+
   it("keeps the existing no-provider checkpoint behavior and persists origin none", () => {
     const current = fixture();
     const status = getRecoveryBriefProviderStatus(current.projectDir, "session-none");

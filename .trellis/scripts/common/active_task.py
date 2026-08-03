@@ -482,7 +482,10 @@ def _active_from_ref(
     if not task_ref:
         return None
     resolved = resolve_task_ref(task_ref, repo_root)
-    stale = resolved is None or not resolved.is_dir()
+    try:
+        stale = resolved is None or not resolved.is_dir()
+    except OSError:
+        stale = True
     return ActiveTask(task_ref, source_type, context_key, stale)
 
 

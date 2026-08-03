@@ -569,6 +569,22 @@ describe("confirmed Codex compaction checkpoints", () => {
     expect(firstRender).not.toContain("TOOL-SECRET-");
   });
 
+  it("reads a valid Trellis task through a canonical project alias", () => {
+    const fixture = createFixture();
+    const sessionId = "session-trellis-project-alias";
+    const projectAlias = join(fixture.rootDir, "project-alias");
+    createActiveTrellisTask(fixture, sessionId, "task-project-alias");
+    symlinkSync(fixture.projectDir, projectAlias, process.platform === "win32" ? "junction" : "dir");
+
+    expect(readTrellisEvidence(projectAlias, sessionId)).toMatchObject({
+      bridgeStatus: "active",
+      task: "active",
+      taskId: "task-project-alias",
+      taskStatus: "in_progress",
+      taskPhase: "implement",
+    });
+  });
+
   it("snapshots a valid active-task RecoveryBrief without changing CheckpointPayload", () => {
     const fixture = createFixture();
     const sessionId = "session-recovery-snapshot";
