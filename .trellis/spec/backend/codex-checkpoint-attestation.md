@@ -192,6 +192,12 @@ annotated release tag must point to `E`.
   accepts an auth-file option, reads or copies a normal auth file, or passes
   `OPENAI_API_KEY` to Codex child processes. Raw trigger reports, the generated
   auth file, and the temporary root are removed in success and failure paths.
+- Path validation rejects every user-controlled symbolic link in a provider
+  projection or disposable-home ancestry. On macOS it permits only the fixed
+  system aliases `/etc`, `/tmp`, and `/var` when each resolves to its exact
+  `/private/...` target; this does not permit any other intermediate link.
+  Repository and normal-profile exclusion checks compare both raw and
+  canonical paths so a system alias cannot bypass either boundary.
 - Before either trigger, the preflight starts only its temporary `app-server`
   with `-c features.hooks=true` and requests `hooks/list`. It accepts exactly
   the archive-installed `context-mode@context-mode-offline` plugin hooks that

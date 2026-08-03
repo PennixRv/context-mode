@@ -38,6 +38,11 @@ const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$/;
 const PREFLIGHT_OPTION_KEYS = new Set(["tag", "provider_tuple", "output", "source_commit", "provider_projection"]);
 const CODEX_CLI_VERSION_OUTPUT_PATTERN =
   /^(?:codex|codex-cli)\s+((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/i;
+const DARWIN_SYSTEM_PATH_ALIASES = new Map([
+  ["/etc", "/private/etc"],
+  ["/tmp", "/private/tmp"],
+  ["/var", "/private/var"],
+]);
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -119,15 +124,40 @@ function isPathInside(path, parent) {
   return path === parent || path.startsWith(`${parent}${sep}`);
 }
 
+function isApprovedDarwinSystemPathAlias(path) {
+  if (process.platform !== "darwin") return false;
+  const expectedTarget = DARWIN_SYSTEM_PATH_ALIASES.get(path);
+  if (expectedTarget === undefined) return false;
+  try {
+    return realpathSync(path) === expectedTarget;
+  } catch {
+    return false;
+  }
+}
+
 function assertNoSymbolicLinkTraversal(path, label) {
   const absolutePath = resolve(path);
   const root = parse(absolutePath).root;
   let current = root;
   for (const segment of relative(root, absolutePath).split(sep).filter(Boolean)) {
     current = join(current, segment);
-    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+    if (
+      existsSync(current) &&
+      lstatSync(current).isSymbolicLink() &&
+      !isApprovedDarwinSystemPathAlias(current)
+    ) {
       throw new Error(`${label} must not traverse a symbolic link`);
     }
+  }
+}
+
+function canonicalizeExistingPath(path, label) {
+  const resolvedPath = resolve(path);
+  try {
+    return realpathSync(resolvedPath);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return resolvedPath;
+    throw new Error(`${label} could not be canonicalized`);
   }
 }
 
@@ -137,16 +167,7 @@ function providerProjectionProfilePaths(sourceEnvironment) {
   if (sourceEnvironment.CODEX_HOME) paths.push(resolve(sourceEnvironment.CODEX_HOME));
   if (sourceEnvironment.CODEX_CONFIG) paths.push(resolve(sourceEnvironment.CODEX_CONFIG));
   return [...new Set(paths.flatMap((profilePath) => {
-    const aliases = [profilePath];
-    try {
-      aliases.push(realpathSync(profilePath));
-    } catch (error) {
-      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
-        throw new Error("normal Codex profile path could not be validated");
-      }
-      // A missing normal-profile path has no state to protect yet.
-    }
-    return aliases;
+    return [profilePath, canonicalizeExistingPath(profilePath, "normal Codex profile path")];
   }))];
 }
 
@@ -156,17 +177,24 @@ function assertSafeProviderProjectionPath(projectionPath, {
 } = {}) {
   const resolvedProjection = resolve(projectionPath);
   const resolvedRepository = resolve(repository);
-  if (isPathInside(resolvedProjection, resolvedRepository)) {
-    throw new Error("provider projection must be outside the repository");
-  }
-  if (providerProjectionProfilePaths(sourceEnvironment).some((profilePath) => isPathInside(resolvedProjection, profilePath))) {
-    throw new Error("provider projection must not use a normal Codex profile path");
-  }
   assertNoSymbolicLinkTraversal(resolvedProjection, "provider projection");
   if (!existsSync(resolvedProjection)) throw new Error("provider projection must exist");
   const stats = lstatSync(resolvedProjection);
   if (!stats.isFile()) throw new Error("provider projection must be a regular file");
   if ((stats.mode & 0o7777) !== 0o600) throw new Error("provider projection must have mode 0600");
+  const canonicalProjection = canonicalizeExistingPath(resolvedProjection, "provider projection");
+  const canonicalRepository = canonicalizeExistingPath(resolvedRepository, "repository");
+  if (
+    isPathInside(resolvedProjection, resolvedRepository) ||
+    isPathInside(canonicalProjection, canonicalRepository)
+  ) {
+    throw new Error("provider projection must be outside the repository");
+  }
+  if (providerProjectionProfilePaths(sourceEnvironment).some((profilePath) => (
+    isPathInside(resolvedProjection, profilePath) || isPathInside(canonicalProjection, profilePath)
+  ))) {
+    throw new Error("provider projection must not use a normal Codex profile path");
+  }
   return resolvedProjection;
 }
 

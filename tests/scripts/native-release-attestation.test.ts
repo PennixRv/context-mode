@@ -417,7 +417,7 @@ describe("native release workflow guards", () => {
       symlinkSync(normalHomeTarget, normalHomeLink);
       writeFileSync(targetProjection, JSON.stringify(defaultProjection));
       chmodSync(targetProjection, 0o600);
-      expect(realpathSync(normalHomeLink)).toBe(normalHomeTarget);
+      expect(realpathSync(normalHomeLink)).toBe(realpathSync(normalHomeTarget));
       expect(() => loadProviderProjection(targetProjection, {
         repository: repositoryRoot,
         sourceEnvironment: { HOME: normalHomeLink },
@@ -426,6 +426,18 @@ describe("native release workflow guards", () => {
       const linkPath = join(root, "provider-projection-link.json");
       symlinkSync(projectionPath, linkPath);
       expect(() => loadProviderProjection(linkPath, {
+        repository: repositoryRoot,
+        sourceEnvironment: { HOME: normalHome },
+      })).toThrow(/symbolic link/);
+
+      const intermediateTarget = join(root, "intermediate-provider-directory");
+      const intermediateProjection = join(intermediateTarget, "provider-projection.json");
+      mkdirSync(intermediateTarget);
+      writeFileSync(intermediateProjection, JSON.stringify(defaultProjection));
+      chmodSync(intermediateProjection, 0o600);
+      const intermediateLink = join(root, "intermediate-provider-link");
+      symlinkSync(intermediateTarget, intermediateLink);
+      expect(() => loadProviderProjection(join(intermediateLink, "provider-projection.json"), {
         repository: repositoryRoot,
         sourceEnvironment: { HOME: normalHome },
       })).toThrow(/symbolic link/);
