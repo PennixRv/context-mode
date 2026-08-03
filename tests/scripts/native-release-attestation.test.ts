@@ -16,8 +16,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   NATIVE_RELEASE_DELIVERY_SCOPE,
-  SUPPORTED_CODEX_CLI_VERSION,
-  SUPPORTED_NODE_VERSION,
   createNativeReleaseAttestation,
   formatNativeReleaseTagMetadata,
   parseNativeReleaseAttestation,
@@ -33,6 +31,7 @@ import {
   createDisposableEnvironment,
   createNonProviderEnvironment,
   loadProviderProjection,
+  parseCodexCliVersion,
   parsePreflightArguments,
   resolvePreflightOutput,
   writeDisposableProviderAuth,
@@ -45,9 +44,14 @@ const MANIFEST_SHA256 = "b".repeat(64);
 const OPAQUE_SHA256 = "c".repeat(64);
 const TAG = "v1.0.176";
 const CREATED_AT = "2026-08-01T00:00:00.000Z";
-const PROVIDER_TUPLE = "codex-0.146.0-local";
+const PROVIDER_TUPLE = "codex-native-local";
+const OBSERVED_NODE_VERSION = "22.5.0";
+const OBSERVED_CODEX_CLI_VERSION = "0.147.1";
 
-function makeAttestation(sourceCommit = COMMIT) {
+function makeAttestation(sourceCommit = COMMIT, environment = {
+  node_version: OBSERVED_NODE_VERSION,
+  codex_cli_version: OBSERVED_CODEX_CLI_VERSION,
+}) {
   return createNativeReleaseAttestation({
     created_at: CREATED_AT,
     candidate: {
@@ -58,8 +62,7 @@ function makeAttestation(sourceCommit = COMMIT) {
       content_manifest_sha256: MANIFEST_SHA256,
     },
     environment: {
-      node_version: SUPPORTED_NODE_VERSION,
-      codex_cli_version: SUPPORTED_CODEX_CLI_VERSION,
+      ...environment,
       provider_tuple: PROVIDER_TUPLE,
     },
     triggers: {
@@ -89,9 +92,32 @@ function tagMessage(attestation: ReturnType<typeof makeAttestation>, rawSha256: 
 }
 
 describe("native release attestation schema", () => {
-  test("pins the native release gate to the current runtime tuple", () => {
-    expect(SUPPORTED_NODE_VERSION).toBe("26.5.0");
-    expect(SUPPORTED_CODEX_CLI_VERSION).toBe("0.146.0");
+  test.each([
+    { node_version: "22.5.0", codex_cli_version: "0.147.1" },
+    { node_version: "26.6.0", codex_cli_version: "1.2.3" },
+  ])("accepts observed normalized runtime versions", (environment) => {
+    const attestation = makeAttestation(COMMIT, environment);
+    const text = serializeNativeReleaseAttestation(attestation);
+
+    expect(validateNativeReleaseAttestationBinding(attestation, {
+      tag: TAG,
+      source_commit: COMMIT,
+      evidence_commit: "1".repeat(40),
+      archive_sha256: ARCHIVE_SHA256,
+      content_manifest_sha256: MANIFEST_SHA256,
+      attestation_file_sha256: sha256(text),
+      attestation_path: "docs/releases/attestations/v1.0.176.json",
+      tag_message: tagMessage(attestation, sha256(text)),
+      now: new Date("2026-08-01T12:00:00.000Z"),
+    })).toEqual(attestation);
+  });
+
+  test.each([
+    { node_version: "22.5", codex_cli_version: "0.147.1" },
+    { node_version: "22.05.0", codex_cli_version: "0.147.1" },
+    { node_version: "22.5.0", codex_cli_version: "01.147.1" },
+  ])("rejects non-normalized runtime versions", (environment) => {
+    expect(() => makeAttestation(COMMIT, environment)).toThrow(/version is invalid/);
   });
 
   test("keeps the canonical payload digest distinct from the raw tracked-file digest", () => {
@@ -128,8 +154,8 @@ describe("native release attestation schema", () => {
       source_commit: COMMIT,
       archive_sha256: ARCHIVE_SHA256,
       content_manifest_sha256: MANIFEST_SHA256,
-      node_version: SUPPORTED_NODE_VERSION,
-      codex_cli_version: SUPPORTED_CODEX_CLI_VERSION,
+      node_version: OBSERVED_NODE_VERSION,
+      codex_cli_version: OBSERVED_CODEX_CLI_VERSION,
       provider_tuple: PROVIDER_TUPLE,
     });
   });
@@ -148,6 +174,26 @@ describe("native release attestation schema", () => {
       tag_message: tagMessage(attestation, sha256(text)),
       now: new Date("2026-08-01T12:00:00.000Z"),
     })).toEqual(attestation);
+  });
+
+  test.each([
+    ["node_version=22.5.0", "node_version=26.6.0"],
+    ["codex_cli_version=0.147.1", "codex_cli_version=1.2.3"],
+  ])("rejects a tag metadata runtime version that differs from the attestation", (actual, replacement) => {
+    const attestation = makeAttestation();
+    const text = serializeNativeReleaseAttestation(attestation);
+
+    expect(() => validateNativeReleaseAttestationBinding(attestation, {
+      tag: TAG,
+      source_commit: COMMIT,
+      evidence_commit: "1".repeat(40),
+      archive_sha256: ARCHIVE_SHA256,
+      content_manifest_sha256: MANIFEST_SHA256,
+      attestation_file_sha256: sha256(text),
+      attestation_path: "docs/releases/attestations/v1.0.176.json",
+      tag_message: tagMessage(attestation, sha256(text)).replace(actual, replacement),
+      now: new Date("2026-08-01T12:00:00.000Z"),
+    })).toThrow(/annotated tag/);
   });
 
   test.each([
@@ -424,6 +470,24 @@ describe("native release workflow guards", () => {
       "--auth-file", "/tmp/auth.json",
       "--output", "docs/releases/attestations/v1.0.176.json",
     ])).toThrow(/unsupported argument/);
+  });
+
+  test.each([
+    ["codex-cli 0.147.1\n", "0.147.1"],
+    ["codex 1.2.3", "1.2.3"],
+    ["CODEX-CLI 26.6.0", "26.6.0"],
+  ])("parses a normalized Codex CLI version from supported output", (output, version) => {
+    expect(parseCodexCliVersion(output)).toBe(version);
+  });
+
+  test.each([
+    "codex-cli 0.147",
+    "codex-cli 00.147.1",
+    "codex-cli 0.147.1-beta.1",
+    "codex-cli 0.147.1 extra",
+    "not a Codex version",
+  ])("rejects malformed Codex CLI version output", (output) => {
+    expect(parseCodexCliVersion(output)).toBeNull();
   });
 
   test("requires an exact clean source tree", () => {

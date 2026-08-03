@@ -4,14 +4,14 @@ export const NATIVE_RELEASE_ATTESTATION_SCHEMA_VERSION = 1;
 export const NATIVE_RELEASE_DELIVERY_SCOPE = "same-session delivery only";
 export const NATIVE_RELEASE_ATTESTATION_DIRECTORY = "docs/releases/attestations";
 export const NATIVE_RELEASE_TAG_METADATA_PREFIX = "Codex-Native-Delivery-Attestation:";
-export const SUPPORTED_CODEX_CLI_VERSION = "0.146.0";
-export const SUPPORTED_NODE_VERSION = "26.5.0";
 export const MAX_ATTESTATION_AGE_MS = 24 * 60 * 60 * 1_000;
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 const TAG_PATTERN = /^v[0-9]+\.[0-9]+\.[0-9]+$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+const NORMALIZED_RUNTIME_VERSION_PATTERN =
+  /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
 const PROVIDER_TUPLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$/;
 const ATTESTATION_PATH_PATTERN =
   /^docs\/releases\/attestations\/(v[0-9]+\.[0-9]+\.[0-9]+)\.json$/;
@@ -60,6 +60,10 @@ function requireString(value, description, pattern) {
     throw new Error(`${description} is invalid`);
   }
   return value;
+}
+
+export function requireNormalizedRuntimeVersion(value, description) {
+  return requireString(value, description, NORMALIZED_RUNTIME_VERSION_PATTERN);
 }
 
 function requireIsoTimestamp(value, description) {
@@ -134,11 +138,10 @@ function requireEnvironment(value) {
   ], "environment");
   const providerTuple = validateNativeReleaseProviderTuple(environment.provider_tuple);
   return {
-    node_version: requireString(environment.node_version, "environment.node_version", VERSION_PATTERN),
-    codex_cli_version: requireString(
+    node_version: requireNormalizedRuntimeVersion(environment.node_version, "environment.node_version"),
+    codex_cli_version: requireNormalizedRuntimeVersion(
       environment.codex_cli_version,
       "environment.codex_cli_version",
-      VERSION_PATTERN,
     ),
     provider_tuple: providerTuple,
   };
@@ -297,11 +300,10 @@ export function parseNativeReleaseTagMetadata(tagMessage) {
       "tag metadata content_manifest_sha256",
       SHA256_PATTERN,
     ),
-    node_version: requireString(fields.node_version, "tag metadata node_version", VERSION_PATTERN),
-    codex_cli_version: requireString(
+    node_version: requireNormalizedRuntimeVersion(fields.node_version, "tag metadata node_version"),
+    codex_cli_version: requireNormalizedRuntimeVersion(
       fields.codex_cli_version,
       "tag metadata codex_cli_version",
-      VERSION_PATTERN,
     ),
     provider_tuple: (() => {
       const providerTuple = requireString(fields.provider_tuple, "tag metadata provider_tuple", PROVIDER_TUPLE_PATTERN);
@@ -377,12 +379,6 @@ export function validateNativeReleaseAttestationBinding(attestationValue, option
   }
   if (attestation.candidate.content_manifest_sha256 !== expected.contentManifestSha256) {
     throw new Error("native release attestation content-manifest SHA-256 does not match the rebuilt release asset");
-  }
-  if (attestation.environment.node_version !== SUPPORTED_NODE_VERSION) {
-    throw new Error("native release attestation Node version is not the supported tuple");
-  }
-  if (attestation.environment.codex_cli_version !== SUPPORTED_CODEX_CLI_VERSION) {
-    throw new Error("native release attestation Codex CLI version is not the supported tuple");
   }
   for (const [field, value] of [
     ["tag", attestation.candidate.tag],

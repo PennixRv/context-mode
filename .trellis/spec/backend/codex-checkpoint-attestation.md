@@ -118,7 +118,7 @@ Use this contract before publishing a fork release that claims native Codex
 compact delivery. The operator preflight proves the final archive in a fresh,
 provider-authorized disposable profile; CI verifies only content-free evidence
 and never receives provider credentials. This gate proves bounded same-session
-delivery for a pinned compatibility tuple. It does not prove task-semantic
+delivery for an observed runtime environment. It does not prove task-semantic
 recovery, cross-session continuity, or hostile-operator independence.
 
 ### 2. Signatures
@@ -129,7 +129,7 @@ release tag:
 ```sh
 node scripts/run-codex-native-release-preflight.mjs \
   --tag vX.Y.Z \
-  --provider-tuple codex-0.146.0-local \
+  --provider-tuple codex-native-local \
   --provider-projection <mode-0600-json-outside-repository> \
   --output docs/releases/attestations/vX.Y.Z.json
 ```
@@ -164,9 +164,12 @@ annotated release tag must point to `E`.
   and every digest/commit uses lowercase hexadecimal SHA-256/40-character Git
   formats.
 - `environment` contains exactly `node_version`, `codex_cli_version`, and a
-  sanitized `provider_tuple`. The supported release tuple is Node `26.5.0`
-  and Codex CLI `0.146.0`; the provider tuple must not contain credentials or
-  sensitive identifiers.
+  sanitized `provider_tuple`. Node and Codex fields are observed runtime
+  provenance: each must be a normalized `x.y.z` value, must agree exactly with
+  the attestation tag metadata, and are never compared to a repository pin.
+  The package's `engines.node >=22.5.0` remains the Node API capability floor;
+  it is not a release-attestation tuple.
+  The provider tuple must not contain credentials or sensitive identifiers.
 - `triggers.manual` and `triggers.automatic` each contain only the ordered
   lifecycle `pending`, `confirmed`, `claimed` and the opaque-ID attestation
   digest. Raw reports, prompts, payloads, transcripts, task artifacts, tool
@@ -218,7 +221,7 @@ annotated release tag must point to `E`.
 | Missing, extra, forbidden, stale, or non-canonical attestation field | Verifier rejects the evidence |
 | `C`/`E` are not a one-parent direct-child pair or `E` changes any other path | Verifier rejects before archive publication |
 | Rebuilt archive or content manifest differs from the attested digest | Verifier rejects before `gh release create` |
-| Node/Codex/provider tuple or tag metadata does not match | Verifier rejects the candidate |
+| Runtime provenance or provider tuple does not match tag metadata | Verifier rejects the candidate |
 | Manual or automatic trigger lacks `pending -> confirmed -> claimed` or opaque-ID evidence | Preflight fails; no semantic recovery claim is allowed |
 | Provider authorization is unavailable | Record a blocked local gate; never copy normal profile state or treat it as a pass |
 
@@ -247,7 +250,7 @@ annotated release tag must point to `E`.
 - Existing archive, tag, marketplace-layout, and installed-delivery tests must
   remain green; direct local `tsc --noEmit`, `node --check` for new scripts,
   and `git diff --check` are required before commit.
-- Before advertising a supported tuple, an operator must run the real manual
+- Before advertising native delivery for an observed runtime, an operator must run the real manual
   and host-driven automatic validators in the disposable authorized profile.
   Static CI evidence cannot substitute for that provider-native run.
 - The automatic fixture uses 3,000 neutral words with a test-only

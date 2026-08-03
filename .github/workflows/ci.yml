@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.23.2"
+          node-version: latest
 
       - uses: actions/setup-python@v5
         with:
@@ -109,7 +109,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.23.2"
+          node-version: latest
 
       - name: Verify pinned Corepack bootstrap
         run: node scripts/run-pnpm.mjs --version
@@ -146,8 +146,8 @@ jobs:
           cmp --silent "$first_archive" "$second_archive"
           cp "$first_archive" "$RUNNER_TEMP/context-mode-codex-marketplace.tar.gz"
 
-      - name: Install the pinned Codex CLI
-        run: npm install --global @openai/codex@0.145.0
+      - name: Install the latest Codex CLI
+        run: npm install --global @openai/codex@latest
 
       - name: Verify isolated offline Codex installation
         run: node scripts/run-pnpm.mjs run verify:codex-marketplace -- "$RUNNER_TEMP/context-mode-codex-marketplace.tar.gz"

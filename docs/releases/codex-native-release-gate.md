@@ -12,11 +12,13 @@ Run the provider-authorized preflight locally from the exact source commit,
 before creating the release tag. The command creates a fresh temporary project, `CODEX_HOME`,
 offline marketplace installation, and validation state. It never reads or
 copies the normal profile's credentials and never uploads provider material.
+The package's `engines.node >=22.5.0` remains an API capability prerequisite;
+it is not a fixed release or deployment version.
 
 ```bash
 node scripts/run-codex-native-release-preflight.mjs \
   --tag vX.Y.Z \
-  --provider-tuple codex-0.146.0-local \
+  --provider-tuple codex-native-local \
   --provider-projection /secure-temporary-path/provider-projection.json \
   --output docs/releases/attestations/vX.Y.Z.json
 ```
@@ -83,7 +85,7 @@ annotated release tag on that evidence commit. Add the exact metadata line to
 the tag message together with the existing
 `Codex-Content-Manifest-SHA256` line. The metadata binds the direct-child
 tracked evidence path, source commit, archive digest, content-manifest
-digest, Node/Codex tuple, and declared provider tuple.
+digest, observed Node/Codex versions, and declared provider tuple.
 
 `attestation_sha256` in the JSON is the digest of its canonical payload. The
 tag's `raw_sha256` is the SHA-256 of the exact tracked JSON file bytes. These
@@ -106,7 +108,7 @@ modes, ownership, and a repository-defined gzip stream. It must not inherit
 Regression coverage builds isolated source copies with different file timestamps
 and `SOURCE_DATE_EPOCH` values, then requires equal archive SHA-256 values.
 The verifier also validates the raw-file and canonical-payload digests, checks
-the immutable tag bindings and the pinned
-Node `26.5.0` / Codex CLI `0.146.0` tuple, and fails before `gh release
+the immutable tag bindings, requires normalized observed Node/Codex versions,
+and requires those versions to match tag metadata. It fails before `gh release
 create` on any missing, malformed, stale, or mismatched evidence. CI never
 runs the provider-authorized native preflight.

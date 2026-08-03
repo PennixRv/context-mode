@@ -21,11 +21,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  SUPPORTED_CODEX_CLI_VERSION,
-  SUPPORTED_NODE_VERSION,
   createNativeReleaseAttestation,
   formatNativeReleaseTagMetadata,
   nativeReleaseAttestationPath,
+  requireNormalizedRuntimeVersion,
   serializeNativeReleaseAttestation,
   validateNativeReleaseProviderTuple,
 } from "./codex-native-release-attestation.mjs";
@@ -37,6 +36,8 @@ const SUPPORTED_PROVIDER_WIRE_APIS = new Set(["chat", "completions", "responses"
 const PROVIDER_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,79}$/;
 const PREFLIGHT_OPTION_KEYS = new Set(["tag", "provider_tuple", "output", "source_commit", "provider_projection"]);
+const CODEX_CLI_VERSION_OUTPUT_PATTERN =
+  /^(?:codex|codex-cli)\s+((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\s*$/i;
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -65,6 +66,11 @@ export function parsePreflightArguments(argv) {
     if (!options[key]) throw new Error(`--${key.replace(/_/g, "-")} is required`);
   }
   return options;
+}
+
+export function parseCodexCliVersion(versionOutput) {
+  if (typeof versionOutput !== "string") return null;
+  return versionOutput.match(CODEX_CLI_VERSION_OUTPUT_PATTERN)?.[1] ?? null;
 }
 
 function run(command, args, options = {}) {
@@ -360,9 +366,7 @@ function main() {
   const output = resolvePreflightOutput(repositoryRoot, tag, options.output);
   const providerProjection = loadProviderProjection(options.provider_projection);
   assertProviderEnvironmentAuthorization();
-  if (process.versions.node !== SUPPORTED_NODE_VERSION) {
-    throw new Error(`native preflight requires Node ${SUPPORTED_NODE_VERSION}`);
-  }
+  const nodeVersion = requireNormalizedRuntimeVersion(process.versions.node, "native preflight Node version");
   const sourceCommit = options.source_commit ?? run("git", ["rev-parse", "HEAD"]).trim();
   const headCommit = run("git", ["rev-parse", "HEAD"]).trim();
   if (headCommit !== sourceCommit) {
@@ -397,8 +401,9 @@ function main() {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
     const codexEnv = createDisposableEnvironment(validationHome);
-    if (!run("codex", ["--version"], { env: codexEnv }).includes(SUPPORTED_CODEX_CLI_VERSION)) {
-      throw new Error(`native preflight requires Codex CLI ${SUPPORTED_CODEX_CLI_VERSION}`);
+    const codexCliVersion = parseCodexCliVersion(run("codex", ["--version"], { env: codexEnv }));
+    if (codexCliVersion === null) {
+      throw new Error("native preflight could not parse Codex CLI version as normalized x.y.z");
     }
     run("codex", ["plugin", "marketplace", "add", marketplaceRoot], { env: codexEnv });
     run("codex", ["plugin", "add", "context-mode@context-mode-offline"], { env: codexEnv });
@@ -453,8 +458,8 @@ function main() {
         content_manifest_sha256: sha256File(manifestPath),
       },
       environment: {
-        node_version: SUPPORTED_NODE_VERSION,
-        codex_cli_version: SUPPORTED_CODEX_CLI_VERSION,
+        node_version: nodeVersion,
+        codex_cli_version: codexCliVersion,
         provider_tuple: options.provider_tuple,
       },
       triggers,

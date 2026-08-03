@@ -3,15 +3,46 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const workflowPath = resolve(__dirname, "../../.github/workflows/release.yml");
+const ciWorkflowPath = resolve(__dirname, "../../.github/workflows/ci.yml");
+const bundleWorkflowPath = resolve(__dirname, "../../.github/workflows/bundle.yml");
+const tierTwoWorkflowPath = resolve(__dirname, "../../.github/workflows/tier2-e2e-smoke.yml");
+const openClawWorkflowPath = resolve(__dirname, "../../.github/workflows/openclaw-e2e.yml");
+const packageJsonPath = resolve(__dirname, "../../package.json");
 
 describe("release workflow fork-ref contract", () => {
-  test("uses the current native release runtime tuple", () => {
+  test("uses the latest Node and Codex runtimes for release asset verification", () => {
     const workflow = readFileSync(workflowPath, "utf8");
 
-    expect(workflow).toContain('node-version: "26.5.0"');
-    expect(workflow).toContain("npm install --global @openai/codex@0.146.0");
-    expect(workflow).not.toContain('node-version: "22.23.2"');
-    expect(workflow).not.toContain("npm install --global @openai/codex@0.145.0");
+    expect(workflow).toContain("node-version: latest");
+    expect(workflow).not.toContain('node-version: "26.5.0"');
+    expect(workflow).toContain("npm install --global @openai/codex@latest");
+    expect(workflow).not.toContain("@openai/codex@0.146.0");
+    expect(workflow).not.toContain("pinned Codex CLI");
+  });
+
+  test("keeps all build and installed-asset workflows current without unsafe native cache reuse", () => {
+    const ciWorkflow = readFileSync(ciWorkflowPath, "utf8");
+    const bundleWorkflow = readFileSync(bundleWorkflowPath, "utf8");
+    const tierTwoWorkflow = readFileSync(tierTwoWorkflowPath, "utf8");
+    const openClawWorkflow = readFileSync(openClawWorkflowPath, "utf8");
+
+    for (const workflow of [ciWorkflow, bundleWorkflow, tierTwoWorkflow, openClawWorkflow]) {
+      expect(workflow).not.toContain("22.23.2");
+      expect(workflow).not.toContain("0.145.0");
+    }
+    expect(ciWorkflow).toContain("node-version: latest");
+    expect(ciWorkflow).toContain("npm install --global @openai/codex@latest");
+    expect(bundleWorkflow).toContain("node-version: latest");
+    expect(tierTwoWorkflow).toContain("NODE_VERSION: latest");
+    expect(openClawWorkflow).toContain("NODE_VERSION: latest");
+    expect(openClawWorkflow).toContain("id: node_version");
+    expect(openClawWorkflow).toContain("steps.node_version.outputs.value");
+  });
+
+  test("keeps the Node API capability floor separate from release provenance", () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+
+    expect(packageJson.engines.node).toBe(">=22.5.0");
   });
 
   test("fetches and validates origin/devel before checkout and package work", () => {
