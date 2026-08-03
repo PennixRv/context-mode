@@ -51,6 +51,22 @@ const runtimes = detectRuntimes();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STORAGE_ENV_KEY = "CONTEXT_MODE_DIR";
 const savedStorageEnv = process.env[STORAGE_ENV_KEY];
+const TEST_HOST_ENVIRONMENT_PATTERN =
+  /^(CLAUDE|CODEX|GEMINI|VSCODE|CURSOR|OPENCODE|KILO|KIRO|PI|OMP|ZED|QWEN|KIMI|ANTIGRAVITY|OPENCLAW|COPILOT)_/;
+
+function createHostIsolatedEnvironment(): NodeJS.ProcessEnv {
+  const cleanEnv = { ...process.env };
+  for (const key of Object.keys(cleanEnv)) {
+    if (
+      TEST_HOST_ENVIRONMENT_PATTERN.test(key) ||
+      key === "CONTEXT_MODE_PLATFORM" ||
+      key === "CONTEXT_MODE_PROJECT_DIR"
+    ) {
+      delete cleanEnv[key];
+    }
+  }
+  return cleanEnv;
+}
 
 afterEach(() => {
   if (savedStorageEnv === undefined) delete process.env[STORAGE_ENV_KEY];
@@ -956,8 +972,9 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     return spawn("node", [mcpEntry], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...createHostIsolatedEnvironment(),
         CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+        CONTEXT_MODE_PLATFORM: "claude-code",
         CLAUDE_PROJECT_DIR: projectDirEnv,
       },
     });
@@ -1255,16 +1272,7 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     // host env var (Claude Code, Codex, etc.) leaks into this child,
     // detectPlatform() can pick that host, enter strict mode, and ban
     // IDEA_INITIAL_DIRECTORY as a foreign var.
-    const cleanEnv = { ...process.env };
-    for (const key of Object.keys(cleanEnv)) {
-      if (
-        /^(CLAUDE|CODEX|GEMINI|VSCODE|CURSOR|OPENCODE|KILO|KIRO|PI|OMP|ZED|QWEN|KIMI|ANTIGRAVITY|OPENCLAW|COPILOT)_/.test(key) ||
-        key === "CONTEXT_MODE_PLATFORM" ||
-        key === "CONTEXT_MODE_PROJECT_DIR"
-      ) {
-        delete cleanEnv[key];
-      }
-    }
+    const cleanEnv = createHostIsolatedEnvironment();
 
     const proc = spawn("node", [buildEntry], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -1404,8 +1412,9 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
     return spawn("node", [mcpEntry], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...createHostIsolatedEnvironment(),
         CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+        CONTEXT_MODE_PLATFORM: "claude-code",
         CLAUDE_PROJECT_DIR: projectDir,
         ...extraEnv,
       },
@@ -5830,8 +5839,9 @@ describe("ctx_index: directory path support (#687)", () => {
     return spawn("node", [mcpEntry], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...createHostIsolatedEnvironment(),
         CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+        CONTEXT_MODE_PLATFORM: "claude-code",
         CLAUDE_PROJECT_DIR: projectDirEnv,
       },
     });

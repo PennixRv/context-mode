@@ -130,9 +130,24 @@ interface RpcResponse {
 }
 
 function spawnServer(extraEnv: Record<string, string> = {}): ChildProcess {
+  const cleanEnv = { ...process.env };
+  for (const key of Object.keys(cleanEnv)) {
+    if (
+      /^(CLAUDE|CODEX|GEMINI|VSCODE|CURSOR|OPENCODE|KILO|KIRO|PI|OMP|ZED|QWEN|KIMI|ANTIGRAVITY|OPENCLAW|COPILOT)_/.test(key) ||
+      key === "CONTEXT_MODE_PLATFORM" ||
+      key === "CONTEXT_MODE_PROJECT_DIR"
+    ) {
+      delete cleanEnv[key];
+    }
+  }
   return spawn("node", [mcpEntry], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1", ...extraEnv },
+    env: {
+      ...cleanEnv,
+      CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+      CONTEXT_MODE_PLATFORM: "claude-code",
+      ...extraEnv,
+    },
   });
 }
 
