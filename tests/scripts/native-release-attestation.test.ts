@@ -23,6 +23,7 @@ import {
   serializeNativeReleaseAttestation,
   sha256,
   validateNativeReleaseAttestationBinding,
+  validateNativeReleaseProviderTuple,
 } from "../../scripts/codex-native-release-attestation.mjs";
 import { verifyNativeReleaseAttestation } from "../../scripts/verify-codex-native-release-attestation.mjs";
 import {
@@ -49,10 +50,14 @@ const PROVIDER_TUPLE = "codex-native-local";
 const OBSERVED_NODE_VERSION = "22.5.0";
 const OBSERVED_CODEX_CLI_VERSION = "0.147.1";
 
-function makeAttestation(sourceCommit = COMMIT, environment = {
-  node_version: OBSERVED_NODE_VERSION,
-  codex_cli_version: OBSERVED_CODEX_CLI_VERSION,
-}) {
+function makeAttestation(
+  sourceCommit = COMMIT,
+  environment = {
+    node_version: OBSERVED_NODE_VERSION,
+    codex_cli_version: OBSERVED_CODEX_CLI_VERSION,
+  },
+  providerTuple = PROVIDER_TUPLE,
+) {
   return createNativeReleaseAttestation({
     created_at: CREATED_AT,
     candidate: {
@@ -64,7 +69,7 @@ function makeAttestation(sourceCommit = COMMIT, environment = {
     },
     environment: {
       ...environment,
-      provider_tuple: PROVIDER_TUPLE,
+      provider_tuple: providerTuple,
     },
     triggers: {
       manual: {
@@ -119,6 +124,32 @@ describe("native release attestation schema", () => {
     { node_version: "22.5.0", codex_cli_version: "01.147.1" },
   ])("rejects non-normalized runtime versions", (environment) => {
     expect(() => makeAttestation(COMMIT, environment)).toThrow(/version is invalid/);
+  });
+
+  test("allows a sanitized Responses wire-API provider tuple", () => {
+    expect(validateNativeReleaseProviderTuple("custom-responses-local")).toBe(
+      "custom-responses-local",
+    );
+    expect(validateNativeReleaseProviderTuple("custom-monkey-local")).toBe(
+      "custom-monkey-local",
+    );
+
+    const attestation = makeAttestation(COMMIT, undefined, "custom-responses-local");
+    const text = serializeNativeReleaseAttestation(attestation);
+
+    expect(parseNativeReleaseTagMetadata(tagMessage(attestation, sha256(text))).provider_tuple).toBe(
+      "custom-responses-local",
+    );
+  });
+
+  test.each([
+    "custom-token-local",
+    "custom-endpoint-local",
+    "custom-project-local",
+  ])("rejects a provider tuple containing a sensitive identifier", (providerTuple) => {
+    expect(() => validateNativeReleaseProviderTuple(providerTuple)).toThrow(
+      /sensitive identifiers/,
+    );
   });
 
   test("keeps the canonical payload digest distinct from the raw tracked-file digest", () => {

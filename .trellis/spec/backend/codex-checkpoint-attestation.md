@@ -169,7 +169,11 @@ annotated release tag must point to `E`.
   the attestation tag metadata, and are never compared to a repository pin.
   The package's `engines.node >=22.5.0` remains the Node API capability floor;
   it is not a release-attestation tuple.
-  The provider tuple must not contain credentials or sensitive identifiers.
+  The provider tuple must not contain credentials or sensitive identifiers such
+  as tokens, keys, endpoints, hosts, users, accounts, projects, organizations,
+  or tenants. It may name the public protocol family (for example,
+  `custom-responses-local`); the field is a stable sanitized label, not a raw
+  provider configuration value.
 - `triggers.manual` and `triggers.automatic` each contain only the ordered
   lifecycle `pending`, `confirmed`, `claimed` and the opaque-ID attestation
   digest. Raw reports, prompts, payloads, transcripts, task artifacts, tool

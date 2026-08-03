@@ -17,6 +17,8 @@ const ATTESTATION_PATH_PATTERN =
   /^docs\/releases\/attestations\/(v[0-9]+\.[0-9]+\.[0-9]+)\.json$/;
 const FORBIDDEN_FIELD_PATTERN =
   /auth|credential|secret|token|password|prompt|response|transcript|session|thread|payload|recovery|trellis|journal|tool/i;
+const FORBIDDEN_PROVIDER_TUPLE_PATTERN =
+  /(?:^|[._:+-])(?:auth|credential|secret|token|password|key|endpoint|url|host|user|account|project|org|tenant)(?:$|[._:+-])/i;
 const REQUIRED_LIFECYCLE = ["pending", "confirmed", "claimed"];
 const TAG_METADATA_FIELDS = [
   "path",
@@ -147,9 +149,9 @@ function requireEnvironment(value) {
   };
 }
 
-export function validateNativeReleaseProviderTuple(value) {
-  const providerTuple = requireString(value, "environment.provider_tuple", PROVIDER_TUPLE_PATTERN);
-  if (FORBIDDEN_FIELD_PATTERN.test(providerTuple)) {
+export function validateNativeReleaseProviderTuple(value, description = "environment.provider_tuple") {
+  const providerTuple = requireString(value, description, PROVIDER_TUPLE_PATTERN);
+  if (FORBIDDEN_PROVIDER_TUPLE_PATTERN.test(providerTuple)) {
     throw new Error("environment.provider_tuple must not contain sensitive identifiers");
   }
   return providerTuple;
@@ -305,13 +307,10 @@ export function parseNativeReleaseTagMetadata(tagMessage) {
       fields.codex_cli_version,
       "tag metadata codex_cli_version",
     ),
-    provider_tuple: (() => {
-      const providerTuple = requireString(fields.provider_tuple, "tag metadata provider_tuple", PROVIDER_TUPLE_PATTERN);
-      if (FORBIDDEN_FIELD_PATTERN.test(providerTuple)) {
-        throw new Error("tag metadata provider_tuple must not contain sensitive identifiers");
-      }
-      return providerTuple;
-    })(),
+    provider_tuple: validateNativeReleaseProviderTuple(
+      fields.provider_tuple,
+      "tag metadata provider_tuple",
+    ),
   };
 }
 
