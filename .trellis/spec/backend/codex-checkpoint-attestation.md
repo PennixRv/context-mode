@@ -405,3 +405,116 @@ const claimed = database.claim(checkpoint.checkpoint_id, now);
 On parse or projection failure, invalidate the still-confirmed row with a fixed
 reason and return empty context. The diagnostic sidecar records only the fixed
 outcome classification.
+
+## Scenario: Independent Trellis SessionStart Orientation
+
+### 1. Scope / Trigger
+
+Use this contract when changing the project-local Codex SessionStart hook in
+`.codex/hooks.json` or `.codex/hooks/session-start.py`. It supplies compact,
+read-only Trellis task orientation. It coexists with, but does not alter, the
+context-mode plugin's same-session checkpoint lifecycle.
+
+### 2. Signatures
+
+The project-local registration has exactly one bounded entry:
+
+```json
+{
+  "matcher": "^(startup|resume|clear|compact)$",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "python3 -X utf8 .codex/hooks/session-start.py",
+      "timeout": 10,
+      "additionalContextLimit": 900
+    }
+  ]
+}
+```
+
+The hook emits the standard Codex response shape:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "<trellis-session>...</trellis-session>"
+  }
+}
+```
+
+### 3. Contracts
+
+- The local context contains only a workflow-phase index, active task path and
+  status, present artifact names, and present spec-index paths. It does not
+  read or emit task prose, RecoveryBrief bodies, transcripts, tool I/O,
+  credentials, journal content, or checkpoint payloads.
+- The output is capped at 900 UTF-8 bytes, including stale pointer paths. An
+  unavailable Trellis runtime returns valid empty context with zero exit
+  status; it must not block Codex startup or compaction.
+- `.codex-plugin/hooks.json` remains independent: its compact matcher is
+  `^compact$`, its command remains `checkpoint-sessionstart.mjs`, and its
+  `additionalContextLimit` remains 1500. Do not proxy, chain, merge, or edit
+  plugin hook declarations through the Trellis hook.
+- The local hook never writes task artifacts, task runtime state, or a
+  RecoveryBrief, and it never determines post-compaction continuation behavior
+  or instruction precedence.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| `startup`, `resume`, `clear`, or `compact` with a valid task | Bounded orientation with task status and artifact-name index only |
+| No active task | Bounded orientation with `Task: none; status=none.` |
+| Active pointer is stale | Bounded orientation with `status=stale-pointer`; no task write |
+| Trellis runtime or script dependency is unavailable | Valid zero-exit SessionStart JSON with empty `additionalContext` |
+| Task pointer or status field is unusually long | UTF-8 output remains at or below 900 bytes |
+| Plugin checkpoint hook fails or is empty | Trellis hook makes no transport claim and does not alter plugin behavior |
+
+### 5. Good / Base / Bad Cases
+
+- Good: compact SessionStart receives a bounded current task orientation from
+  Trellis and a separately generated historical checkpoint projection from
+  context-mode; neither hook writes project state.
+- Base: there is no active task or Trellis files are temporarily unavailable;
+  the local hook returns valid empty or no-task output and Codex remains
+  unblocked.
+- Bad: adding a RecoveryBrief write to the hook, outputting task bodies,
+  reintroducing a first-reply/continuation directive, or modifying the plugin
+  manifest to combine the two hook responsibilities.
+
+### 6. Tests Required
+
+- `tests/hooks/trellis-session-start.test.ts` asserts one local bounded
+  registration, unchanged plugin compact registration, all four source values,
+  no-active and stale-pointer behavior, no task/Brief body exposure, no task
+  writes, unavailable-runtime fail-open output, and an overlong pointer cap.
+- `tests/plugins/codex-manifest.test.ts` continues to assert the packaged
+  context-mode plugin lifecycle and its 1500-byte compact budget.
+- Run `python3 -m py_compile .codex/hooks/session-start.py`, the focused Vitest
+  contract tests, TypeScript no-emit checking, and `git diff --check` before
+  commit. A disposable multi-hook Codex host smoke is separate native evidence,
+  not a replacement for these deterministic tests.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```text
+Trellis SessionStart hook -> write RecoveryBrief -> call context-mode compact hook
+```
+
+This couples semantic task state to a best-effort transport lifecycle and
+makes a hook failure capable of corrupting or blocking project continuity.
+
+#### Correct
+
+```text
+Trellis SessionStart hook      -> bounded read-only current-task orientation
+context-mode plugin hook       -> bounded same-session checkpoint projection
+Trellis coordinator workflow   -> semantic RecoveryBrief synchronization
+```
+
+The three paths have separate outputs and authority. A model-facing global
+continuation policy remains outside all three hook/provider paths.

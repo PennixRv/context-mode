@@ -5,7 +5,10 @@ description: "Initializes an AI development session by reading workflow guides, 
 
 # Start Session
 
-Initialize a Trellis-managed development session. This platform has no session-start hook, so manually load the equivalent compact context by following these steps.
+Initialize a Trellis-managed development session. When Codex hooks are enabled,
+the project SessionStart hook supplies a small read-only orientation; manually
+load the full context below when the hook is unavailable or more detail is
+needed.
 
 ---
 
