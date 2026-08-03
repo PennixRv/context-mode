@@ -94,6 +94,21 @@ python3 ./.trellis/scripts/get_context.py --mode packages            # available
 python3 ./.trellis/scripts/get_context.py --mode phase --step <X.Y>  # detailed guide for a workflow step
 ```
 
+### RecoveryBrief Synchronization
+
+Trellis task artifacts and task state are the sole project-semantic continuity
+source. context-mode provides only the controlled RecoveryBrief provider and
+same-session checkpoint transport. The main coordinator uses
+`trellis-recovery-brief-sync` after `task.py start` before implementation,
+after `trellis-check` confirms a recorded material semantic change, before an
+explicit handoff/pause/finish/archive, or on an explicit user request to
+inspect, repair, force-refresh, or formally hand off state.
+
+Do not synchronize for ordinary edits, tests, diffs, compaction, `PreCompact`,
+`PostCompact`, `SessionStart(compact)`, claimed checkpoints, or ordinary
+resume. Workers report evidence but never write a RecoveryBrief. An invalid
+Trellis pointer fails closed and never authorizes project-provider fallback.
+
 ---
 
 <!--
@@ -227,6 +242,7 @@ Tools: `trellis-implement` / `trellis-research` are sub-agent types only (Task/A
 Flow: `trellis-implement` -> `trellis-check` -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.
 Main-session default: dispatch implement/check sub-agents. Sub-agent self-exemption: if already running as `trellis-implement`, do NOT spawn another `trellis-implement` or `trellis-check`; if already running as `trellis-check`, do NOT spawn another `trellis-check` or `trellis-implement`. Dispatch is main session only.
 Dispatch prompt starts with `Active task: <task path from task.py current>`. Read context: jsonl entries -> `prd.md` -> `design.md if present` -> `implement.md if present`.
+Main coordinator: run `trellis-recovery-brief-sync` only after approved task start, after a checked and recorded material semantic change, before explicit handoff/pause/finish/archive, or on an explicit inspect/repair/force-refresh/formal-handoff request. Do not sync for compact lifecycle events, SessionStart, claimed checkpoints, or ordinary resume. Workers do not write Briefs.
 [/workflow-state:in_progress]
 
 <!-- Per-turn breadcrumb: shown while status='in_progress' when
@@ -238,6 +254,7 @@ Dispatch prompt starts with `Active task: <task path from task.py current>`. Rea
 Flow: `trellis-before-dev` -> edit -> `trellis-check` -> validation -> `trellis-update-spec` -> commit (Phase 3.4) -> `/trellis:finish-work`.
 Do not dispatch implement/check sub-agents in inline mode.
 Read context: `prd.md` -> `design.md if present` -> `implement.md if present`, plus relevant spec/research loaded by skills.
+Main coordinator: run `trellis-recovery-brief-sync` only after approved task start, after a checked and recorded material semantic change, before explicit handoff/pause/finish/archive, or on an explicit inspect/repair/force-refresh/formal-handoff request. Do not sync for compact lifecycle events, SessionStart, claimed checkpoints, or ordinary resume.
 [/workflow-state:in_progress-inline]
 
 ### Phase 3: Finish

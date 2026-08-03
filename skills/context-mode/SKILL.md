@@ -144,7 +144,7 @@ Use context-mode for ANY of these, without being asked:
 
 ## Critical Rules
 
-For explicit Codex compaction continuity, RecoveryBrief maintenance, or recovery-state inspection, use `ctx-recovery-brief` instead of treating ordinary large-output routing as semantic recovery workflow.
+For Trellis project-semantic continuity, use the project-local `trellis-recovery-brief-sync` skill at its approved semantic gates. Use low-level `ctx-recovery-brief` only through that coordinator protocol or for an explicit inspection, repair, force-refresh, or formal-handoff request. Ordinary large-output routing, compact events, and resumed sessions are not RecoveryBrief write triggers.
 
 1. **Always console.log/print your findings.** stdout is all that enters context. No output = wasted call.
 2. **Write analysis code, not just data dumps.** Don't `console.log(JSON.stringify(data))` — analyze first, print findings.
