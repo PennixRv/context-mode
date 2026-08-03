@@ -3,9 +3,9 @@ name: OpenClaw E2E
 on:
   workflow_dispatch:
   push:
-    branches: [main, next]
+    branches: [main, next, devel]
   pull_request:
-    branches: [main, next]
+    branches: [main, next, devel]
 
 concurrency:
   group: openclaw-e2e-${{ github.ref }}

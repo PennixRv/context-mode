@@ -9,6 +9,15 @@ const tierTwoWorkflowPath = resolve(__dirname, "../../.github/workflows/tier2-e2
 const openClawWorkflowPath = resolve(__dirname, "../../.github/workflows/openclaw-e2e.yml");
 const packageJsonPath = resolve(__dirname, "../../package.json");
 
+function readWorkflowEventBranches(workflow: string, event: "push" | "pull_request"): string[] {
+  const eventBranches = workflow.match(
+    new RegExp(`^  ${event}:\\n    branches: \\[([^\\]]+)\\]`, "m"),
+  );
+
+  expect(eventBranches, `expected ${event} branch filter`).not.toBeNull();
+  return eventBranches![1].split(",").map((branch) => branch.trim());
+}
+
 describe("release workflow fork-ref contract", () => {
   test("uses the latest Node and Codex runtimes for release asset verification", () => {
     const workflow = readFileSync(workflowPath, "utf8");
@@ -37,6 +46,33 @@ describe("release workflow fork-ref contract", () => {
     expect(openClawWorkflow).toContain("NODE_VERSION: latest");
     expect(openClawWorkflow).toContain("id: node_version");
     expect(openClawWorkflow).toContain("steps.node_version.outputs.value");
+  });
+
+  test("runs ordinary development checks for the fork devel branch", () => {
+    const workflows = [
+      {
+        name: "CI",
+        workflow: readFileSync(ciWorkflowPath, "utf8"),
+        branches: ["main", "next", "devel"],
+      },
+      {
+        name: "bundle drift",
+        workflow: readFileSync(bundleWorkflowPath, "utf8"),
+        branches: ["main", "devel"],
+      },
+      {
+        name: "OpenClaw E2E",
+        workflow: readFileSync(openClawWorkflowPath, "utf8"),
+        branches: ["main", "next", "devel"],
+      },
+    ];
+
+    for (const { name, workflow, branches } of workflows) {
+      expect(readWorkflowEventBranches(workflow, "push"), `${name} push branches`).toEqual(branches);
+      expect(readWorkflowEventBranches(workflow, "pull_request"), `${name} pull request branches`).toEqual(
+        branches,
+      );
+    }
   });
 
   test("keeps the Node API capability floor separate from release provenance", () => {
