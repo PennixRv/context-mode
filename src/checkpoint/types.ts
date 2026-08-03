@@ -23,6 +23,8 @@ export type RecoveryBriefErrorCode =
   | "TRELLIS_RUNTIME_INVALID"
   | "TRELLIS_TASK_INVALID"
   | "TRELLIS_BRIEF_INVALID"
+  | "TRELLIS_SOURCE_MISMATCH"
+  | "TRELLIS_SOURCE_DRIFT"
   | "PROJECT_PROVIDER_INVALID"
   | "PROJECT_BRIEF_INVALID"
   | "PROJECT_SOURCE_INVALID"
@@ -283,6 +285,7 @@ export interface RecoveryBriefProviderStatus {
   task: "active" | "absent" | "not_applicable";
   briefPath: string | null;
   briefSha256: string | null;
+  trellisSourceSha256: string | null;
   briefBytes: number | null;
   updatedAt: string | null;
   sources: RecoveryBriefSourceSummary;

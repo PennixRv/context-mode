@@ -47,7 +47,12 @@ bounded by 12,000 bytes.
 Project-provider facts may use `explicit_project_state` only when their digest
 matches one of the registered source files, or `git` when it matches the
 current Git status digest. `trellis_task` is rejected for project providers.
-Trellis providers preserve Trellis source semantics.
+Trellis-provider facts must all use `trellis_task` and exactly match the
+content-free `trellisSourceSha256` returned by current provider status. That
+digest covers the trusted active-task identity/state and recognized task
+artifact hashes, never artifact bodies, transcripts, tool I/O, journals, FTS,
+or Git diffs. It is a freshness binding for the Brief, not a semantic-quality
+claim.
 
 ## Error Handling
 
@@ -58,6 +63,15 @@ do not overwrite it silently. An explicit update with refreshed `source_paths`
 is required. `PROJECT_SOURCE_MISMATCH` means supplied facts do not match
 registered evidence. `TRELLIS_RUNTIME_INVALID`, `TRELLIS_TASK_INVALID`, and
 `TRELLIS_BRIEF_INVALID` require Trellis repair and do not permit fallback.
+
+`TRELLIS_SOURCE_MISMATCH` means the requested Trellis write contains a
+non-Trellis fact or a digest other than current `trellisSourceSha256`; it is
+rejected before the Brief file changes. `TRELLIS_SOURCE_DRIFT` means trusted
+active-task material changed after the last valid Brief write. The old Brief is
+withheld from new checkpoint snapshots while normal checkpoint lifecycle work
+continues. Status retains the old content-free `briefSha256` for CAS and
+returns the new `trellisSourceSha256`; a Trellis coordinator may refresh the
+complete Brief only after reconciling current Trellis task state.
 
 Status and report APIs intentionally omit Brief text. They describe structural
 availability and delivery only, not semantic quality.

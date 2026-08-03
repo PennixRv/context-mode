@@ -110,6 +110,17 @@ function createActiveTrellisTask(projectDir: string, sessionId: string): string 
   return taskDir;
 }
 
+function currentTrellisSourceSha256(projectDir: string, sessionId: string): string {
+  const status = getRecoveryBriefProviderStatus(projectDir, sessionId);
+  expect(status).toMatchObject({
+    provider: "trellis",
+    task: "active",
+    errorCode: "NONE",
+  });
+  expect(status.trellisSourceSha256).toMatch(/^[a-f0-9]{64}$/);
+  return status.trellisSourceSha256!;
+}
+
 function trellisRuntimePath(projectDir: string, sessionId: string): string {
   return join(projectDir, ".trellis", ".runtime", "sessions", `codex_${sessionId}.json`);
 }
@@ -378,6 +389,106 @@ describe("RecoveryBrief providers", () => {
     expect(existsSync(join(current.projectDir, ".context-mode", "recovery-brief.json"))).toBe(false);
   });
 
+  it("requires every Trellis Brief fact to cite the current content-free source digest", () => {
+    const current = fixture();
+    const sessionId = "session-trellis-source-validation";
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+    const status = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+
+    expect(status).toMatchObject({
+      provider: "trellis",
+      health: "available",
+      recoveryStatus: "absent",
+      task: "active",
+      errorCode: "NONE",
+    });
+    expect(status.trellisSourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(status)).not.toContain("task-1\"}");
+
+    const wrongDigestResult = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("trellis_task", "a".repeat(64)),
+    });
+    expect(wrongDigestResult).toMatchObject({ ok: false, errorCode: "TRELLIS_SOURCE_MISMATCH" });
+    expect(existsSync(join(taskDir, "recovery-brief.json"))).toBe(false);
+
+    const wrongKindResult = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("explicit_project_state", status.trellisSourceSha256!),
+    });
+    expect(wrongKindResult).toMatchObject({ ok: false, errorCode: "TRELLIS_SOURCE_MISMATCH" });
+    expect(existsSync(join(taskDir, "recovery-brief.json"))).toBe(false);
+
+    const mixedDigestResult = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: {
+        ...brief("trellis_task", status.trellisSourceSha256!),
+        hard_constraints: [fact(
+          "Preserve exact source provenance for every fact",
+          "critical",
+          "trellis_task",
+          "c".repeat(64),
+        )],
+      },
+    });
+    expect(mixedDigestResult).toMatchObject({ ok: false, errorCode: "TRELLIS_SOURCE_MISMATCH" });
+    expect(existsSync(join(taskDir, "recovery-brief.json"))).toBe(false);
+
+    const firstWrite = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("trellis_task", status.trellisSourceSha256!),
+    });
+    expect(firstWrite).toMatchObject({ ok: true, errorCode: "NONE" });
+    const firstContent = readFileSync(join(taskDir, "recovery-brief.json"), "utf8");
+
+    const rejectedOverwrite = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: firstWrite.briefSha256!,
+      brief: brief("trellis_task", "b".repeat(64), timestamp(1)),
+    });
+    expect(rejectedOverwrite).toMatchObject({ ok: false, errorCode: "TRELLIS_SOURCE_MISMATCH" });
+    expect(readFileSync(join(taskDir, "recovery-brief.json"), "utf8")).toBe(firstContent);
+  });
+
+  it("withholds a drifted Trellis Brief, then refreshes it with the old Brief CAS digest", () => {
+    const current = fixture();
+    const sessionId = "session-trellis-source-drift";
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+    const firstSourceSha256 = currentTrellisSourceSha256(current.projectDir, sessionId);
+    const firstWrite = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("trellis_task", firstSourceSha256),
+    });
+    expect(firstWrite).toMatchObject({ ok: true, errorCode: "NONE" });
+
+    writeFileSync(join(taskDir, "prd.md"), "trusted task semantics changed", "utf8");
+    const driftedStatus = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+    expect(driftedStatus).toMatchObject({
+      provider: "trellis",
+      health: "invalid",
+      recoveryStatus: "invalid",
+      origin: "trellis",
+      task: "active",
+      briefSha256: firstWrite.briefSha256,
+      sourceDrift: true,
+      errorCode: "TRELLIS_SOURCE_DRIFT",
+    });
+    expect(driftedStatus.trellisSourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(driftedStatus.trellisSourceSha256).not.toBe(firstSourceSha256);
+    expect(JSON.stringify(driftedStatus)).not.toContain("trusted task semantics changed");
+
+    const refreshed = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: firstWrite.briefSha256!,
+      brief: brief("trellis_task", driftedStatus.trellisSourceSha256!, timestamp(1)),
+    });
+    expect(refreshed).toMatchObject({ ok: true, errorCode: "NONE" });
+    expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId)).toMatchObject({
+      health: "available",
+      recoveryStatus: "available",
+      sourceDrift: false,
+      errorCode: "NONE",
+    });
+  });
+
   for (const [index, invalidCase] of INVALID_TRELLIS_POINTER_CASES.entries()) {
     it(`keeps a generic project provider isolated when ${invalidCase.name}`, () => {
       const current = fixture();
@@ -387,7 +498,7 @@ describe("RecoveryBrief providers", () => {
 
       const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
       writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(
-        brief("trellis_task", "c".repeat(64)),
+        brief("trellis_task", currentTrellisSourceSha256(current.projectDir, sessionId)),
       ), "utf8");
       expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId)).toMatchObject({
         provider: "trellis",

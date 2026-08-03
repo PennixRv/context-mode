@@ -158,6 +158,8 @@ interface RecoveryBriefProviderResolution {
   task: "active" | "absent" | "not_applicable";
   briefPath: string | null;
   snapshot: RecoveryBriefSnapshot;
+  currentBriefSha256: string | null;
+  trellisSourceSha256: string | null;
   sources: RecoveryBriefSourceSummary;
   sourceDrift: boolean;
   errorCode: RecoveryBriefErrorCode;
@@ -409,6 +411,26 @@ function taskArtifacts(taskDir: string, trellisRoot: string): { artifacts: Trell
   return { artifacts, omitted };
 }
 
+function canonicalTrellisSourceSha256(
+  taskDir: string,
+  trellisRoot: string,
+  task: Record<string, unknown>,
+  artifacts: TrellisArtifact[],
+): string {
+  const source = {
+    schema_version: 1,
+    task_path: validRelativePath(relative(trellisRoot, taskDir)),
+    task: {
+      id: allowedTaskField(task, ["id", "task_id"]),
+      status: allowedTaskField(task, ["status", "state"]),
+      phase: allowedTaskField(task, ["phase", "stage"]),
+      updated_at: allowedTaskField(task, ["updated_at", "updatedAt"]),
+    },
+    artifacts: [...artifacts].sort((left, right) => left.path.localeCompare(right.path)),
+  };
+  return sha256(JSON.stringify(source));
+}
+
 export function readTrellisEvidence(projectRoot: string, sessionId: string): TrellisEvidence {
   const trellisRoot = join(projectRoot, ".trellis");
   if (!existsSync(trellisRoot)) {
@@ -610,6 +632,29 @@ function withBriefSourceKinds(
     sourceKinds[fact.source_kind] += 1;
   }
   return { ...summary, sourceKinds };
+}
+
+function trellisRecoverySourceSummary(
+  recoveryBrief: RecoveryBrief | null,
+  sourceDrift = false,
+): RecoveryBriefSourceSummary {
+  const summary = withBriefSourceKinds(emptyRecoveryBriefSourceSummary(), recoveryBrief);
+  const factCount = recoveryBrief ? recoveryBriefFacts(recoveryBrief).length : 0;
+  return {
+    ...summary,
+    registered: 1,
+    verified: sourceDrift ? 0 : 1,
+    drifted: sourceDrift ? factCount : 0,
+  };
+}
+
+function hasCurrentTrellisRecoverySources(
+  recoveryBrief: RecoveryBrief,
+  trellisSourceSha256: string,
+): boolean {
+  return recoveryBriefFacts(recoveryBrief).every((fact) =>
+    fact.source_kind === "trellis_task" && fact.source_sha256 === trellisSourceSha256,
+  );
 }
 
 function recoverySnapshot(
@@ -838,6 +883,8 @@ function trellisProviderResolution(
     task,
     briefPath: null,
     snapshot: recoverySnapshot("invalid", "trellis"),
+    currentBriefSha256: null,
+    trellisSourceSha256: null,
     sources: emptyRecoveryBriefSourceSummary(),
     sourceDrift: false,
     errorCode,
@@ -859,18 +906,56 @@ function trellisProviderResolution(
     const resolvedTaskJsonPath = trustedRegularFile(trellisRoot, taskJsonPath);
     if (!resolvedTaskJsonPath) return invalid("TRELLIS_TASK_INVALID");
 
+    const task = JSON.parse(readFileSync(resolvedTaskJsonPath, "utf8")) as Record<string, unknown>;
+    const taskDir = resolve(resolvedTaskJsonPath, "..");
+    const taskArtifactSummary = taskArtifacts(taskDir, trellisRoot);
+    const trellisSourceSha256 = canonicalTrellisSourceSha256(
+      taskDir,
+      trellisRoot,
+      task,
+      taskArtifactSummary.artifacts,
+    );
     const recoveryPath = join(resolve(resolvedTaskJsonPath, ".."), PROJECT_RECOVERY_BRIEF_FILE_NAME);
     const read = readRecoveryBriefFile(trellisRoot, recoveryPath, "trellis", trustedRegularFile);
-    const sources = withBriefSourceKinds(emptyRecoveryBriefSourceSummary(), read.recoveryBrief);
+    if (read.snapshot.status === "invalid") {
+      return {
+        kind: "trellis",
+        health: "invalid",
+        task: "active",
+        briefPath: relativeProjectPath(projectRoot, recoveryPath),
+        snapshot: read.snapshot,
+        currentBriefSha256: null,
+        trellisSourceSha256,
+        sources: trellisRecoverySourceSummary(read.recoveryBrief),
+        sourceDrift: false,
+        errorCode: "TRELLIS_BRIEF_INVALID",
+      };
+    }
+    if (read.recoveryBrief && !hasCurrentTrellisRecoverySources(read.recoveryBrief, trellisSourceSha256)) {
+      return {
+        kind: "trellis",
+        health: "invalid",
+        task: "active",
+        briefPath: relativeProjectPath(projectRoot, recoveryPath),
+        snapshot: recoverySnapshot("invalid", "trellis"),
+        currentBriefSha256: read.snapshot.recoverySha256,
+        trellisSourceSha256,
+        sources: trellisRecoverySourceSummary(read.recoveryBrief, true),
+        sourceDrift: true,
+        errorCode: "TRELLIS_SOURCE_DRIFT",
+      };
+    }
     return {
       kind: "trellis",
-      health: read.snapshot.status === "invalid" ? "invalid" : "available",
+      health: "available",
       task: "active",
       briefPath: relativeProjectPath(projectRoot, recoveryPath),
       snapshot: read.snapshot,
-      sources,
+      currentBriefSha256: read.snapshot.recoverySha256,
+      trellisSourceSha256,
+      sources: trellisRecoverySourceSummary(read.recoveryBrief),
       sourceDrift: false,
-      errorCode: read.snapshot.status === "invalid" ? "TRELLIS_BRIEF_INVALID" : "NONE",
+      errorCode: "NONE",
     };
   } catch {
     return invalid("TRELLIS_RUNTIME_INVALID");
@@ -886,6 +971,8 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
       task: "not_applicable",
       briefPath: null,
       snapshot: recoverySnapshot("absent", "none"),
+      currentBriefSha256: null,
+      trellisSourceSha256: null,
       sources: emptyRecoveryBriefSourceSummary(),
       sourceDrift: false,
       errorCode: "NO_PROVIDER",
@@ -903,6 +990,8 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
     task: "not_applicable",
     briefPath: relativeProjectPath(projectRoot, paths.briefPath),
     snapshot: recoverySnapshot("invalid", "project"),
+    currentBriefSha256: null,
+    trellisSourceSha256: null,
     sources,
     sourceDrift,
     errorCode,
@@ -935,6 +1024,8 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
       task: "not_applicable",
       briefPath: relativeProjectPath(projectRoot, paths.briefPath),
       snapshot: read.snapshot,
+      currentBriefSha256: read.snapshot.recoverySha256,
+      trellisSourceSha256: null,
       sources,
       sourceDrift: sourceValidation.drifted,
       errorCode: sourceValidation.errorCode,
@@ -953,6 +1044,8 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
     task: "not_applicable",
     briefPath: relativeProjectPath(projectRoot, paths.briefPath),
     snapshot: read.snapshot,
+    currentBriefSha256: read.snapshot.recoverySha256,
+    trellisSourceSha256: null,
     sources,
     sourceDrift: false,
     errorCode: "NONE",
@@ -989,7 +1082,8 @@ function recoveryBriefProviderStatusFromResolution(
     origin: resolution.snapshot.origin,
     task: resolution.task,
     briefPath: resolution.briefPath,
-    briefSha256: resolution.snapshot.recoverySha256,
+    briefSha256: resolution.currentBriefSha256,
+    trellisSourceSha256: resolution.trellisSourceSha256,
     briefBytes: resolution.snapshot.recoveryJson
       ? Buffer.byteLength(resolution.snapshot.recoveryJson, "utf8")
       : null,
@@ -1105,6 +1199,7 @@ export function getRecoveryBriefProviderStatus(
       task: "not_applicable",
       briefPath: null,
       briefSha256: null,
+      trellisSourceSha256: null,
       briefBytes: null,
       updatedAt: null,
       sources: emptyRecoveryBriefSourceSummary(),
@@ -1155,7 +1250,12 @@ export function updateRecoveryBriefProvider(
 
   let sourceCount = resolution.sources.registered;
   let projectConfig = resolution.projectConfig;
-  if (resolution.kind === "project") {
+  if (resolution.kind === "trellis") {
+    if (!resolution.trellisSourceSha256) return failed("TRELLIS_TASK_INVALID", resolution);
+    if (!hasCurrentTrellisRecoverySources(recoveryBrief, resolution.trellisSourceSha256)) {
+      return failed("TRELLIS_SOURCE_MISMATCH", resolution);
+    }
+  } else if (resolution.kind === "project") {
     if (!projectConfig) return failed(resolution.errorCode, resolution);
     const sourceValidation = options.sourcePaths
       ? captureProjectRecoverySources(projectRoot, options.sourcePaths)

@@ -72,5 +72,8 @@ describe("RecoveryBrief indexing and skill packaging", () => {
     expect(skill).toContain("references/recovery-brief-v1.md");
     expect(reference).toContain("fails closed");
     expect(reference).toContain("not semantic quality");
+    expect(reference).toContain("trellisSourceSha256");
+    expect(reference).toContain("TRELLIS_SOURCE_MISMATCH");
+    expect(reference).toContain("TRELLIS_SOURCE_DRIFT");
   });
 });

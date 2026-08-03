@@ -22,6 +22,7 @@ import {
   confirmPendingCheckpoint,
   createPendingCheckpoint,
   getCheckpointReliabilityReport,
+  getRecoveryBriefProviderStatus,
   readTrellisEvidence,
   recordPromptCheckpointSignal,
   recordToolCheckpointSignal,
@@ -213,6 +214,35 @@ function recoveryBrief(overrides: Partial<RecoveryBrief> = {}): RecoveryBrief {
     next_action: recoveryFact("Run isolated quality validation", "critical"),
     project_state: recoveryFact("Worktree is intentionally dirty", "important"),
     ...overrides,
+  };
+}
+
+function withCurrentTrellisSources(
+  fixture: RuntimeFixture,
+  sessionId: string,
+  recoveryBrief: RecoveryBrief,
+): RecoveryBrief {
+  const sourceSha256 = getRecoveryBriefProviderStatus(
+    fixture.projectDir,
+    sessionId,
+  ).trellisSourceSha256;
+  if (!sourceSha256) throw new Error("expected active Trellis source digest");
+
+  const refresh = (fact: RecoveryBriefFact): RecoveryBriefFact => ({
+    ...fact,
+    source_kind: "trellis_task",
+    source_sha256: sourceSha256,
+  });
+  return {
+    ...recoveryBrief,
+    objective: refresh(recoveryBrief.objective),
+    hard_constraints: recoveryBrief.hard_constraints.map(refresh),
+    decisions: recoveryBrief.decisions.map(refresh),
+    completed_work: recoveryBrief.completed_work.map(refresh),
+    open_work: recoveryBrief.open_work.map(refresh),
+    latest_blocker: recoveryBrief.latest_blocker ? refresh(recoveryBrief.latest_blocker) : null,
+    next_action: recoveryBrief.next_action ? refresh(recoveryBrief.next_action) : null,
+    project_state: recoveryBrief.project_state ? refresh(recoveryBrief.project_state) : null,
   };
 }
 
@@ -548,7 +578,11 @@ describe("confirmed Codex compaction checkpoints", () => {
       objective: recoveryFact("RECOVERY-BRIEF-OBJECTIVE-A", "critical"),
       next_action: recoveryFact("RECOVERY-BRIEF-NEXT-A", "critical"),
     });
-    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(firstBrief), "utf8");
+    writeFileSync(
+      join(taskDir, "recovery-brief.json"),
+      JSON.stringify(withCurrentTrellisSources(fixture, sessionId, firstBrief)),
+      "utf8",
+    );
 
     const created = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
     const payload = JSON.parse(created.payload_json) as CheckpointPayload;
@@ -575,7 +609,11 @@ describe("confirmed Codex compaction checkpoints", () => {
       objective: recoveryFact("RECOVERY-BRIEF-OBJECTIVE-B", "critical"),
       next_action: recoveryFact("RECOVERY-BRIEF-NEXT-B", "critical"),
     });
-    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(secondBrief), "utf8");
+    writeFileSync(
+      join(taskDir, "recovery-brief.json"),
+      JSON.stringify(withCurrentTrellisSources(fixture, sessionId, secondBrief)),
+      "utf8",
+    );
     expect(confirmPendingCheckpoint(input, { configDir: fixture.configDir, now: at(1) })).toBe(true);
 
     const context = claimConfirmedCheckpointContext(input, { configDir: fixture.configDir, now: at(2) });
@@ -588,6 +626,42 @@ describe("confirmed Codex compaction checkpoints", () => {
       objective: { value: "RECOVERY-BRIEF-OBJECTIVE-A", priority: "critical" },
       next_action: { value: "RECOVERY-BRIEF-NEXT-A", priority: "critical" },
     });
+  });
+
+  it("withholds a stale Trellis Brief after trusted task material changes without blocking checkpoint delivery", () => {
+    const fixture = createFixture();
+    const sessionId = "session-recovery-source-drift";
+    const taskDir = createActiveTrellisTask(fixture, sessionId, "task-recovery-source-drift");
+    const initialBrief = withCurrentTrellisSources(fixture, sessionId, recoveryBrief({
+      objective: recoveryFact("STALE-BRIEF-OBJECTIVE", "critical"),
+    }));
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(initialBrief), "utf8");
+    writeFileSync(join(taskDir, "prd.md"), "trusted semantic state changed", "utf8");
+
+    const status = getRecoveryBriefProviderStatus(fixture.projectDir, sessionId);
+    expect(status).toMatchObject({
+      provider: "trellis",
+      health: "invalid",
+      recoveryStatus: "invalid",
+      sourceDrift: true,
+      errorCode: "TRELLIS_SOURCE_DRIFT",
+    });
+    expect(JSON.stringify(status)).not.toContain("trusted semantic state changed");
+
+    const input = hookInput(fixture.projectDir, sessionId, "turn-recovery-source-drift");
+    const created = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
+    expect(created).toMatchObject({
+      recovery_status: "invalid",
+      recovery_json: null,
+      recovery_sha256: null,
+      recovery_origin: "trellis",
+    });
+    expect(created.payload_json).not.toContain("STALE-BRIEF-OBJECTIVE");
+
+    expect(confirmPendingCheckpoint(input, { configDir: fixture.configDir, now: at(1) })).toBe(true);
+    const context = claimConfirmedCheckpointContext(input, { configDir: fixture.configDir, now: at(2) });
+    expect(context).not.toContain("STALE-BRIEF-OBJECTIVE");
+    expect(context).not.toContain("recovery_brief");
   });
 
   it("records invalid and untrusted RecoveryBriefs without persisting their bodies", () => {
@@ -662,12 +736,16 @@ describe("confirmed Codex compaction checkpoints", () => {
     const betaInput = hookInput(fixture.projectDir, "session-recovery-beta", "turn-recovery-beta");
     const alphaTaskDir = createActiveTrellisTask(fixture, "session-recovery-alpha", "task-alpha");
     const betaTaskDir = createActiveTrellisTask(fixture, "session-recovery-beta", "task-beta");
-    writeFileSync(join(alphaTaskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
-      objective: recoveryFact("ALPHA-SESSION-ONLY", "critical"),
-    })), "utf8");
-    writeFileSync(join(betaTaskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
-      objective: recoveryFact("BETA-SESSION-ONLY", "critical"),
-    })), "utf8");
+    writeFileSync(join(alphaTaskDir, "recovery-brief.json"), JSON.stringify(
+      withCurrentTrellisSources(fixture, "session-recovery-alpha", recoveryBrief({
+        objective: recoveryFact("ALPHA-SESSION-ONLY", "critical"),
+      })),
+    ), "utf8");
+    writeFileSync(join(betaTaskDir, "recovery-brief.json"), JSON.stringify(
+      withCurrentTrellisSources(fixture, "session-recovery-beta", recoveryBrief({
+        objective: recoveryFact("BETA-SESSION-ONLY", "critical"),
+      })),
+    ), "utf8");
 
     for (const [index, input] of [alphaInput, betaInput].entries()) {
       createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(index) });
@@ -804,12 +882,14 @@ describe("confirmed Codex compaction checkpoints", () => {
     const decisionValue = `DECISION-${"d".repeat(440)}`;
     const openWorkValue = `OPEN-WORK-${"w".repeat(440)}`;
     const criticalValue = `CRITICAL-${"c".repeat(160)}`;
-    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
-      objective: recoveryFact(criticalValue, "critical"),
-      completed_work: [recoveryFact(optionalValue, "optional")],
-      decisions: [recoveryFact(decisionValue, "important")],
-      open_work: [recoveryFact(openWorkValue, "important")],
-    })), "utf8");
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(
+      withCurrentTrellisSources(fixture, sessionId, recoveryBrief({
+        objective: recoveryFact(criticalValue, "critical"),
+        completed_work: [recoveryFact(optionalValue, "optional")],
+        decisions: [recoveryFact(decisionValue, "important")],
+        open_work: [recoveryFact(openWorkValue, "important")],
+      })),
+    ), "utf8");
 
     const row = createPendingCheckpoint(input, { configDir: fixture.configDir, now: at(0) })!;
     const payload = JSON.parse(row.payload_json) as CheckpointPayload;
@@ -822,16 +902,18 @@ describe("confirmed Codex compaction checkpoints", () => {
     expect(pruned.emittedBytes).toBeLessThanOrEqual(checkpointInternals.MAX_ADDITIONAL_CONTEXT_BYTES);
 
     const oversizedCritical = `CRITICAL-UNFIT-${"x".repeat(490)}`;
-    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(recoveryBrief({
-      objective: recoveryFact(oversizedCritical, "critical"),
-      hard_constraints: [recoveryFact(oversizedCritical, "critical")],
-      latest_blocker: recoveryFact(oversizedCritical, "critical"),
-      next_action: recoveryFact(oversizedCritical, "critical"),
-      decisions: [],
-      completed_work: [],
-      open_work: [],
-      project_state: null,
-    })), "utf8");
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(
+      withCurrentTrellisSources(fixture, sessionId, recoveryBrief({
+        objective: recoveryFact(oversizedCritical, "critical"),
+        hard_constraints: [recoveryFact(oversizedCritical, "critical")],
+        latest_blocker: recoveryFact(oversizedCritical, "critical"),
+        next_action: recoveryFact(oversizedCritical, "critical"),
+        decisions: [],
+        completed_work: [],
+        open_work: [],
+        project_state: null,
+      })),
+    ), "utf8");
     const oversizedInput = hookInput(fixture.projectDir, sessionId, "turn-recovery-budget-critical");
     const oversizedRow = createPendingCheckpoint(oversizedInput, { configDir: fixture.configDir, now: at(1) })!;
     const oversizedPayload = JSON.parse(oversizedRow.payload_json) as CheckpointPayload;
