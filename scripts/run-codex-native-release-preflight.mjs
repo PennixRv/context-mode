@@ -171,10 +171,19 @@ function providerProjectionProfilePaths(sourceEnvironment) {
   }))];
 }
 
+export function assertProviderPreflightPrivatePermissionsSupported(platform = process.platform) {
+  if (platform === "win32") {
+    throw new Error(
+      "provider-authorized native preflight requires verifiable private file permissions; Windows ACL validation is unsupported",
+    );
+  }
+}
+
 function assertSafeProviderProjectionPath(projectionPath, {
   repository = repositoryRoot,
   sourceEnvironment = process.env,
 } = {}) {
+  assertProviderPreflightPrivatePermissionsSupported();
   const resolvedProjection = resolve(projectionPath);
   const resolvedRepository = resolve(repository);
   assertNoSymbolicLinkTraversal(resolvedProjection, "provider projection");
@@ -270,6 +279,7 @@ export function loadProviderProjection(projectionPath, options = {}) {
 }
 
 export function writeDisposableProviderConfig(validationHome, projection) {
+  assertProviderPreflightPrivatePermissionsSupported();
   const validatedProjection = validateProviderProjection(projection);
   const resolvedHome = resolve(validationHome);
   assertNoSymbolicLinkTraversal(resolvedHome, "disposable CODEX_HOME");
@@ -297,6 +307,7 @@ export function writeDisposableProviderConfig(validationHome, projection) {
 }
 
 export function writeDisposableProviderAuth(validationHome, sourceEnvironment = process.env) {
+  assertProviderPreflightPrivatePermissionsSupported();
   assertProviderEnvironmentAuthorization(sourceEnvironment);
   const resolvedHome = resolve(validationHome);
   assertNoSymbolicLinkTraversal(resolvedHome, "disposable CODEX_HOME");
@@ -392,6 +403,7 @@ function main() {
   const tag = options.tag;
   validateNativeReleaseProviderTuple(options.provider_tuple);
   const output = resolvePreflightOutput(repositoryRoot, tag, options.output);
+  assertProviderPreflightPrivatePermissionsSupported();
   const providerProjection = loadProviderProjection(options.provider_projection);
   assertProviderEnvironmentAuthorization();
   const nodeVersion = requireNormalizedRuntimeVersion(process.versions.node, "native preflight Node version");

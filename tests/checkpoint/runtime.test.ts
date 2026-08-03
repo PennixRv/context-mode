@@ -1085,7 +1085,10 @@ describe("confirmed Codex compaction checkpoints", () => {
 
     const identity = resolveCheckpointDiagnosticIdentity(input, fixture.configDir);
     expect(identity).not.toBeNull();
-    expect(statSync(identity!.filePath).mode & 0o777).toBe(0o600);
+    expect(statSync(identity!.filePath).isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(statSync(identity!.filePath).mode & 0o777).toBe(0o600);
+    }
 
     const report = getCheckpointReliabilityReport(fixture.projectDir, fixture.configDir, {
       now: at(300),
@@ -1164,7 +1167,10 @@ describe("confirmed Codex compaction checkpoints", () => {
     expect(rows).toHaveLength(retainedRows.length + writers.length);
     expect(rows.filter((row) => row.code === "DELIVERED")).toHaveLength(1);
     expect(rows.filter((row) => row.code === "PROJECTION_FAILED")).toHaveLength(1);
-    expect(statSync(identity.filePath).mode & 0o777).toBe(0o600);
+    expect(statSync(identity.filePath).isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(statSync(identity.filePath).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("reclaims a diagnostic lock left by a terminated writer", () => {

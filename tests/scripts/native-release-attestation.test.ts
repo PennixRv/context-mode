@@ -28,6 +28,7 @@ import { verifyNativeReleaseAttestation } from "../../scripts/verify-codex-nativ
 import {
   assertCleanSourceTree,
   assertProviderEnvironmentAuthorization,
+  assertProviderPreflightPrivatePermissionsSupported,
   createDisposableEnvironment,
   createNonProviderEnvironment,
   loadProviderProjection,
@@ -311,6 +312,14 @@ describe("native release workflow guards", () => {
       writeFileSync(projectionPath, JSON.stringify(projection));
       chmodSync(projectionPath, 0o600);
 
+      if (process.platform === "win32") {
+        expect(() => loadProviderProjection(projectionPath, {
+          repository: repositoryRoot,
+          sourceEnvironment: { HOME: join(root, "normal-home") },
+        })).toThrow(/Windows ACL validation is unsupported/);
+        return;
+      }
+
       expect(loadProviderProjection(projectionPath, {
         repository: repositoryRoot,
         sourceEnvironment: { HOME: join(root, "normal-home") },
@@ -366,6 +375,15 @@ describe("native release workflow guards", () => {
         chmodSync(projectionPath, 0o600);
       };
       mkdirSync(repositoryRoot);
+
+      if (process.platform === "win32") {
+        writeProjection(defaultProjection);
+        expect(() => loadProviderProjection(projectionPath, {
+          repository: repositoryRoot,
+          sourceEnvironment: { HOME: normalHome },
+        })).toThrow(/Windows ACL validation is unsupported/);
+        return;
+      }
 
       for (const invalidProjection of [
         { ...defaultProjection, unexpected: true },
@@ -462,6 +480,12 @@ describe("native release workflow guards", () => {
     expect(() => assertProviderEnvironmentAuthorization({})).toThrow(/OPENAI_API_KEY/);
     expect(() => assertProviderEnvironmentAuthorization({ OPENAI_API_KEY: "" })).toThrow(/OPENAI_API_KEY/);
     expect(() => assertProviderEnvironmentAuthorization({ OPENAI_API_KEY: "operator-controlled-provider-authorization" })).not.toThrow();
+  });
+
+  test("rejects provider-authorized preflight on Windows until private ACL verification exists", () => {
+    expect(() => assertProviderPreflightPrivatePermissionsSupported("linux")).not.toThrow();
+    expect(() => assertProviderPreflightPrivatePermissionsSupported("win32"))
+      .toThrow(/Windows ACL validation is unsupported/);
   });
 
   test("accepts a projection option but rejects an auth-file option", () => {

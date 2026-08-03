@@ -180,7 +180,7 @@ annotated release tag must point to `E`.
   message.
 - The preflight creates a fresh `CODEX_HOME`, installs the archive payload, and
   removes inherited normal-profile/context-mode paths. The required provider
-  projection is a mode-`0600`, non-symlink JSON file outside the
+  projection is a POSIX mode-`0600`, non-symlink JSON file outside the
   repository with exactly `model_provider` and a `provider` object containing
   only `name`, HTTPS `base_url`, supported `wire_api`, and
   `requires_openai_auth: true`. The preflight rejects normal-profile paths,
@@ -192,6 +192,11 @@ annotated release tag must point to `E`.
   accepts an auth-file option, reads or copies a normal auth file, or passes
   `OPENAI_API_KEY` to Codex child processes. Raw trigger reports, the generated
   auth file, and the temporary root are removed in success and failure paths.
+- Provider-authorized native preflight fails closed on Windows before it reads
+  a projection or creates a disposable provider profile. Node's POSIX mode bits
+  are not proof of a Windows private ACL, and this repository does not yet have
+  a reliable ACL verifier. Do not accept `0666`, infer privacy from `chmod`, or
+  treat static CI as a replacement for the blocked provider preflight.
 - Path validation rejects every user-controlled symbolic link in a provider
   projection or disposable-home ancestry. On macOS it permits only the fixed
   system aliases `/etc`, `/tmp`, and `/var` when each resolves to its exact
@@ -230,6 +235,7 @@ annotated release tag must point to `E`.
 | Runtime provenance or provider tuple does not match tag metadata | Verifier rejects the candidate |
 | Manual or automatic trigger lacks `pending -> confirmed -> claimed` or opaque-ID evidence | Preflight fails; no semantic recovery claim is allowed |
 | Provider authorization is unavailable | Record a blocked local gate; never copy normal profile state or treat it as a pass |
+| Provider-authorized preflight runs on Windows | Fail closed before provider material is read; Windows ACL privacy is not yet verifiable |
 
 ### 5. Good / Base / Bad Cases
 
@@ -249,7 +255,8 @@ annotated release tag must point to `E`.
   keys, canonical-vs-raw digest separation, forbidden content, stale evidence,
   every tag/archive/manifest/commit mismatch, environment scrubbing, clean-tree
   rejection, output-path and symlink rejection, and the restore-platform
-  initialization regression.
+  initialization regression. It also asserts that Windows provider preflight
+  fails closed rather than treating Node mode bits as ACL proof.
 - `tests/scripts/release-workflow-contract.test.ts` must assert that `E` is
   checked out before asset construction, `C` and `E` are both passed to the
   verifier, and evidence verification precedes release creation.
@@ -341,9 +348,11 @@ The private sidecar is below the configured profile only:
   stacks, prompts, commands, tool inputs/outputs, checkpoint payloads,
   RecoveryBrief content, credentials, and Trellis artifact bodies are forbidden
   in both the sidecar and report.
-- The sidecar has mode `0600`, retains only valid project/worktree-matching rows
-  within the retention lower bound, and uses an exclusive lock plus atomic
-  replacement so concurrent writers retain every completed write.
+- On POSIX the sidecar has mode `0600`; on Windows tests require only a regular,
+  content-free file because Node mode bits do not prove ACL privacy. It retains
+  only valid project/worktree-matching rows within the retention lower bound,
+  and uses an exclusive lock plus atomic replacement so concurrent writers
+  retain every completed write.
 - Diagnostics are best effort. Lock, filesystem, parsing, DB, or runtime
   errors must preserve valid zero-exit empty hook output.
 - A malformed confirmed payload or projection failure transitions the row

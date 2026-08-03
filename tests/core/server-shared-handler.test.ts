@@ -50,7 +50,12 @@ describe("registered shared-mode ctx_index and ctx_search handlers", () => {
       else process.env[name] = value;
     }
     vi.resetModules();
-    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(rootDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   });
 
   test("attributes indexed records and filters rendered shared-store results by project", async () => {

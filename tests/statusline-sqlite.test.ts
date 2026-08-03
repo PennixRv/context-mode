@@ -49,6 +49,11 @@ const STATUSLINE = resolve(process.cwd(), "bin", "statusline.mjs");
 // regressions still trip the test.
 const STATUSLINE_SQLITE_TIMEOUT_MS =
   process.platform === "win32" ? 300_000 : 30_000;
+// The 3,050-row session-scope fixture timed out after three 30-second tries
+// on Ubuntu under the full parallel suite. Keep its mutation-defeating data
+// volume and give only this end-to-end regression a bounded CI budget.
+const STATUSLINE_SESSION_SCOPE_TIMEOUT_MS =
+  process.platform === "win32" ? 300_000 : 120_000;
 
 // Isolate the spawned statusline's env so getMultiAdapterLifetimeStats()
 // (and OpenCode's APPDATA/XDG_CONFIG_HOME paths on Windows) cannot leak data
@@ -229,7 +234,7 @@ describe("statusline.mjs — SessionDB-backed reads", () => {
   //     disappears entirely (no KB match)
   //   • dropping the sessionId filter in getRealBytesStats → "this chat"
   //     absorbs 'other' and renders in MB, not KB
-  test("resolves per-session KPI from the stdin payload session_id (no env var)", { timeout: STATUSLINE_SQLITE_TIMEOUT_MS }, () => {
+  test("resolves per-session KPI from the stdin payload session_id (no env var)", { timeout: STATUSLINE_SESSION_SCOPE_TIMEOUT_MS }, () => {
     const sid = "11111111-2222-3333-4444-555555555555";
     // Per-session bytes for THIS id…
     const mine = Array.from({ length: 50 }, () => ({

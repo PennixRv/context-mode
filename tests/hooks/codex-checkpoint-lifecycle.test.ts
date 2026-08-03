@@ -303,7 +303,10 @@ describe("hooks/codex - compact SessionStart diagnostics", () => {
         "worktree_sha256",
       ]);
     }
-    expect(statSync(diagnosticPath).mode & 0o777).toBe(0o600);
+    expect(statSync(diagnosticPath).isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(statSync(diagnosticPath).mode & 0o777).toBe(0o600);
+    }
     expect(readFileSync(diagnosticPath, "utf8")).not.toContain("SESSIONSTART-FAILURE-SENTINEL");
 
     const expectedEmptyReport = getCheckpointReliabilityReport(projectDir, codexHome);
