@@ -93,12 +93,44 @@ describe("RecoveryBrief indexing and skill packaging", () => {
     expect(syncSkill).toContain("After `trellis-check` confirms a material semantic change");
     expect(syncSkill).toContain("Before an explicit handoff, pause preparation, finish, or archive");
     expect(syncSkill).toContain("Do not invoke this skill for ordinary edits");
+    for (const excludedTrigger of [
+      /regular compact\s+events/,
+      /`PreCompact`/,
+      /`PostCompact`/,
+      /`SessionStart\(compact\)`/,
+      /checkpoint\s+`claimed`/,
+      /ordinary resumed session/,
+    ]) {
+      expect(syncSkill).toMatch(excludedTrigger);
+    }
     expect(syncSkill).toContain("SessionStart(compact)");
     expect(syncSkill).toContain("`claimed`");
+    for (const excludedSource of [
+      "transcript",
+      "FTS result",
+      "raw tool I/O",
+      "full artifact body",
+      "task-body copies",
+    ]) {
+      expect(syncSkill).toContain(excludedSource);
+    }
     expect(contextModeSkill).toContain("trellis-recovery-brief-sync");
+    expect(contextModeSkill).toContain("compact events");
+    expect(contextModeSkill).toContain("resumed sessions");
+    expect(contextModeSkill).toContain("not RecoveryBrief write triggers");
     expect(workflow).toContain("### RecoveryBrief Synchronization");
     expect(workflow).toContain("Workers report evidence but never write a RecoveryBrief.");
     expect(workflow).toContain("Do not synchronize for ordinary edits");
+    for (const excludedTrigger of [
+      "compaction",
+      "PreCompact",
+      "PostCompact",
+      "SessionStart(compact)",
+      "claimed checkpoints",
+      "ordinary resume",
+    ]) {
+      expect(workflow).toContain(excludedTrigger);
+    }
     expect(packageJson.files).toContain("skills");
     expect(codexPlugin.skills).toBe("./skills/");
     expect(reference).toContain("fails closed");
