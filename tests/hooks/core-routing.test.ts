@@ -28,7 +28,10 @@ let routePreToolUse: (
   projectDir?: string,
   platform?: string,
   sessionId?: string,
-  options?: { mcpToolsAvailable?: boolean },
+  options?: {
+    mcpToolsAvailable?: boolean;
+    mcpRedirectTarget?: "ctx_execute";
+  },
 ) => {
   action: string;
   reason?: string;
@@ -488,6 +491,34 @@ describe("routePreToolUse", () => {
         expect(result).toBeNull();
       }
     });
+
+    it("limits Codex redirect wording to the proven ctx_execute target", () => {
+      const curl = routePreToolUse(
+        "exec_command",
+        { cmd: "curl https://example.com" },
+        undefined,
+        "codex",
+        "codex-proven-session",
+        { mcpToolsAvailable: true, mcpRedirectTarget: "ctx_execute" },
+      );
+      const webFetch = routePreToolUse(
+        "WebFetch",
+        { url: "https://example.com" },
+        undefined,
+        "codex",
+        "codex-proven-session",
+        { mcpToolsAvailable: true, mcpRedirectTarget: "ctx_execute" },
+      );
+
+      expect(curl?.action).toBe("modify");
+      expect(JSON.stringify(curl)).toContain("ctx_execute");
+      expect(JSON.stringify(curl)).not.toContain("ctx_fetch_and_index");
+      expect(JSON.stringify(curl)).not.toContain("ctx_search");
+      expect(webFetch?.action).toBe("deny");
+      expect(JSON.stringify(webFetch)).toContain("ctx_execute");
+      expect(JSON.stringify(webFetch)).not.toContain("ctx_fetch_and_index");
+      expect(JSON.stringify(webFetch)).not.toContain("ctx_search");
+    });
   });
 
   // ─── Subagent ctx_commands omission (#233) ──────────────
@@ -705,7 +736,12 @@ describe("routePreToolUse", () => {
       mkdirSync(codexDir, { recursive: true });
       writeFileSync(
         join(codexDir, "settings.json"),
-        JSON.stringify({ permissions: { deny: ["Bash(echo blocked)"] } }),
+        JSON.stringify({
+          permissions: {
+            deny: ["Bash(echo blocked)", "Bash(curl *)"],
+            ask: ["Bash(wget *)"],
+          },
+        }),
         "utf-8",
       );
       previousHome = process.env.HOME;
@@ -737,6 +773,29 @@ describe("routePreToolUse", () => {
       );
       expect(result?.action).toBe("deny");
       expect(result?.reason).toContain("deny pattern");
+    });
+
+    it("keeps native security deny and ask decisions ahead of an unavailable MCP redirect", () => {
+      const denied = routePreToolUse(
+        "exec_command",
+        { cmd: "curl https://example.com" },
+        projectDir,
+        "codex",
+        "codex-security-deny",
+        { mcpToolsAvailable: false, mcpRedirectTarget: "ctx_execute" },
+      );
+      const asked = routePreToolUse(
+        "exec_command",
+        { cmd: "wget https://example.com" },
+        projectDir,
+        "codex",
+        "codex-security-ask",
+        { mcpToolsAvailable: false, mcpRedirectTarget: "ctx_execute" },
+      );
+
+      expect(denied?.action).toBe("deny");
+      expect(denied?.reason).toContain("deny pattern");
+      expect(asked?.action).toBe("ask");
     });
   });
 

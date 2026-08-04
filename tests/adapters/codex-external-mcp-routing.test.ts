@@ -13,6 +13,8 @@ const DEFAULT_HOOK_EVENTS = [
 ];
 const RECOVERY_BRIEF_MATCHER =
   "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$";
+const CODEX_CTX_EXECUTE_MATCHER =
+  "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$";
 
 describe("Codex default external MCP isolation", () => {
   let adapter: CodexAdapter;
@@ -30,17 +32,22 @@ describe("Codex default external MCP isolation", () => {
     expect(config).not.toHaveProperty("Stop");
   });
 
-  it("does not match external MCP tools while retaining bare ctx tools", () => {
+  it("matches only owned Codex ctx_execute MCP forms while retaining bare ctx tools", () => {
     const config = adapter.generateHookConfig("/some/plugin/root");
     const matcher = config.PreToolUse?.[0]?.matcher ?? "";
+    const ownedMcpMatcher = config.PreToolUse?.[2]?.matcher ?? "";
 
-    expect(matcher).not.toContain("mcp__");
     expect(matcher).toContain("ctx_execute");
     expect(matcher).toContain("ctx_search");
     expect(config.PreToolUse?.map((entry) => entry.matcher)).toEqual([
       matcher,
       RECOVERY_BRIEF_MATCHER,
+      CODEX_CTX_EXECUTE_MATCHER,
     ]);
+    const matcherPattern = new RegExp(ownedMcpMatcher);
+    expect(matcherPattern.test("mcp__context_mode__ctx_execute")).toBe(true);
+    expect(matcherPattern.test("mcp__plugin_context-mode_context-mode__ctx_execute")).toBe(true);
+    expect(matcherPattern.test("mcp__other__ctx_execute")).toBe(false);
   });
 
   it("ships the same low-noise static profile in both Codex manifests", () => {
@@ -59,10 +66,13 @@ describe("Codex default external MCP isolation", () => {
       expect(preToolMatchers).toEqual([
         expect.stringContaining("ctx_execute"),
         RECOVERY_BRIEF_MATCHER,
+        CODEX_CTX_EXECUTE_MATCHER,
       ]);
-      expect(preToolMatchers[0]).not.toContain("mcp__");
       expect(preToolMatchers[1]).not.toMatch(/mcp__\*|mcp__\|/);
       expect(preToolMatchers[1]).not.toContain("ctx_recovery_brief_init");
+      expect(preToolMatchers[2]).toContain("mcp__context_mode__ctx_execute");
+      expect(preToolMatchers[2]).not.toContain("mcp__other");
+      expect(preToolMatchers[2]).not.toMatch(/mcp__\*|mcp__\|/);
       expect(manifest.hooks).not.toHaveProperty("PostToolUse");
       expect(manifest.hooks).not.toHaveProperty("UserPromptSubmit");
       expect(manifest.hooks).not.toHaveProperty("Stop");

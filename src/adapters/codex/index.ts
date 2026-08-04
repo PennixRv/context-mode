@@ -81,10 +81,13 @@ type HooksConfigReadResult =
   | { ok: false; reason: "read_error"; error: string };
 
 // Keep this matcher limited to native Codex tools and context-mode's bare
-// ctx_* tools. In particular, no mcp__ matcher is allowed: external MCP tools
-// are always outside the hook profile boundary.
+// ctx_* tools. The two exact MCP names below are owned ctx_execute forms used
+// only to establish a session-local capability proof. No wildcard external MCP
+// matcher is permitted.
 const PRE_TOOL_USE_MATCHER_PATTERN =
   "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index";
+const CODEX_CTX_EXECUTE_TOOL_MATCHER =
+  "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$";
 
 const DEFAULT_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",
@@ -551,6 +554,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         },
         {
           matcher: CODEX_RECOVERY_BRIEF_TOOL_MATCHER,
+          hooks: [
+            {
+              type: "command",
+              command: DEFAULT_HOOK_COMMANDS.PreToolUse,
+            },
+          ],
+        },
+        {
+          matcher: CODEX_CTX_EXECUTE_TOOL_MATCHER,
           hooks: [
             {
               type: "command",

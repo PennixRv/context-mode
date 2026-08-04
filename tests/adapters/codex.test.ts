@@ -400,8 +400,10 @@ describe("CodexAdapter", () => {
       expect(config.PreToolUse[0]?.matcher).toContain("Write");
       expect(config.PreToolUse[0]?.matcher).toContain("ctx_execute");
       expect(config.PreToolUse[0]?.matcher).toContain("ctx_batch_execute");
-      expect(config.PreToolUse[0]?.matcher).not.toContain("mcp__");
       expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
+      expect(config.PreToolUse[2]?.matcher).toBe(
+        "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
+      );
       expect(config.PreCompact[0]?.matcher).toBe("^(manual|auto)$");
       expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(config.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
@@ -473,12 +475,15 @@ describe("CodexAdapter", () => {
       expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
       expect(changes.some((change) => change.includes("Enabled Codex hooks feature flag"))).toBe(true);
       expect(written.hooks.PreToolUse[0]?.matcher).toContain("ctx_execute");
-      expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("mcp__");
       expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
       expect(written.hooks.PreToolUse[1]?.matcher).toBe(
         "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
       );
       expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.PreToolUse[2]?.matcher).toBe(
+        "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
+      );
+      expect(written.hooks.PreToolUse[2]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(written.hooks.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
       expect(written.hooks.SessionStart[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
@@ -506,7 +511,7 @@ describe("CodexAdapter", () => {
       const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
         hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
       };
-      expect(written.hooks.PreToolUse).toHaveLength(3);
+      expect(written.hooks.PreToolUse).toHaveLength(4);
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.hooks[0]?.command === "node /opt/other-plugin/hooks/pretooluse.mjs",
       )).toBe(true);
@@ -515,6 +520,9 @@ describe("CodexAdapter", () => {
       )).toBe(true);
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.matcher === "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
+      )).toBe(true);
+      expect(written.hooks.PreToolUse.some((entry) =>
+        entry.matcher === "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
       )).toBe(true);
       expect(written.hooks.SessionStart).toHaveLength(2);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
@@ -626,9 +634,10 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
 
-      expect(written.hooks.PreToolUse).toHaveLength(2);
+      expect(written.hooks.PreToolUse).toHaveLength(3);
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.PreToolUse[2]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.SessionStart).toHaveLength(1);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
       expect(changes.some((c) => c.includes("Updated SessionStart hook"))).toBe(true);
@@ -657,9 +666,10 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
 
-      expect(written.hooks.PreToolUse).toHaveLength(2);
+      expect(written.hooks.PreToolUse).toHaveLength(3);
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.PreToolUse[2]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PostToolUse).toBeUndefined();
     });
 
@@ -738,7 +748,7 @@ describe("CodexAdapter", () => {
       const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
-      expect(written.hooks.PreToolUse).toHaveLength(3);
+      expect(written.hooks.PreToolUse).toHaveLength(4);
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.hooks[0]?.command === "context-mode hook codex pretooluse",
       )).toBe(true);

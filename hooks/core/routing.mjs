@@ -526,9 +526,12 @@ function getPlatformSettingsPath(platform) {
  * @param {boolean} [options.mcpToolsAvailable=true] - False when the current
  *   caller context cannot invoke ctx_* MCP tools even though an MCP server is
  *   live on the machine (Claude Code fixed-tool subagents — #794).
+ * @param {"ctx_execute"} [options.mcpRedirectTarget] - Limit redirect wording
+ *   to a capability proven by the adapter. Codex proves ctx_execute only.
  */
 export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId, options = {}) {
   const mcpToolsAvailable = options.mcpToolsAvailable !== false;
+  const redirectsToExecuteOnly = options.mcpRedirectTarget === "ctx_execute";
 
   // External MCP servers own their output, semantics, and lifecycle. Keep
   // this before context-mode's security/routing gates so no fail-closed
@@ -633,7 +636,9 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         return mcpRedirect({
           action: "modify",
           updatedInput: {
-            command: `echo "context-mode: curl/wget redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw HTTP body stays in the sandbox instead of entering your conversation. Or call ${t("ctx_fetch_and_index")}(url, source) when you want to query the response later via ${t("ctx_search")}. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH)."`,
+            command: redirectsToExecuteOnly
+              ? `echo "context-mode: curl/wget redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw HTTP body stays in the sandbox instead of entering your conversation. Full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH)."`
+              : `echo "context-mode: curl/wget redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw HTTP body stays in the sandbox instead of entering your conversation. Or call ${t("ctx_fetch_and_index")}(url, source) when you want to query the response later via ${t("ctx_search")}. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH)."`,
           },
           // D2 PRD Phase 3.1: marker payload for PostToolUse byte accounting.
           redirectMeta: {
@@ -718,7 +723,9 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     const url = getWebFetchUrl(toolInput);
     return mcpRedirect({
       action: "deny",
-      reason: `context-mode: WebFetch redirected. Call ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch + index the page, then ${t("ctx_search")}(queries: [...]) to query the indexed content — the raw page bytes stay in storage instead of entering your conversation. Or call ${t("ctx_execute")}(language, code) when you want to derive your answer in one round trip (parse, extract, count) without persisting the response. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`,
+      reason: redirectsToExecuteOnly
+        ? `context-mode: WebFetch redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw page bytes stay in the sandbox instead of entering your conversation. Full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`
+        : `context-mode: WebFetch redirected. Call ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch + index the page, then ${t("ctx_search")}(queries: [...]) to query the indexed content — the raw page bytes stay in storage instead of entering your conversation. Or call ${t("ctx_execute")}(language, code) when you want to derive your answer in one round trip (parse, extract, count) without persisting the response. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`,
       // D2 PRD Phase 4.1: marker payload for PostToolUse byte accounting.
       redirectMeta: {
         tool: "WebFetch",

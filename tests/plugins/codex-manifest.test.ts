@@ -166,11 +166,13 @@ describe(".codex-plugin/hooks.json", () => {
     expect(preToolMatchers).toEqual([
       expect.stringContaining("ctx_execute"),
       "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
+      "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
     ]);
-    expect(preToolMatchers[0]).not.toContain("mcp__");
     expect(preToolMatchers[0]).not.toContain("Agent");
     expect(preToolMatchers[1]).not.toContain("mcp__*");
     expect(preToolMatchers[1]).not.toContain("ctx_recovery_brief_init");
+    expect(preToolMatchers[2]).not.toContain("mcp__*");
+    expect(preToolMatchers[2]).not.toContain("mcp__other");
 
     const commands = Object.values(hooks.hooks)
       .flatMap((groups) => groups)

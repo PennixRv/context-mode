@@ -327,7 +327,7 @@ function unescapeDquote(s) {
 function codexRedirectReason(command) {
   const inner = unwrapEcho(command);
   if (inner !== null) return unescapeDquote(inner);
-  return "context-mode: command redirected. Use the context-mode MCP tools (ctx_execute / ctx_fetch_and_index / ctx_search) so raw output stays out of the conversation.";
+  return "context-mode: command redirected. Call ctx_execute(language, code) to derive the result before raw output enters the conversation.";
 }
 
 /**

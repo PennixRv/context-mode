@@ -12,6 +12,12 @@
         "hooks": [
           { "type": "command", "command": "context-mode hook codex pretooluse" }
         ]
+      },
+      {
+        "matcher": "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex pretooluse" }
+        ]
       }
     ],
     "PreCompact": [
