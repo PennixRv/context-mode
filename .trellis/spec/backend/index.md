@@ -20,6 +20,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
 | [Codex Checkpoint Attestation](./codex-checkpoint-attestation.md) | Installed release and native compact delivery contract | Active |
+| [Codex Trellis Recovery Boundaries](./codex-trellis-recovery-boundaries.md) | Bounded SessionStart orientation and explicit RecoveryBrief identity bridge | Active |
 
 ---
 
