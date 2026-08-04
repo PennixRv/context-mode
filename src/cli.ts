@@ -218,9 +218,13 @@ async function observabilityCommand(args: string[]): Promise<number> {
   }
 
   if (action === "status") {
-    const status = adapter.getObservabilityProfileStatus();
-    console.log(`Codex hook profile: ${status.profile}`);
+    const status = adapter.getObservabilityProfileStatus(getPluginRoot());
+    console.log(
+      `Codex hook profile: ${status.defaultProfile === "active" ? "default low-noise" : "unavailable"}`,
+    );
+    console.log(`Optional observability: ${status.profile}`);
     console.log(`Config: ${status.configPath}`);
+    if (status.defaultHookSource) console.log(`Default hook source: ${status.defaultHookSource}`);
     console.log(`Active context-mode hooks: ${status.activeHooks.join(", ") || "none"}`);
     console.log(`Optional observability hooks: ${status.optionalHooks.join(", ") || "none"}`);
     console.log(`Legacy registrations: ${status.legacyHooks.join(", ") || "none"}`);

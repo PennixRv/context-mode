@@ -24,28 +24,37 @@ function writeCodexPluginReleaseIdentity(pluginRoot: string, version: string): v
   }, null, 2), "utf-8");
 }
 
-function pluginEnabledSettings(extra = ""): string {
+function pluginEnabledSettings(
+  extra = "",
+  pluginId = "context-mode@context-mode",
+): string {
   return `[features]
 hooks = true
 
-[plugins."context-mode@context-mode"]
+[plugins."${pluginId}"]
 enabled = true
 
 ${extra}`;
 }
 
-function pluginListOutput(pluginRoot: string): string {
-  return `Marketplace \`context-mode\`
-/Users/test/.codex/.tmp/marketplaces/context-mode/.agents/plugins/marketplace.json
+function pluginListOutput(
+  pluginRoot: string,
+  marketplace = "context-mode",
+): string {
+  return `Marketplace \`${marketplace}\`
+/Users/test/.codex/.tmp/marketplaces/${marketplace}/.agents/plugins/marketplace.json
 
 PLUGIN                    STATUS              VERSION  PATH
-context-mode@context-mode  installed, enabled  1.0.162  ${pluginRoot}
+context-mode@${marketplace}  installed, enabled  1.0.162  ${pluginRoot}
 `;
 }
 
-function adapterWithCodexPluginRoot(pluginRoot: string): CodexAdapter {
+function adapterWithCodexPluginRoot(
+  pluginRoot: string,
+  marketplace = "context-mode",
+): CodexAdapter {
   return new CodexAdapter({
-    codexPluginListRunner: () => pluginListOutput(pluginRoot),
+    codexPluginListRunner: () => pluginListOutput(pluginRoot, marketplace),
   });
 }
 
@@ -356,6 +365,11 @@ describe("CodexAdapter", () => {
       expect(parseCodexContextModePluginRoot(pluginListOutput(pluginRoot))).toBe(pluginRoot);
     });
 
+    it("parses the offline marketplace context-mode runtime root", () => {
+      const pluginRoot = join(homedir(), ".codex", "plugins", "cache", "context-mode-offline", "context-mode", "1.0.179");
+      expect(parseCodexContextModePluginRoot(pluginListOutput(pluginRoot, "context-mode-offline"))).toBe(pluginRoot);
+    });
+
     it("returns null when context-mode is not installed in `codex plugin list` output", () => {
       expect(parseCodexContextModePluginRoot("browser@openai-bundled installed, enabled 0.1 /tmp/browser")).toBeNull();
     });
@@ -412,11 +426,41 @@ describe("CodexAdapter", () => {
 
     it("reports a missing user hook config as optional observability disabled", () => {
       expect(adapter.getObservabilityProfileStatus()).toMatchObject({
+        defaultProfile: "unavailable",
         profile: "disabled",
         activeHooks: [],
         optionalHooks: [],
         legacyHooks: [],
       });
+    });
+
+    it("reports the plugin-owned default profile when user hooks are absent", () => {
+      const pluginRoot = join(codexDir, "offline-plugin-root");
+      adapter = adapterWithCodexPluginRoot(pluginRoot, "context-mode-offline");
+      writeCodexPluginManifest(pluginRoot);
+      writeCodexPluginReleaseIdentity(pluginRoot, "1.0.179");
+      writeFileSync(
+        join(codexDir, "config.toml"),
+        pluginEnabledSettings("", "context-mode@context-mode-offline"),
+        "utf-8",
+      );
+
+      expect(adapter.getObservabilityProfileStatus(pluginRoot)).toMatchObject({
+        defaultProfile: "active",
+        profile: "disabled",
+        defaultHookSource: pluginRoot,
+        activeHooks: [
+          "PreToolUse (default)",
+          "PreCompact (default)",
+          "PostCompact (default)",
+          "SessionStart (default)",
+        ],
+      });
+      expect(adapter.checkPluginRegistration()).toMatchObject({
+        status: "pass",
+        message: "context-mode@context-mode-offline plugin enabled",
+      });
+      expect(adapter.getInstalledVersion()).toBe("1.0.179");
     });
 
     it("writes the native Codex hooks file with the scoped PreToolUse matcher", () => {

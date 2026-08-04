@@ -142,11 +142,13 @@ const ALL_CONTEXT_MODE_HOOK_EVENTS = [
 type CodexObservabilityProfile = "disabled" | "enabled" | "partial" | "unavailable";
 
 export interface CodexObservabilityProfileStatus {
+  defaultProfile: "active" | "unavailable";
   profile: CodexObservabilityProfile;
   activeHooks: string[];
   optionalHooks: string[];
   legacyHooks: string[];
   configPath: string;
+  defaultHookSource?: string;
   error?: string;
 }
 
@@ -203,7 +205,7 @@ export function probeCodexCliVersion(runCommand: CodexVersionRunner = execFileSy
 
 export function parseCodexContextModePluginRoot(raw: string): string | null {
   for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(/^\s*context-mode@context-mode\s+installed,\s+enabled\s+\S+\s+(.+?)\s*$/);
+    const match = line.match(/^\s*context-mode@[^\s]+\s+installed,\s+enabled\s+\S+\s+(.+?)\s*$/);
     if (match?.[1]) return match[1].trim();
   }
   return null;
@@ -237,9 +239,19 @@ function hasDeprecatedCodexHooksFeature(raw: string): boolean {
   return features !== null && /^\s*codex_hooks\s*=\s*true\s*(?:#.*)?$/mi.test(features);
 }
 
+function getEnabledCodexPluginId(raw: string): string | null {
+  const pluginIds = raw
+    .split(/\r?\n/)
+    .flatMap((line) => line.match(/^\s*\[plugins\."(context-mode@[^"\s]+)"\]\s*(?:#.*)?$/)?.[1] ?? []);
+
+  return pluginIds.find((pluginId) => {
+    const plugin = getTomlSection(raw, `plugins."${pluginId}"`);
+    return plugin !== null && /^\s*enabled\s*=\s*true\s*(?:#.*)?$/mi.test(plugin);
+  }) ?? null;
+}
+
 function hasCodexPluginEnabled(raw: string): boolean {
-  const plugin = getTomlSection(raw, 'plugins."context-mode@context-mode"');
-  return plugin !== null && /^\s*enabled\s*=\s*true\s*(?:#.*)?$/mi.test(plugin);
+  return getEnabledCodexPluginId(raw) !== null;
 }
 
 function hasStandaloneContextModeMcp(raw: string): boolean {
@@ -641,15 +653,24 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     };
   }
 
-  getObservabilityProfileStatus(): CodexObservabilityProfileStatus {
+  getObservabilityProfileStatus(pluginRoot?: string): CodexObservabilityProfileStatus {
     const hookConfig = this.readHooksConfig();
+    const pluginHookStatus = pluginRoot
+      ? this.getInstalledPluginHookStatus(pluginRoot)
+      : null;
     if (!hookConfig.ok) {
       return {
+        defaultProfile: pluginHookStatus?.hooksAvailable ? "active" : "unavailable",
         profile: hookConfig.reason === "missing" ? "disabled" : "unavailable",
-        activeHooks: [],
+        activeHooks: pluginHookStatus?.hooksAvailable
+          ? this.getDefaultProfileHookNames()
+          : [],
         optionalHooks: [],
         legacyHooks: [],
         configPath: this.getHooksPath(),
+        ...(pluginHookStatus?.hooksAvailable ? {
+          defaultHookSource: pluginHookStatus.runtimeRoot ?? pluginHookStatus.configuredRoot,
+        } : {}),
         ...(hookConfig.reason === "missing" ? {} : {
           error: hookConfig.reason === "invalid_json"
           ? `${this.getHooksPath()} is not valid JSON: ${hookConfig.error}`
@@ -660,11 +681,13 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
     return this.createObservabilityProfileStatus(
       this.getHookRegistration(hookConfig.config),
+      pluginHookStatus,
     );
   }
 
   private createObservabilityProfileStatus(
     hooks: HookRegistration,
+    pluginHookStatus?: CodexPluginHookStatus | null,
   ): CodexObservabilityProfileStatus {
     const optionalHooks = this.collectHookNames(
       hooks,
@@ -673,7 +696,9 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     );
     const legacyHooks = this.collectLegacyHookNames(hooks);
     const activeHooks = [
-      ...this.collectHookNames(hooks, this.generateHookConfig(""), "default"),
+      ...(pluginHookStatus?.hooksAvailable
+        ? this.getDefaultProfileHookNames()
+        : this.collectHookNames(hooks, this.generateHookConfig(""), "default")),
       ...optionalHooks,
     ];
     const expectedOptionalCount = Object.values(this.generateObservabilityHookConfig())
@@ -684,6 +709,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     );
 
     return {
+      defaultProfile: pluginHookStatus?.hooksAvailable ? "active" : "unavailable",
       profile: configuredOptionalCount === expectedOptionalCount
         ? "enabled"
         : configuredOptionalCount > 0
@@ -693,7 +719,19 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       optionalHooks,
       legacyHooks,
       configPath: this.getHooksPath(),
+      ...(pluginHookStatus?.hooksAvailable ? {
+        defaultHookSource: pluginHookStatus.runtimeRoot ?? pluginHookStatus.configuredRoot,
+      } : {}),
     };
+  }
+
+  private getDefaultProfileHookNames(): string[] {
+    return [
+      "PreToolUse (default)",
+      "PreCompact (default)",
+      "PostCompact (default)",
+      "SessionStart (default)",
+    ];
   }
 
   enableObservabilityProfile(): string[] {
@@ -965,7 +1003,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   checkPluginRegistration(): DiagnosticResult {
     try {
       const raw = readFileSync(this.getSettingsPath(), "utf-8");
-      const pluginEnabled = hasCodexPluginEnabled(raw);
+      const pluginId = getEnabledCodexPluginId(raw);
+      const pluginEnabled = pluginId !== null;
       const standaloneMcp = hasStandaloneContextModeMcp(raw);
       const hasMcpSection =
         raw.includes("[mcp_servers]") || raw.includes("[mcp_servers.");
@@ -974,7 +1013,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         return {
           check: "MCP registration",
           status: "warn",
-          message: "context-mode@context-mode plugin is enabled, but standalone [mcp_servers.context-mode] is also configured",
+          message: `${pluginId} plugin is enabled, but standalone [mcp_servers.context-mode] is also configured`,
           fix: "context-mode upgrade",
         };
       }
@@ -983,7 +1022,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         return {
           check: "MCP registration",
           status: "pass",
-          message: "context-mode@context-mode plugin enabled",
+          message: `${pluginId} plugin enabled`,
         };
       }
 
@@ -1021,9 +1060,10 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getInstalledVersion(): string {
-    // Codex uses standalone MCP registration; there is no platform-owned
-    // plugin version to compare against the context-mode npm package.
-    return "standalone";
+    const runtimeRoot = this.probeCodexContextModePluginRoot();
+    return runtimeRoot
+      ? this.readCodexPluginReleaseIdentity(runtimeRoot)?.version ?? "standalone"
+      : "standalone";
   }
 
   // ── Upgrade ────────────────────────────────────────────
@@ -1470,6 +1510,18 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         && runtimeManifestAvailable
         && !rootMismatch,
     };
+  }
+
+  private getInstalledPluginHookStatus(pluginRoot: string): CodexPluginHookStatus {
+    let settingsRaw = "";
+    let settingsReadable = false;
+    try {
+      settingsRaw = readFileSync(this.getSettingsPath(), "utf-8");
+      settingsReadable = true;
+    } catch {
+      // An unavailable settings file cannot prove a plugin-owned profile.
+    }
+    return this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
   }
 
   private probeCodexContextModePluginRoot(): string | null {
