@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "scope": "same-session delivery only",
+  "created_at": "2026-08-04T05:51:21.350Z",
+  "candidate": {
+    "tag": "v1.0.180",
+    "version": "1.0.180",
+    "source_commit": "733f5959945899021a43e20ac33faa216602a95a",
+    "archive_sha256": "be1acc8a9e914dce976abdde99c07f5d8770ae49e9bb4c89fdef61eac1cf8f0f",
+    "content_manifest_sha256": "853303207f0d53d306dba21dd0a21afe597a67ef7a7fe791bd828f500378db4e"
+  },
+  "environment": {
+    "node_version": "26.5.1",
+    "codex_cli_version": "0.146.0",
+    "provider_tuple": "codex-native-local"
+  },
+  "triggers": {
+    "manual": {
+      "status": "passed",
+      "lifecycle": [
+        "pending",
+        "confirmed",
+        "claimed"
+      ],
+      "terminal_state": "claimed",
+      "opaque_id_attestation_sha256": "4f4f43a8108b2dcc29d1931b165291d9b13d3ddf0fc5de174c3cbcc6a1ad391a"
+    },
+    "automatic": {
+      "status": "passed",
+      "lifecycle": [
+        "pending",
+        "confirmed",
+        "claimed"
+      ],
+      "terminal_state": "claimed",
+      "opaque_id_attestation_sha256": "98b57d1ffba9fa17f51ff3e6d88bf65c9f5204d789c33ff4206abda5f73cad3c"
+    }
+  },
+  "attestation_sha256": "7882c6d437b9d26b43af5d31d5aa8ff96172dd6f5653dd6bfbbcfe80ade7209b"
+}
