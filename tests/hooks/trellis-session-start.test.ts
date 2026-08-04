@@ -139,12 +139,12 @@ describe("project Trellis SessionStart hook", () => {
         ],
       },
     ]);
-    expect(pluginHooks.hooks.SessionStart?.[0]?.matcher).toBe("^(startup|resume|clear)$");
-    expect(pluginHooks.hooks.SessionStart?.[1]?.matcher).toBe("^compact$");
-    expect(pluginHooks.hooks.SessionStart?.[1]?.hooks[0]?.command).toContain(
+    expect(pluginHooks.hooks.SessionStart).toHaveLength(1);
+    expect(pluginHooks.hooks.SessionStart?.[0]?.matcher).toBe("^compact$");
+    expect(pluginHooks.hooks.SessionStart?.[0]?.hooks[0]?.command).toContain(
       "checkpoint-sessionstart.mjs",
     );
-    expect(pluginHooks.hooks.SessionStart?.[1]?.hooks[0]?.additionalContextLimit).toBe(1500);
+    expect(pluginHooks.hooks.SessionStart?.[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
   });
 
   it.each(["startup", "resume", "clear", "compact"])(

@@ -20,7 +20,8 @@ import {
   rmSync,
   realpathSync,
 } from "node:fs";
-import { join, sep } from "node:path";
+import { execFileSync } from "node:child_process";
+import { join, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 
 import { walkDirectory } from "../src/store-directory.js";
@@ -50,7 +51,7 @@ describe("walkDirectory — symlink cycle detection (#687)", () => {
   test("does not infinite-loop on symlink cycle (followSymlinks: true)", () => {
     // With followSymlinks: true and cycle present, naive walk would never return.
     // walkDirectory must terminate by tracking resolved paths.
-    const files = walkDirectory(rootDir, {
+    const files = walkDirectory(relative(process.cwd(), rootDir), {
       followSymlinks: true,
       maxDepth: 10,
       maxFiles: 100,
@@ -147,5 +148,74 @@ describe("walkDirectory — cross-OS path separators (#687)", () => {
       // Must use the platform separator.
       expect(f.includes(sep)).toBe(true);
     }
+  });
+});
+
+describe("walkDirectory — non-bypassable source isolation", () => {
+  let rootDir: string;
+
+  beforeAll(() => {
+    rootDir = mkdtempSync(join(tmpdir(), "ctx-walk-isolation-"));
+    execFileSync("git", ["init", "-q", rootDir]);
+
+    mkdirSync(join(rootDir, ".trellis", "runtime"), { recursive: true });
+    mkdirSync(join(rootDir, ".codegraph", "cache"), { recursive: true });
+    mkdirSync(join(rootDir, ".hidden", "nested"), { recursive: true });
+    mkdirSync(join(rootDir, "ignored-dir"), { recursive: true });
+    mkdirSync(join(rootDir, "nested"), { recursive: true });
+
+    writeFileSync(join(rootDir, ".gitignore"), "ignored-dir/\nignored-file.md\n");
+    writeFileSync(join(rootDir, "visible.md"), "# visible\n");
+    writeFileSync(join(rootDir, ".hidden.md"), "# hidden file\n");
+    writeFileSync(join(rootDir, ".trellis", "runtime", "state.md"), "# trellis\n");
+    writeFileSync(join(rootDir, ".codegraph", "cache", "graph.md"), "# codegraph\n");
+    writeFileSync(join(rootDir, ".hidden", "nested", "state.md"), "# hidden dir\n");
+    writeFileSync(join(rootDir, "ignored-dir", "runtime.md"), "# ignored dir\n");
+    writeFileSync(join(rootDir, "ignored-file.md"), "# ignored file\n");
+    writeFileSync(join(rootDir, "nested", ".gitignore"), "nested-runtime.md\n");
+    writeFileSync(join(rootDir, "nested", "nested-runtime.md"), "# nested ignored\n");
+  });
+
+  afterAll(() => {
+    rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  test("excludes protected, hidden, and Git-ignored paths despite permissive filters", () => {
+    const files = walkDirectory(rootDir, {
+      include: ["**"],
+      exclude: [],
+      respectGitignore: false,
+      maxDepth: 10,
+      maxFiles: 100,
+      extensions: [".md"],
+    });
+
+    expect(files).toEqual([join(realpathSync(rootDir), "visible.md")]);
+
+    const targetedFiles = walkDirectory(rootDir, {
+      include: [".trellis/**", ".codegraph/**", ".hidden/**", "ignored-dir/**"],
+      exclude: [],
+      respectGitignore: false,
+      maxDepth: 10,
+      maxFiles: 100,
+      extensions: [".md"],
+    });
+
+    expect(targetedFiles).toEqual([]);
+  });
+
+  test("rejects protected directory roots under relative spelling", () => {
+    const protectedRoot = relative(
+      process.cwd(),
+      `${rootDir}${sep}nested${sep}..${sep}.trellis`,
+    );
+    const files = walkDirectory(protectedRoot, {
+      include: ["**"],
+      exclude: [],
+      respectGitignore: false,
+      extensions: [".md"],
+    });
+
+    expect(files).toEqual([]);
   });
 });

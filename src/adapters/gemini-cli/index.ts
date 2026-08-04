@@ -72,9 +72,11 @@ import {
   HOOK_TYPES as GEMINI_HOOK_NAMES,
   HOOK_SCRIPTS as GEMINI_HOOK_SCRIPTS,
   buildHookCommand as buildGeminiHookCommand,
-  EXTERNAL_MCP_MATCHER_PATTERN,
   type HookType as GeminiHookType,
 } from "./hooks.js";
+
+const CONTEXT_MODE_MCP_MATCHER =
+  "mcp__(?:plugin_context-mode(?:_context-mode)?|context-mode|context_mode)__ctx_[A-Za-z0-9_]+";
 
 // ─────────────────────────────────────────────────────────
 // Adapter implementation
@@ -247,9 +249,8 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
       ],
       [GEMINI_HOOK_NAMES.BEFORE_TOOL]: [
         {
-          // Gemini native tools + context-mode own MCP (both canonical and Claude
-          // shim prefixes) + external MCP catch-all (#529).
-          matcher: `run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode|mcp__context-mode|${EXTERNAL_MCP_MATCHER_PATTERN}`,
+          // Gemini native tools + context-mode's own MCP prefixes.
+          matcher: `run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|${CONTEXT_MODE_MCP_MATCHER}`,
           hooks: [
             {
               type: "command",
@@ -260,7 +261,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
       ],
       [GEMINI_HOOK_NAMES.AFTER_TOOL]: [
         {
-          matcher: "",
+          matcher: `run_shell_command|read_file|read_many_files|write_file|edit|glob|grep_search|search_file_content|web_fetch|${CONTEXT_MODE_MCP_MATCHER}`,
           hooks: [
             {
               type: "command",

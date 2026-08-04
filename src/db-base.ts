@@ -216,7 +216,7 @@ export function nodeSqliteHasFts5(DatabaseSync: any): boolean {
 /**
  * Returns true when the current runtime ships a built-in SQLite binding:
  * - Bun has `bun:sqlite` always
- * - Node has `node:sqlite` since 22.5 (no flag since 22.13)
+ * - Node uses `node:sqlite` when the runtime exposes it with FTS5 support
  *
  * Mirrors the helper in hooks/ensure-deps.mjs:61. Exported so the platform
  * gate in loadDatabase() can be unit-tested without spawning a child
@@ -243,20 +243,10 @@ export function hasModernSqlite(
   return major > 22 || (major === 22 && minor >= 5);
 }
 
-function isCodexPluginRuntime(): boolean {
-  return process.env.CONTEXT_MODE_PLATFORM === "codex";
-}
-
-function codexSqliteUnavailableError(): Error {
-  return new Error(
-    "context-mode Codex release requires Node >=22.5 with an FTS5-capable node:sqlite runtime; it will not download or compile better-sqlite3 at runtime.",
-  );
-}
-
 /**
  * Lazy-load the SQLite driver for the current runtime.
  * Bun → bun:sqlite via BunSQLiteAdapter (issue #45).
- * Modern Node (>= 22.5) → node:sqlite via NodeSQLiteAdapter when it ships FTS5 (#228, #461, #551).
+ * Node runtimes with FTS5-capable `node:sqlite` → NodeSQLiteAdapter.
  * Other Node (or modern Node without FTS5) → better-sqlite3 (native addon).
  */
 export function loadDatabase(): typeof DatabaseConstructor {
@@ -281,7 +271,7 @@ export function loadDatabase(): typeof DatabaseConstructor {
         return adapter;
       } as any;
     } else if (hasModernSqlite()) {
-      // Any Node >= 22.5 — try node:sqlite to avoid the native addon path
+      // Try node:sqlite first to avoid the native addon path
       // entirely. Historically this was Linux-only (avoiding the Linux
       // SIGSEGV per nodejs/node#62515, #228), but Node 26 also broke
       // better-sqlite3's native compile on macOS arm64 by removing
@@ -319,8 +309,6 @@ export function loadDatabase(): typeof DatabaseConstructor {
           }
           return adapter;
         } as any;
-      } else if (isCodexPluginRuntime()) {
-        throw codexSqliteUnavailableError();
       } else {
         // node:sqlite missing or built without FTS5 — fall through to
         // better-sqlite3. Trade-off: on Node 26 + macOS this may now hit
@@ -329,10 +317,9 @@ export function loadDatabase(): typeof DatabaseConstructor {
         // on every ctx_search call.
         _Database = require("better-sqlite3") as typeof DatabaseConstructor;
       }
-    } else if (isCodexPluginRuntime()) {
-      throw codexSqliteUnavailableError();
     } else {
-      // Old Node (< 22.5) without bun:sqlite — fall back to better-sqlite3.
+      // Runtimes without a usable built-in SQLite implementation fall back to
+      // better-sqlite3 when the native binding is available.
       _Database = require("better-sqlite3") as typeof DatabaseConstructor;
     }
   }

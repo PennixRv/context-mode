@@ -4,8 +4,9 @@
  * Implements HookAdapter for Codex CLI's JSON stdin/stdout paradigm.
  *
  * Codex CLI hook specifics:
- *   - 7 hook events: PreToolUse, PostToolUse, PreCompact, PostCompact,
- *     SessionStart, UserPromptSubmit, Stop
+ *   - Default hooks: PreToolUse, PreCompact, PostCompact, SessionStart(compact)
+ *   - Optional observability: PostToolUse, ordinary SessionStart,
+ *     UserPromptSubmit, and Stop
  *   - Same wire protocol as Claude Code (JSON stdin → stdout)
  *   - Config: $CODEX_HOME or ~/.codex (hooks.json + config.toml)
  *   - Session dir: $CODEX_HOME/context-mode/sessions/
@@ -78,44 +79,47 @@ type HooksConfigReadResult =
   | { ok: false; reason: "invalid_json"; error: string }
   | { ok: false; reason: "read_error"; error: string };
 
-// PreToolUse matcher: canonical Codex tool names + context-mode bare MCP tool
-// names + external MCP catch-all literal (#529, #547 hotfix).
-//
-// Codex CLI's Rust `regex` crate does NOT support look-around, and
-// `is_exact_matcher` (refs/platforms/codex/codex-rs/hooks/src/events/common.rs:152)
-// short-circuits the regex engine entirely when the matcher contains only
-// [A-Za-z0-9_|]. v1.0.124 shipped a matcher with `(?!.*context-mode)` AND
-// `mcp__.*__ctx_*` regex syntax — Codex rejected the file at boot with
-// "look-around not supported" → all v1.0.124 Codex users broken (#547).
-//
-// Fix: keep only literal tool names (charset-clean). The hook BODY already
-// filters context-mode's own MCP tools via `isExternalMcpTool()` in
-// hooks/core/routing.mjs, so dropping `mcp__.*__ctx_*` and the lookaround
-// preserves end-to-end semantics. The literal `mcp__` final segment is a
-// no-op under exact-matcher mode but kept for parity with hooks/hooks.json.
-//
-// Keep this as a single string literal — `codex.test.ts` drift-guard parses
-// the source with a `"([^"]+)"` regex.
+// Keep this matcher limited to native Codex tools and context-mode's bare
+// ctx_* tools. In particular, no mcp__ matcher is allowed: external MCP tools
+// are always outside the hook profile boundary.
 const PRE_TOOL_USE_MATCHER_PATTERN =
-  "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__";
+  "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index";
 
-const CODEX_HOOK_COMMANDS = {
+const DEFAULT_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",
-  PostToolUse: "context-mode hook codex posttooluse",
-  SessionStart: "context-mode hook codex sessionstart",
   PreCompact: "context-mode hook codex checkpointprecompact",
   PostCompact: "context-mode hook codex checkpointpostcompact",
-  UserPromptSubmit: "context-mode hook codex userpromptsubmit",
-  Stop: "context-mode hook codex stop",
+  SessionStart: "context-mode hook codex checkpointsessionstart",
 } as const;
 
-const CHECKPOINT_HOOK_COMMANDS: Partial<Record<keyof typeof CODEX_HOOK_COMMANDS, string[]>> = {
-  PostToolUse: ["context-mode hook codex checkpointposttooluse"],
-  SessionStart: ["context-mode hook codex checkpointsessionstart"],
-  UserPromptSubmit: ["context-mode hook codex checkpointuserpromptsubmit"],
+const OPTIONAL_OBSERVABILITY_HOOK_COMMANDS = {
+  PostToolUse: [
+    "context-mode hook codex observabilityposttooluse",
+    "context-mode hook codex observabilitycheckpointposttooluse",
+  ],
+  SessionStart: ["context-mode hook codex observabilitysessionstart"],
+  UserPromptSubmit: [
+    "context-mode hook codex observabilityuserpromptsubmit",
+    "context-mode hook codex observabilitycheckpointuserpromptsubmit",
+  ],
+  Stop: ["context-mode hook codex observabilitystop"],
+} as const;
+
+const LEGACY_HOOK_COMMANDS = {
+  PreCompact: ["context-mode hook codex precompact"],
+  PostToolUse: [
+    "context-mode hook codex posttooluse",
+    "context-mode hook codex checkpointposttooluse",
+  ],
+  SessionStart: ["context-mode hook codex sessionstart"],
+  UserPromptSubmit: [
+    "context-mode hook codex userpromptsubmit",
+    "context-mode hook codex checkpointuserpromptsubmit",
+  ],
+  Stop: ["context-mode hook codex stop"],
 };
 
-const MANAGED_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, string[]> = {
+const MANAGED_HOOK_PATH_SUFFIXES: Record<string, string[]> = {
   PreToolUse: ["hooks/pretooluse.mjs", "hooks/codex/pretooluse.mjs"],
   PostToolUse: ["hooks/posttooluse.mjs", "hooks/codex/posttooluse.mjs", "hooks/codex/checkpoint-posttooluse.mjs"],
   SessionStart: ["hooks/sessionstart.mjs", "hooks/codex/sessionstart.mjs", "hooks/codex/checkpoint-sessionstart.mjs"],
@@ -124,6 +128,27 @@ const MANAGED_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, strin
   UserPromptSubmit: ["hooks/userpromptsubmit.mjs", "hooks/codex/userpromptsubmit.mjs", "hooks/codex/checkpoint-userpromptsubmit.mjs"],
   Stop: ["hooks/stop.mjs", "hooks/codex/stop.mjs"],
 };
+
+const ALL_CONTEXT_MODE_HOOK_EVENTS = [
+  "PreToolUse",
+  "PostToolUse",
+  "PreCompact",
+  "PostCompact",
+  "SessionStart",
+  "UserPromptSubmit",
+  "Stop",
+] as const;
+
+type CodexObservabilityProfile = "disabled" | "enabled" | "partial" | "unavailable";
+
+export interface CodexObservabilityProfileStatus {
+  profile: CodexObservabilityProfile;
+  activeHooks: string[];
+  optionalHooks: string[];
+  legacyHooks: string[];
+  configPath: string;
+  error?: string;
+}
 
 type CodexVersionRunner = (
   file: string,
@@ -409,7 +434,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     }
     if (response.decision === "context" && response.additionalContext) {
       // Codex does not support additionalContext in PreToolUse (fails open).
-      // Context injection works via PostToolUse and SessionStart instead.
+      // Context injection works through compact SessionStart; PostToolUse is
+      // available only in the explicit optional observability profile.
       return {};
     }
     // "allow" — return empty object for passthrough
@@ -506,48 +532,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: CODEX_HOOK_COMMANDS.PreToolUse,
-            },
-          ],
-        },
-      ],
-      PostToolUse: [
-        {
-          matcher: "",
-          hooks: [
-            {
-              type: "command",
-              command: CODEX_HOOK_COMMANDS.PostToolUse,
-            },
-          ],
-        },
-        {
-          matcher: "^(Bash|apply_patch|Edit|Write)$",
-          hooks: [
-            {
-              type: "command",
-              command: CHECKPOINT_HOOK_COMMANDS.PostToolUse![0]!,
-            },
-          ],
-        },
-      ],
-      SessionStart: [
-        {
-          matcher: "^(startup|resume|clear)$",
-          hooks: [
-            {
-              type: "command",
-              command: CODEX_HOOK_COMMANDS.SessionStart,
-            },
-          ],
-        },
-        {
-          matcher: "^compact$",
-          hooks: [
-            {
-              type: "command",
-              command: CHECKPOINT_HOOK_COMMANDS.SessionStart![0]!,
-              additionalContextLimit: 1500,
+              command: DEFAULT_HOOK_COMMANDS.PreToolUse,
             },
           ],
         },
@@ -558,7 +543,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: CODEX_HOOK_COMMANDS.PreCompact,
+              command: DEFAULT_HOOK_COMMANDS.PreCompact,
             },
           ],
         },
@@ -569,7 +554,55 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: CODEX_HOOK_COMMANDS.PostCompact,
+              command: DEFAULT_HOOK_COMMANDS.PostCompact,
+            },
+          ],
+        },
+      ],
+      SessionStart: [
+        {
+          matcher: "^compact$",
+          hooks: [
+            {
+              type: "command",
+              command: DEFAULT_HOOK_COMMANDS.SessionStart,
+              additionalContextLimit: 1500,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  private generateObservabilityHookConfig(): HookRegistration {
+    return {
+      PostToolUse: [
+        {
+          matcher: PRE_TOOL_USE_MATCHER_PATTERN,
+          hooks: [
+            {
+              type: "command",
+              command: OPTIONAL_OBSERVABILITY_HOOK_COMMANDS.PostToolUse[0],
+            },
+          ],
+        },
+        {
+          matcher: "^(Bash|apply_patch|Edit|Write)$",
+          hooks: [
+            {
+              type: "command",
+              command: OPTIONAL_OBSERVABILITY_HOOK_COMMANDS.PostToolUse[1],
+            },
+          ],
+        },
+      ],
+      SessionStart: [
+        {
+          matcher: "^(startup|resume|clear)$",
+          hooks: [
+            {
+              type: "command",
+              command: OPTIONAL_OBSERVABILITY_HOOK_COMMANDS.SessionStart[0],
             },
           ],
         },
@@ -580,7 +613,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: CODEX_HOOK_COMMANDS.UserPromptSubmit,
+              command: OPTIONAL_OBSERVABILITY_HOOK_COMMANDS.UserPromptSubmit[0],
             },
           ],
         },
@@ -589,7 +622,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: CHECKPOINT_HOOK_COMMANDS.UserPromptSubmit![0]!,
+              command: OPTIONAL_OBSERVABILITY_HOOK_COMMANDS.UserPromptSubmit[1],
             },
           ],
         },
@@ -600,12 +633,113 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: CODEX_HOOK_COMMANDS.Stop,
+              command: OPTIONAL_OBSERVABILITY_HOOK_COMMANDS.Stop[0],
             },
           ],
         },
       ],
     };
+  }
+
+  getObservabilityProfileStatus(): CodexObservabilityProfileStatus {
+    const hookConfig = this.readHooksConfig();
+    if (!hookConfig.ok) {
+      return {
+        profile: hookConfig.reason === "missing" ? "disabled" : "unavailable",
+        activeHooks: [],
+        optionalHooks: [],
+        legacyHooks: [],
+        configPath: this.getHooksPath(),
+        ...(hookConfig.reason === "missing" ? {} : {
+          error: hookConfig.reason === "invalid_json"
+          ? `${this.getHooksPath()} is not valid JSON: ${hookConfig.error}`
+            : `Could not read ${this.getHooksPath()}: ${hookConfig.error}`,
+        }),
+      };
+    }
+
+    return this.createObservabilityProfileStatus(
+      this.getHookRegistration(hookConfig.config),
+    );
+  }
+
+  private createObservabilityProfileStatus(
+    hooks: HookRegistration,
+  ): CodexObservabilityProfileStatus {
+    const optionalHooks = this.collectHookNames(
+      hooks,
+      this.generateObservabilityHookConfig(),
+      "optional",
+    );
+    const legacyHooks = this.collectLegacyHookNames(hooks);
+    const activeHooks = [
+      ...this.collectHookNames(hooks, this.generateHookConfig(""), "default"),
+      ...optionalHooks,
+    ];
+    const expectedOptionalCount = Object.values(this.generateObservabilityHookConfig())
+      .reduce((count, entries) => count + entries.length, 0);
+    const configuredOptionalCount = this.countConfiguredExpectedEntries(
+      hooks,
+      this.generateObservabilityHookConfig(),
+    );
+
+    return {
+      profile: configuredOptionalCount === expectedOptionalCount
+        ? "enabled"
+        : configuredOptionalCount > 0
+          ? "partial"
+          : "disabled",
+      activeHooks,
+      optionalHooks,
+      legacyHooks,
+      configPath: this.getHooksPath(),
+    };
+  }
+
+  enableObservabilityProfile(): string[] {
+    const changes: string[] = [];
+    const hookConfig = this.readHooksConfig();
+    const hookFile: CodexHooksFile = hookConfig.ok
+      ? hookConfig.config
+      : hookConfig.reason === "missing"
+        ? {}
+        : hookConfig.reason === "invalid_json"
+          ? (() => {
+            const backupPath = this.backupFile(this.getHooksPath(), ".broken");
+            changes.push(`Backed up malformed Codex hooks to ${backupPath}`);
+            return {};
+          })()
+          : (() => {
+            throw new Error(`Failed to update ${this.getHooksPath()}: ${hookConfig.error}`);
+          })();
+    const hooks = this.getHookRegistration(hookFile);
+    this.removeLegacyHookEntries(hooks, changes);
+    const optionalHooks = this.generateObservabilityHookConfig();
+    for (const [hookName, entries] of Object.entries(optionalHooks)) {
+      this.upsertOptionalHookEntries(hooks, hookName, entries, changes);
+    }
+    if (changes.length > 0) this.writeHooksConfig({ ...hookFile, hooks });
+    this.ensureHooksFeatureEnabled(changes);
+    changes.push(
+      "Enabled Codex observability profile; additional hook-panel entries and local state writes are active",
+    );
+    return changes;
+  }
+
+  disableObservabilityProfile(): string[] {
+    const changes: string[] = [];
+    const hookConfig = this.readHooksConfig();
+    if (!hookConfig.ok) return [
+      hookConfig.reason === "missing"
+        ? `No readable ${this.getHooksPath()} found`
+        : `Could not update ${this.getHooksPath()}`,
+    ];
+    const hooks = this.getHookRegistration(hookConfig.config);
+    for (const hookName of Object.keys(this.generateObservabilityHookConfig())) {
+      this.removeOptionalHookEntries(hooks, hookName, changes);
+    }
+    if (changes.length > 0) this.writeHooksConfig({ ...hookConfig.config, hooks });
+    return changes.length > 0 ? changes : ["Codex observability profile already disabled"];
   }
 
   readSettings(): Record<string, unknown> | null {
@@ -714,6 +848,10 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     }
 
     const hookConfig = this.readHooksConfig();
+    const profileChecks = this.getProfileDiagnosticResults(
+      hookConfig,
+      codexPluginHooksAvailable,
+    );
     if (!hookConfig.ok) {
       if (hookConfig.reason === "missing" && codexPluginHooksAvailable) {
         const pluginHookChecks = Object.keys(expected).map((hookName) => ({
@@ -721,7 +859,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           status: "pass" as const,
           message: `${hookName} hook provided by context-mode@context-mode plugin`,
         }));
-        return results.concat(pluginHookChecks);
+        return results.concat(pluginHookChecks, profileChecks);
       }
       if (hookConfig.reason === "missing") {
         return results.concat([{
@@ -729,7 +867,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           status: "fail",
           message: `No readable ${this.getHooksPath()} found`,
           fix: "Copy configs/codex/hooks.json to hooks.json or run context-mode upgrade",
-        }]);
+        }], profileChecks);
       }
       if (hookConfig.reason === "invalid_json") {
         return results.concat([{
@@ -737,7 +875,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           status: "fail",
           message: `${this.getHooksPath()} is not valid JSON: ${hookConfig.error}`,
           fix: "Repair hooks.json so it contains valid JSON, then rerun context-mode upgrade if needed",
-        }]);
+        }], profileChecks);
       }
 
       return results.concat([{
@@ -745,7 +883,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         status: "fail",
         message: `Could not read ${this.getHooksPath()}: ${hookConfig.error}`,
         fix: "Check permissions and file accessibility for hooks.json, then rerun context-mode upgrade if needed",
-      }]);
+      }], profileChecks);
     }
 
     if (!hookConfig.config.hooks && !codexPluginHooksAvailable) {
@@ -754,7 +892,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         status: "fail",
         message: `${this.getHooksPath()} is missing the top-level hooks object`,
         fix: `Update ${this.getHooksPath()} to match configs/codex/hooks.json`,
-      }]);
+      }], profileChecks);
     }
 
     const hookChecks = codexPluginHooksAvailable
@@ -821,7 +959,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }
     }
 
-    return results.concat(hookChecks, duplicateChecks);
+    return results.concat(hookChecks, duplicateChecks, profileChecks);
   }
 
   checkPluginRegistration(): DiagnosticResult {
@@ -915,19 +1053,18 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       throw new Error(`Failed to update ${this.getHooksPath()}: ${hookConfig.error}`);
     }
 
-    const hooks = hookFile.hooks && typeof hookFile.hooks === "object" && !Array.isArray(hookFile.hooks)
-      ? hookFile.hooks
-      : {};
+    const hooks = this.getHookRegistration(hookFile);
     const desiredHooks = this.generateHookConfig(pluginRoot);
     const hookChangeStart = changes.length;
 
+    this.removeLegacyHookEntries(hooks, changes);
     if (codexPluginOwnsHooks) {
       for (const hookName of Object.keys(desiredHooks)) {
-        this.removeManagedHookEntries(hooks, hookName, changes);
+        this.removeDefaultHookEntries(hooks, hookName, changes);
       }
     } else {
       for (const [hookName, entries] of Object.entries(desiredHooks)) {
-        this.upsertManagedHookEntries(hooks, hookName, entries, changes);
+        this.upsertDefaultHookEntries(hooks, hookName, entries, changes);
       }
     }
 
@@ -936,7 +1073,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       this.writeHooksConfig(hookFile);
       changes.push(
         codexPluginOwnsHooks
-          ? `Removed duplicate context-mode user hooks from ${this.getHooksPath()}`
+          ? `Removed context-mode default and legacy user hooks from ${this.getHooksPath()}`
           : `Wrote native Codex hooks to ${this.getHooksPath()}`,
       );
     }
@@ -1067,7 +1204,113 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
   }
 
-  private upsertManagedHookEntries(
+  private ensureHooksFeatureEnabled(changes: string[]): void {
+    const settingsPath = this.getSettingsPath();
+    let settingsRaw: string;
+    try {
+      settingsRaw = readFileSync(settingsPath, "utf-8");
+    } catch {
+      settingsRaw = "";
+    }
+    const settings = ensureCodexHooksFeature(settingsRaw);
+    if (!settings.changed) return;
+    const newline = settings.text.includes("\r\n") ? "\r\n" : "\n";
+    const text = settings.text.endsWith("\n")
+      ? settings.text
+      : `${settings.text}${newline}`;
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, text, "utf-8");
+    changes.push("Enabled Codex hooks feature flag");
+  }
+
+  private getProfileDiagnosticResults(
+    hookConfig: HooksConfigReadResult,
+    pluginHooksAvailable: boolean,
+  ): DiagnosticResult[] {
+    if (!hookConfig.ok) {
+      const source = pluginHooksAvailable ? "static plugin manifest" : this.getHooksPath();
+      return [
+        {
+          check: "Codex hook profile",
+          status: pluginHooksAvailable ? "pass" : "warn",
+          message: pluginHooksAvailable
+            ? `default low-noise profile active from ${source}; optional observability disabled`
+            : `default low-noise profile state unavailable: ${hookConfig.reason}`,
+        },
+        {
+          check: "Codex active context-mode hooks",
+          status: pluginHooksAvailable ? "pass" : "warn",
+          message: pluginHooksAvailable
+            ? `PreToolUse, PreCompact, PostCompact, and SessionStart(compact) from ${source}`
+            : "No active context-mode user hooks could be inspected",
+        },
+        {
+          check: "Codex optional observability capability",
+          status: "pass",
+          message: "available; disabled (enable with `context-mode observability enable`)",
+        },
+        {
+          check: "Codex legacy hook registrations",
+          status: "pass",
+          message: "none detected",
+        },
+      ];
+    }
+
+    const status = this.createObservabilityProfileStatus(
+      this.getHookRegistration(hookConfig.config),
+    );
+    const defaultHooks = pluginHooksAvailable
+      ? ["PreToolUse (default)", "PreCompact (default)", "PostCompact (default)", "SessionStart (default)"]
+      : status.activeHooks.filter((hook) => hook.endsWith("(default)"));
+    const activeHooks = [...new Set([...defaultHooks, ...status.optionalHooks])];
+    const profileStatus = status.profile === "partial" ? "warn" : "pass";
+    const profileLabel = status.profile === "enabled"
+      ? "default + optional observability"
+      : status.profile === "partial"
+        ? "default + partial observability"
+        : "default low-noise";
+
+    return [
+      {
+        check: "Codex hook profile",
+        status: profileStatus,
+        message: `${profileLabel} profile active in ${this.getHooksPath()}`,
+      },
+      {
+        check: "Codex active context-mode hooks",
+        status: activeHooks.length > 0 ? "pass" : "warn",
+        message: activeHooks.length > 0 ? activeHooks.join(", ") : "none detected",
+      },
+      {
+        check: "Codex optional observability capability",
+        status: status.profile === "enabled" ? "warn" : "pass",
+        message: status.profile === "enabled"
+          ? "enabled; adds hook-panel entries and local state writes"
+          : status.profile === "partial"
+            ? "partially enabled; run `context-mode observability disable` then enable again"
+            : "available; disabled (enable with `context-mode observability enable`)",
+      },
+      {
+        check: "Codex legacy hook registrations",
+        status: status.legacyHooks.length > 0 ? "warn" : "pass",
+        message: status.legacyHooks.length > 0
+          ? `${status.legacyHooks.join(", ")} still registered; run context-mode upgrade`
+          : "none detected",
+        ...(status.legacyHooks.length > 0 ? { fix: "context-mode upgrade" } : {}),
+      },
+    ];
+  }
+
+  private getHookRegistration(hookFile: CodexHooksFile): HookRegistration {
+    return hookFile.hooks
+      && typeof hookFile.hooks === "object"
+      && !Array.isArray(hookFile.hooks)
+      ? hookFile.hooks
+      : {};
+  }
+
+  private upsertDefaultHookEntries(
     hooks: HookRegistration,
     hookName: string,
     expectedEntries: HookEntry[],
@@ -1075,7 +1318,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   ): void {
     const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
     const unmanagedEntries = currentEntries.filter((entry) =>
-      !this.isManagedContextModeEntry(hookName, entry),
+      !this.isDefaultHookEntry(hookName, entry),
     );
     const replacement = [...unmanagedEntries, ...expectedEntries];
     if (JSON.stringify(currentEntries) === JSON.stringify(replacement)) return;
@@ -1083,14 +1326,14 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     changes.push(`Updated ${hookName} hook`);
   }
 
-  private removeManagedHookEntries(
+  private removeDefaultHookEntries(
     hooks: HookRegistration,
     hookName: string,
     changes: string[],
   ): void {
     const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
     const filtered = currentEntries.filter((entry) =>
-      !this.isManagedContextModeEntry(hookName, entry),
+      !this.isDefaultHookEntry(hookName, entry),
     );
     const removed = currentEntries.length - filtered.length;
     if (removed === 0) return;
@@ -1101,6 +1344,55 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       delete hooks[hookName];
     }
     changes.push(`Removed ${removed} ${hookName} context-mode user hook${removed === 1 ? "" : "s"}`);
+  }
+
+  private upsertOptionalHookEntries(
+    hooks: HookRegistration,
+    hookName: string,
+    expectedEntries: HookEntry[],
+    changes: string[],
+  ): void {
+    const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
+    const unmanagedEntries = currentEntries.filter((entry) =>
+      !this.isOptionalHookEntry(hookName, entry),
+    );
+    const replacement = [...unmanagedEntries, ...expectedEntries];
+    if (JSON.stringify(currentEntries) === JSON.stringify(replacement)) return;
+    hooks[hookName] = replacement;
+    changes.push(`Enabled optional ${hookName} observability hook`);
+  }
+
+  private removeOptionalHookEntries(
+    hooks: HookRegistration,
+    hookName: string,
+    changes: string[],
+  ): void {
+    const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
+    const filtered = currentEntries.filter((entry) =>
+      !this.isOptionalHookEntry(hookName, entry),
+    );
+    const removed = currentEntries.length - filtered.length;
+    if (removed === 0) return;
+    if (filtered.length > 0) hooks[hookName] = filtered;
+    else delete hooks[hookName];
+    changes.push(`Removed ${removed} optional ${hookName} observability hook${removed === 1 ? "" : "s"}`);
+  }
+
+  private removeLegacyHookEntries(
+    hooks: HookRegistration,
+    changes: string[],
+  ): void {
+    for (const hookName of Object.keys(LEGACY_HOOK_COMMANDS)) {
+      const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
+      const filtered = currentEntries.filter((entry) =>
+        !this.isLegacyHookEntry(hookName, entry),
+      );
+      const removed = currentEntries.length - filtered.length;
+      if (removed === 0) continue;
+      if (filtered.length > 0) hooks[hookName] = filtered;
+      else delete hooks[hookName];
+      changes.push(`Removed ${removed} legacy ${hookName} context-mode hook${removed === 1 ? "" : "s"}`);
+    }
   }
 
   private hasCodexPluginHookManifest(pluginRoot: string): boolean {
@@ -1261,23 +1553,73 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private isManagedContextModeEntry(hookName: string, entry: HookEntry): boolean {
-    if (!entry || typeof entry !== "object") return false;
-    return this.entryContainsManagedCommand(hookName, entry);
+    return this.isDefaultHookEntry(hookName, entry)
+      || this.isOptionalHookEntry(hookName, entry)
+      || this.isLegacyHookEntry(hookName, entry);
   }
 
-  private entryContainsManagedCommand(hookName: string, entry: HookEntry): boolean {
-    const expectedCommands = [
-      CODEX_HOOK_COMMANDS[hookName as keyof typeof CODEX_HOOK_COMMANDS],
-      ...(CHECKPOINT_HOOK_COMMANDS[hookName as keyof typeof CHECKPOINT_HOOK_COMMANDS] ?? []),
-      ...(hookName === "PreCompact" ? ["context-mode hook codex precompact"] : []),
-    ].filter((command): command is string => typeof command === "string");
-    const pathSuffixes = MANAGED_HOOK_PATH_SUFFIXES[hookName as keyof typeof MANAGED_HOOK_PATH_SUFFIXES] ?? [];
-    return expectedCommands.some((command) => this.entryContainsCommand(entry, command))
-      || this.entryContainsAnyPathSuffix(entry, pathSuffixes);
+  private isDefaultHookEntry(hookName: string, entry: HookEntry): boolean {
+    const command = DEFAULT_HOOK_COMMANDS[hookName as keyof typeof DEFAULT_HOOK_COMMANDS];
+    const pathSuffixes = MANAGED_HOOK_PATH_SUFFIXES[hookName] ?? [];
+    return this.entryContainsCommand(entry, command)
+      || (command !== undefined && this.entryContainsContextModePathSuffix(entry, pathSuffixes));
+  }
+
+  private isOptionalHookEntry(hookName: string, entry: HookEntry): boolean {
+    const commands = OPTIONAL_OBSERVABILITY_HOOK_COMMANDS[
+      hookName as keyof typeof OPTIONAL_OBSERVABILITY_HOOK_COMMANDS
+    ] ?? [];
+    return commands.some((command) => this.entryContainsCommand(entry, command));
+  }
+
+  private isLegacyHookEntry(hookName: string, entry: HookEntry): boolean {
+    const commands = LEGACY_HOOK_COMMANDS[
+      hookName as keyof typeof LEGACY_HOOK_COMMANDS
+    ] ?? [];
+    const pathSuffixes = MANAGED_HOOK_PATH_SUFFIXES[hookName] ?? [];
+    return commands.some((command) => this.entryContainsCommand(entry, command))
+      || this.entryContainsContextModePathSuffix(entry, pathSuffixes);
+  }
+
+  private collectHookNames(
+    hooks: HookRegistration,
+    expected: HookRegistration,
+    profile: "default" | "optional",
+  ): string[] {
+    return Object.entries(expected).flatMap(([hookName, expectedEntries]) => {
+      const entries = hooks[hookName];
+      if (!Array.isArray(entries)) return [];
+      const matched = expectedEntries.some((expectedEntry) => entries.some((entry) =>
+        this.isExpectedHookEntry(hookName, entry, expectedEntry),
+      ));
+      return matched ? [`${hookName} (${profile})`] : [];
+    });
+  }
+
+  private collectLegacyHookNames(hooks: HookRegistration): string[] {
+    return ALL_CONTEXT_MODE_HOOK_EVENTS.flatMap((hookName) => {
+      const entries = hooks[hookName];
+      if (!Array.isArray(entries)) return [];
+      const count = entries.filter((entry) => this.isLegacyHookEntry(hookName, entry)).length;
+      return count > 0 ? [`${hookName} (${count})`] : [];
+    });
+  }
+
+  private countConfiguredExpectedEntries(
+    hooks: HookRegistration,
+    expected: HookRegistration,
+  ): number {
+    return Object.entries(expected).reduce((count, [hookName, expectedEntries]) => {
+      const actualEntries = hooks[hookName];
+      if (!Array.isArray(actualEntries)) return count;
+      return count + expectedEntries.filter((expectedEntry) => actualEntries.some((entry) =>
+        this.isExpectedHookEntry(hookName, entry, expectedEntry),
+      )).length;
+    }, 0);
   }
 
   private entryContainsCommand(entry: HookEntry, expectedCommand: string | undefined): boolean {
-    if (!expectedCommand) return false;
+    if (!entry || typeof entry !== "object" || !expectedCommand) return false;
     const normalizedCommands = (Array.isArray(entry.hooks) ? entry.hooks : [])
       .map((hook) => this.normalizeCommand(hook.command))
       .filter((command) => command.length > 0);
@@ -1285,11 +1627,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return normalizedCommands.some((command) => command.includes(normalizedExpected));
   }
 
-  private entryContainsAnyPathSuffix(entry: HookEntry, suffixes: string[]): boolean {
+  private entryContainsContextModePathSuffix(entry: HookEntry, suffixes: string[]): boolean {
+    if (!entry || typeof entry !== "object") return false;
     const normalizedCommands = (Array.isArray(entry.hooks) ? entry.hooks : [])
       .map((hook) => this.normalizeCommand(hook.command))
       .filter((command) => command.length > 0);
-    return normalizedCommands.some((command) => suffixes.some((suffix) => command.includes(suffix)));
+    return normalizedCommands.some((command) =>
+      /(^|[^a-z0-9])context-mode([^a-z0-9]|$)/i.test(command)
+      && suffixes.some((suffix) => command.includes(suffix)),
+    );
   }
 
   private normalizeCommand(command: string | undefined): string {

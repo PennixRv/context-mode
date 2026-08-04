@@ -15,6 +15,7 @@ import {
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isExternalMcpToolName } from "../core/external-mcp.mjs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
@@ -42,6 +43,7 @@ try {
   const input = parseStdin(raw);
   const projectDir = getInputProjectDir(input, OPTS);
   const toolName = input.tool_name ?? input.toolName ?? "";
+  if (isExternalMcpToolName(toolName)) process.exit(0);
   const toolInput = input.tool_input ?? input.toolArgs ?? {};
   const toolResponse =
     input.tool_result?.text_result_for_llm ??

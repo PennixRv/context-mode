@@ -167,8 +167,9 @@ annotated release tag must point to `E`.
   sanitized `provider_tuple`. Node and Codex fields are observed runtime
   provenance: each must be a normalized `x.y.z` value, must agree exactly with
   the attestation tag metadata, and are never compared to a repository pin.
-  The package's `engines.node >=22.5.0` remains the Node API capability floor;
-  it is not a release-attestation tuple.
+  The package does not declare a Node engine floor. Node and Codex versions are
+  observed provenance only; SQLite backend selection is capability-based and
+  the compatibility fallback remains available when the native adapter is not.
   The provider tuple must not contain credentials or sensitive identifiers such
   as tokens, keys, endpoints, hosts, users, accounts, projects, organizations,
   or tenants. It may name the public protocol family (for example,
@@ -628,3 +629,92 @@ const runtimePath = trustedRegularFile(trellisRoot, runtimeCandidate);
 
 Canonicalize the root first, then retain the regular-file, non-symlink, and
 contained-path checks at every Trellis boundary.
+
+## Scenario: Low-Noise Hook Ownership And External MCP Isolation
+
+### 1. Scope / Trigger
+
+Use this contract when changing default hook manifests, adapter-generated hook
+registrations, native-tool routing, or source indexing boundaries. context-mode
+owns native output bounding and same-session checkpoint transport; it does not
+own external MCP/CLI semantics, Trellis tasks, workers, or RecoveryBrief state.
+
+### 2. Signatures
+
+```ts
+routePreToolUse(toolName, toolInput, projectDir, platform, sessionId);
+adapter.generateHookConfig(pluginRoot);
+getSourcePathExclusionReason(candidatePath);
+```
+
+### 3. Contracts
+
+- The default Codex manifest statically registers only native `PreToolUse`
+  routing, `PreCompact`, `PostCompact`, and `SessionStart(compact)`.
+- Default manifests and generated adapter configurations must not match unknown
+  external MCP names (`mcp__*`, `MCP:*`, `@server/tool`) or wildcard Post/AfterTool
+  events that could automatically capture them. context-mode-owned `ctx_*` names
+  remain explicit entries.
+- The shared router returns `null` for external MCP and Codex `Agent`; this is a
+  defensive pass-through and is not a replacement for static matcher omission.
+- Bash guidance uses a positive grammar of native read/search commands. Unknown
+  CLIs pass through after explicit user security-policy evaluation.
+- Indexing rejects `.trellis`, `.codegraph`, hidden segments, and Git-ignored
+  paths below the source-policy layer, regardless of caller include/exclude
+  options or `respectGitignore` weakening attempts.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Unknown external MCP is submitted | No context-mode hook invocation, capture, prompt, rewrite, or denial |
+| Context-mode-owned `ctx_*` tool is submitted | Existing explicit MCP tool path remains available |
+| Bash command is outside managed read/search grammar | `routePreToolUse` returns `null` after user security policy |
+| Codex `Agent` is submitted | `routePreToolUse` returns `null`; worker prompt is unchanged |
+| Compact lifecycle has no PostToolUse signals | Checkpoint still reaches pending, confirmed, delivered, and claim states |
+| Index source is hidden, ignored, `.trellis`, or `.codegraph` | Reject or skip before persistent FTS insertion; purge stale protected rows |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `rg TODO src` receives native routing guidance while `trellis status`
+  and `mcp__future_server__tool` pass directly to their owners.
+- Base: manual and automatic compact create and deliver a checkpoint with an
+  empty signal set; no fabricated PostToolUse event is written.
+- Bad: registering a catch-all MCP matcher and relying on the handler to return
+  empty output, or using FTS results as Trellis task or Brief authority.
+
+### 6. Tests Required
+
+- Manifest/config tests assert no generic or checkpoint PostToolUse, external
+  MCP, ordinary memory, or `Agent` matcher in the default Codex profile.
+- Adapter tests assert external MCP matcher omission and direct-router null
+  behavior for Codex, Claude, Gemini, Qwen, Cursor, Kiro, and Kimi shapes.
+- Routing tests retain positive managed Bash/native-tool coverage and assert
+  unknown CLIs, shell composition, and Codex `Agent` pass through.
+- Checkpoint lifecycle tests prove manual and automatic compact work with zero
+  tool signals and no fabricated event.
+- Store and directory tests prove source-policy exclusion for relative paths,
+  symlinks, caller options, hidden paths, and Git-ignore rules.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```json
+{ "matcher": "mcp__", "command": "context-mode hook codex pretooluse" }
+```
+
+This starts context-mode for every present and future external MCP and leaves
+noise or automatic capture even when the handler returns an empty result.
+
+#### Correct
+
+```json
+{
+  "matcher": "Bash|Read|Grep|ctx_execute|ctx_search",
+  "command": "context-mode hook codex pretooluse"
+}
+```
+
+The manifest selects only known native or context-mode-owned paths; the shared
+router remains fail-open and defensive for direct callers.

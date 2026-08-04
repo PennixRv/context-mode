@@ -246,6 +246,7 @@ export class CursorAdapter extends BaseAdapter implements HookAdapter {
         {
           type: "command",
           command: buildHookCommand(CURSOR_HOOK_NAMES.POST_TOOL_USE),
+          matcher: PRE_TOOL_USE_MATCHER_PATTERN,
           loop_limit: null,
           failClosed: false,
         },
@@ -513,6 +514,7 @@ export class CursorAdapter extends BaseAdapter implements HookAdapter {
     this.upsertHookEntry(hooks, CURSOR_HOOK_NAMES.POST_TOOL_USE, {
       type: "command",
       command: buildHookCommand(CURSOR_HOOK_NAMES.POST_TOOL_USE),
+      matcher: PRE_TOOL_USE_MATCHER_PATTERN,
       loop_limit: null,
       failClosed: false,
     }, changes);

@@ -156,10 +156,10 @@ describe("VS Code Copilot hooks", () => {
   // ── PreToolUse ───────────────────────────────────────────
 
   describe("pretooluse.mjs", () => {
-    test("run_in_terminal: injects BASH_GUIDANCE additionalContext", () => {
+    test("run_in_terminal: routes managed data-search syntax", () => {
       const result = runHook("pretooluse.mjs", {
         tool_name: "run_in_terminal",
-        tool_input: { command: "npm test" },
+        tool_input: { command: "rg TODO src" },
       }, vscodeEnv());
 
       expect(result.exitCode).toBe(0);
@@ -179,17 +179,14 @@ describe("VS Code Copilot hooks", () => {
       expect(out.hookSpecificOutput.updatedInput.command).toContain("ctx_fetch_and_index");
     });
 
-    test("run_in_terminal: safe short command passes through with guidance", () => {
-      // Use an unbounded command — `git status` is now in the #463
-      // structurally-bounded allowlist and short-circuits the nudge.
+    test("run_in_terminal: external CLI passes through without guidance", () => {
       const result = runHook("pretooluse.mjs", {
         tool_name: "run_in_terminal",
         tool_input: { command: "npm install" },
       }, vscodeEnv());
 
       expect(result.exitCode).toBe(0);
-      const out = JSON.parse(result.stdout);
-      expect(out.hookSpecificOutput.additionalContext).toContain("ctx_batch_execute");
+      expect(result.stdout).toBe("");
     });
   });
 

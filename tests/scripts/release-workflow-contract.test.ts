@@ -75,10 +75,10 @@ describe("release workflow fork-ref contract", () => {
     }
   });
 
-  test("keeps the Node API capability floor separate from release provenance", () => {
+  test("does not impose a package-level Node release or install gate", () => {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 
-    expect(packageJson.engines.node).toBe(">=22.5.0");
+    expect(packageJson.engines).toBeUndefined();
   });
 
   test("fetches and validates origin/devel before checkout and package work", () => {

@@ -22,8 +22,6 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { ClaudeCodeBaseAdapter, type ClaudeCodeWireInput } from "../claude-code-base.js";
-import { EXTERNAL_MCP_MATCHER_PATTERN } from "./hooks.js";
-
 import {
   buildHookRuntimeCommand,
   type HookAdapter,
@@ -32,6 +30,9 @@ import {
   type DiagnosticResult,
   type HookRegistration,
 } from "../types.js";
+
+const CONTEXT_MODE_MCP_MATCHER =
+  "mcp__(?:plugin_context-mode(?:_context-mode)?|context-mode|context_mode)__ctx_[A-Za-z0-9_]+";
 
 // ─────────────────────────────────────────────────────────
 // Adapter implementation
@@ -78,9 +79,6 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
       "mcp__plugin_context-mode_context-mode__ctx_execute",
       "mcp__plugin_context-mode_context-mode__ctx_execute_file",
       "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-      // External MCP catch-all (#529). Negative-lookahead excludes context-mode's
-      // own server segments so the explicit entries above are not double-routed.
-      EXTERNAL_MCP_MATCHER_PATTERN,
     ].join("|");
 
     return {
@@ -94,7 +92,7 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
       ],
       PostToolUse: [
         {
-          matcher: "run_shell_command|read_file|write_file|edit|glob|grep_search|todo_write|agent|ask_user_question|mcp__",
+          matcher: `run_shell_command|read_file|write_file|edit|glob|grep_search|todo_write|agent|ask_user_question|${CONTEXT_MODE_MCP_MATCHER}`,
           hooks: [
             { type: "command", command: buildHookRuntimeCommand(`${pluginRoot}/hooks/posttooluse.mjs`) },
           ],
@@ -307,14 +305,12 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
           "mcp__plugin_context-mode_context-mode__ctx_execute",
           "mcp__plugin_context-mode_context-mode__ctx_execute_file",
           "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-          // External MCP catch-all (#529) — keep in sync with generateHookConfig above.
-          EXTERNAL_MCP_MATCHER_PATTERN,
         ].join("|"),
       },
       {
         name: "PostToolUse",
         script: "posttooluse.mjs",
-        matcher: "run_shell_command|read_file|write_file|edit|glob|grep_search|todo_write|agent|ask_user_question|mcp__",
+        matcher: `run_shell_command|read_file|write_file|edit|glob|grep_search|todo_write|agent|ask_user_question|${CONTEXT_MODE_MCP_MATCHER}`,
       },
       {
         name: "SessionStart",

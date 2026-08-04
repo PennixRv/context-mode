@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -152,5 +153,57 @@ describe("registered shared-mode ctx_index and ctx_search handlers", () => {
       async () => purgeTool!.handler({ confirm: true, scope: "project" }),
     );
     expect((purged as ToolResponse).isError).not.toBe(true);
+  });
+
+  test("ctx_index enforces protected and Git-ignored paths regardless of caller filters", async () => {
+    execFileSync("git", ["init", "-q", projectA]);
+    writeFileSync(join(projectA, ".gitignore"), "ignored-runtime.md\n", "utf8");
+    writeFileSync(join(projectA, "visible.md"), "visible-handler-marker\n", "utf8");
+    writeFileSync(join(projectA, "ignored-runtime.md"), "ignored-handler-marker\n", "utf8");
+    mkdirSync(join(projectA, ".trellis", "tasks"), { recursive: true });
+    writeFileSync(join(projectA, ".trellis", "tasks", "state.md"), "trellis-handler-marker\n", "utf8");
+
+    const { REGISTERED_CTX_TOOLS, withProjectDirOverride } = await import("../../src/server.js");
+    const indexTool = REGISTERED_CTX_TOOLS.find((tool) => tool.name === "ctx_index");
+    const searchTool = REGISTERED_CTX_TOOLS.find((tool) => tool.name === "ctx_search");
+    expect(indexTool).toBeDefined();
+    expect(searchTool).toBeDefined();
+
+    const directoryResult = await withProjectDirOverride(
+      { projectDir: projectA, sessionId: "protected-index-session" },
+      async () => indexTool!.handler({
+        path: projectA,
+        include: ["**"],
+        exclude: [],
+        extensions: [".md"],
+        respectGitignore: false,
+        maxDepth: 8,
+      }),
+    ) as ToolResponse;
+    expect(directoryResult.isError).not.toBe(true);
+    expect(responseText(directoryResult)).toContain("Indexed 1 file");
+
+    const rejected = await withProjectDirOverride(
+      { projectDir: projectA, sessionId: "protected-index-session" },
+      async () => indexTool!.handler({ path: join(projectA, "ignored-runtime.md") }),
+    ) as ToolResponse;
+    expect(rejected.isError).toBe(true);
+    expect(responseText(rejected)).toMatch(/ignored|refusing to index/i);
+
+    const protectedRejected = await withProjectDirOverride(
+      { projectDir: projectA, sessionId: "protected-index-session" },
+      async () => indexTool!.handler({ path: join(projectA, ".trellis", "tasks", "state.md") }),
+    ) as ToolResponse;
+    expect(protectedRejected.isError).toBe(true);
+    expect(responseText(protectedRejected)).toMatch(/protected|controlled RecoveryBrief/i);
+
+    const searchResult = await withProjectDirOverride(
+      { projectDir: projectA, sessionId: "protected-index-session" },
+      async () => searchTool!.handler({
+        queries: ["ignored-handler-marker", "trellis-handler-marker"],
+        project: projectA,
+      }),
+    );
+    expect(responseText(searchResult)).toContain("No results found.");
   });
 });

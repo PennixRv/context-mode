@@ -11,6 +11,7 @@
  */
 
 import { runHook } from "./run-hook.mjs";
+import { isExternalMcpToolName } from "./core/external-mcp.mjs";
 
 await runHook(async () => {
   const {
@@ -34,6 +35,7 @@ await runHook(async () => {
   try {
     const raw = await readStdin();
     const input = parseStdin(raw);
+    if (isExternalMcpToolName(input.tool_name)) return;
     const projectDir = getInputProjectDir(input);
 
     const { extractEvents } = await loadExtract();

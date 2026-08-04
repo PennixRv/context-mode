@@ -2,40 +2,9 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__",
+        "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index",
         "hooks": [
           { "type": "command", "command": "context-mode hook codex pretooluse" }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          { "type": "command", "command": "context-mode hook codex posttooluse" }
-        ]
-      },
-      {
-        "matcher": "^(Bash|apply_patch|Edit|Write)$",
-        "hooks": [
-          { "type": "command", "command": "context-mode hook codex checkpointposttooluse" }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "^(startup|resume|clear)$",
-        "hooks": [
-          { "type": "command", "command": "context-mode hook codex sessionstart" }
-        ]
-      },
-      {
-        "matcher": "^compact$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "context-mode hook codex checkpointsessionstart",
-            "additionalContextLimit": 1500
-          }
         ]
       }
     ],
@@ -55,22 +24,15 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
+    "SessionStart": [
       {
+        "matcher": "^compact$",
         "hooks": [
-          { "type": "command", "command": "context-mode hook codex userpromptsubmit" }
-        ]
-      },
-      {
-        "hooks": [
-          { "type": "command", "command": "context-mode hook codex checkpointuserpromptsubmit" }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          { "type": "command", "command": "context-mode hook codex stop" }
+          {
+            "type": "command",
+            "command": "context-mode hook codex checkpointsessionstart",
+            "additionalContextLimit": 1500
+          }
         ]
       }
     ]

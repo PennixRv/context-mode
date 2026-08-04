@@ -165,10 +165,10 @@ describe("JetBrains Copilot hooks", () => {
   // ── PreToolUse ───────────────────────────────────────────
 
   describe("pretooluse.mjs", () => {
-    test("run_in_terminal: injects guidance additionalContext", () => {
+    test("run_in_terminal: routes managed data-search syntax", () => {
       const result = runHook("pretooluse.mjs", {
         tool_name: "run_in_terminal",
-        tool_input: { command: "npm test" },
+        tool_input: { command: "rg TODO src" },
       }, jetbrainsEnv());
 
       expect(result.exitCode).toBe(0);

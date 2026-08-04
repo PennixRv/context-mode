@@ -3,7 +3,7 @@
   "hooks": {
     "BeforeTool": [
       {
-        "matcher": "run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode",
+        "matcher": "run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__(?:plugin_context-mode(?:_context-mode)?|context-mode|context_mode)__ctx_[A-Za-z0-9_]+",
         "hooks": [
           {
             "type": "command",
@@ -14,7 +14,7 @@
     ],
     "AfterTool": [
       {
-        "matcher": "",
+        "matcher": "run_shell_command|read_file|read_many_files|write_file|edit|glob|grep_search|search_file_content|web_fetch|mcp__(?:plugin_context-mode(?:_context-mode)?|context-mode|context_mode)__ctx_[A-Za-z0-9_]+",
         "hooks": [
           {
             "type": "command",

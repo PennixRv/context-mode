@@ -31,6 +31,7 @@ import { dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { fromAgy, parseAgyPayload } from "./payload.mjs";
+import { isExternalMcpToolName } from "../core/external-mcp.mjs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
@@ -38,6 +39,7 @@ const OPTS = ANTIGRAVITY_CLI_OPTS;
 
 try {
   const input = fromAgy(parseAgyPayload(await readStdin()));
+  if (isExternalMcpToolName(input.tool_name)) process.exit(0);
 
   if (input.tool_name) {
     const projectDir = getInputProjectDir(input, OPTS);

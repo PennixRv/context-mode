@@ -171,6 +171,72 @@ describe("hooks/codex - confirmed checkpoint lifecycle", () => {
     }
   });
 
+  test.each(["manual", "auto"])(
+    "%s compaction reaches recovery delivery with an empty checkpoint signal set",
+    (trigger) => {
+      const sessionId = `checkpoint-without-signals-${trigger}`;
+      const baseInput = {
+        session_id: sessionId,
+        turn_id: `turn-${trigger}`,
+        cwd: projectDir,
+        source: "compact",
+      };
+      writeTrellisRuntime(projectDir, sessionId);
+
+      // The default profile registers only this checkpoint lifecycle. Do not
+      // invoke UserPromptSubmit or PostToolUse to create artificial signals.
+      expect(runHook(
+        CHECKPOINT_PRECOMPACT_PATH,
+        { ...baseInput, trigger },
+        env,
+      ).status).toBe(0);
+
+      const checkpointDir = join(codexHome, "context-mode", "checkpoints");
+      const dbFile = readdirSync(checkpointDir).find((file) => file.endsWith(".db"));
+      expect(dbFile).toBeDefined();
+      const Database = loadDatabase();
+      const db = new Database(join(checkpointDir, dbFile!), { readonly: true });
+      try {
+        expect(db.prepare("SELECT state FROM compact_checkpoints").get()).toEqual({ state: "pending" });
+        expect(db.prepare("SELECT COUNT(*) AS count FROM checkpoint_signals").get()).toEqual({ count: 0 });
+      } finally {
+        db.close();
+      }
+
+      expect(runHook(
+        CHECKPOINT_POSTCOMPACT_PATH,
+        { ...baseInput, trigger },
+        env,
+      ).status).toBe(0);
+
+      const confirmedDatabase = new Database(join(checkpointDir, dbFile!), { readonly: true });
+      try {
+        expect(confirmedDatabase.prepare("SELECT state FROM compact_checkpoints").get()).toEqual({ state: "confirmed" });
+      } finally {
+        confirmedDatabase.close();
+      }
+
+      const restored = runHook(CHECKPOINT_SESSIONSTART_PATH, baseInput, env);
+      expect(restored.status, restored.stderr || restored.stdout).toBe(0);
+      expect(JSON.parse(restored.stdout).hookSpecificOutput.additionalContext).toContain("task-1");
+
+      const claimedDatabase = new Database(join(checkpointDir, dbFile!), { readonly: true });
+      try {
+        expect(claimedDatabase.prepare("SELECT state FROM compact_checkpoints").get()).toEqual({ state: "claimed" });
+        expect(claimedDatabase.prepare("SELECT COUNT(*) AS count FROM checkpoint_signals").get()).toEqual({ count: 0 });
+        const transitions = claimedDatabase.prepare(
+          "SELECT from_state, to_state FROM checkpoint_transitions ORDER BY created_at ASC",
+        ).all() as Array<{ from_state: string; to_state: string }>;
+        expect(transitions).toEqual(expect.arrayContaining([
+          { from_state: "pending", to_state: "confirmed" },
+          { from_state: "confirmed", to_state: "claimed" },
+        ]));
+      } finally {
+        claimedDatabase.close();
+      }
+    },
+  );
+
   test("legacy sessionstart remains inert for compact sources", () => {
     const result = runHook(LEGACY_SESSIONSTART_PATH, {
       session_id: "legacy-compact-session",

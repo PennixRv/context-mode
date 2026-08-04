@@ -34,21 +34,10 @@ export const HOOK_SCRIPTS: Record<string, string> = {
 // ─────────────────────────────────────────────────────────
 
 /**
- * Negative-lookahead matcher for external MCP tool namespaces on Kiro (#529).
- *
- * Kiro MCP wire shape: `@<server>/<tool>` (verified in
- * hooks/core/tool-naming.mjs — context-mode's own tools surface as
- * `@context-mode/<tool>`). This pattern fires PreToolUse for any external
- * `@<server>/<tool>` whose server segment is NOT `context-mode`. Without it,
- * large payloads from slack / telegram / gdrive / notion-style MCPs bypass
- * the routing nudge and flood the model's context window — PostToolUse runs
- * too late to keep the raw data out.
- *
- * Routing.mjs `isExternalMcpTool` is extended to recognise the `@<server>/`
- * prefix shape so the routing branch returns external-MCP guidance.
+ * Kiro's default matcher deliberately excludes external MCP tools. The shared
+ * router remains defensive for direct callers, but the normal hook path must
+ * not start context-mode for an unknown MCP namespace.
  */
-export const EXTERNAL_MCP_MATCHER_PATTERN = "@(?!context-mode/)";
-
 // ─────────────────────────────────────────────────────────
 // PreToolUse matchers
 // ─────────────────────────────────────────────────────────
@@ -67,7 +56,6 @@ export const PRE_TOOL_USE_MATCHERS = [
   "@context-mode/ctx_execute",
   "@context-mode/ctx_execute_file",
   "@context-mode/ctx_batch_execute",
-  EXTERNAL_MCP_MATCHER_PATTERN,
 ] as const;
 
 /**

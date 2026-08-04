@@ -12,8 +12,9 @@ Run the provider-authorized preflight locally from the exact source commit,
 before creating the release tag. The command creates a fresh temporary project, `CODEX_HOME`,
 offline marketplace installation, and validation state. It never reads or
 copies the normal profile's credentials and never uploads provider material.
-The package's `engines.node >=22.5.0` remains an API capability prerequisite;
-it is not a fixed release or deployment version.
+The release and installation contracts do not pin Node.js or Codex CLI versions.
+The workflow uses the latest available runtimes, while the package selects its
+SQLite backend from the capabilities exposed by the installed runtime.
 
 ```bash
 node scripts/run-codex-native-release-preflight.mjs \

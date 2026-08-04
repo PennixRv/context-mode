@@ -19,6 +19,7 @@ import {
   sentinelPathForPid,
   isMCPReady,
 } from "../../hooks/core/mcp-ready.mjs";
+import { isExternalMcpToolName, isContextModeMcpToolName } from "../../hooks/core/external-mcp.mjs";
 
 // Dynamic import for .mjs module
 let routePreToolUse: (
@@ -244,87 +245,41 @@ describe("routePreToolUse", () => {
       expect(result).toBeNull();
     });
 
-    it("allows npm install with BASH_GUIDANCE context", () => {
-      const result = routePreToolUse("Bash", { command: "npm install" });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
+    it.each([
+      "npm install",
+      "./gradlew build",
+      "gradle test --info",
+      "mvn clean package -DskipTests",
+      "./mvnw verify",
+      "sbt compile",
+      "./sbt test",
+      "trellis task status",
+      "codegraph index .",
+      "pnpm test",
+      "unknown-workflow-cli --all",
+    ])("passes external or unknown CLI through unchanged: %s", (command) => {
+      expect(routePreToolUse("Bash", { command })).toBeNull();
     });
 
-    it("redirects ./gradlew build to execute sandbox", () => {
-      const result = routePreToolUse("Bash", {
-        command: "./gradlew build",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "Build tool redirected",
-      );
+    it.each([
+      "cat large.log",
+      "head -n 100 large.log",
+      "rg TODO src",
+      "grep -R error logs",
+      "find . -name '*.ts'",
+      "git diff",
+      "git log --oneline",
+      "git show HEAD:README.md",
+      "git grep TODO",
+    ])("routes managed read/search syntax: %s", (command) => {
+      const result = routePreToolUse("Bash", { command });
+      expect(result?.action).toBe("context");
+      expect(result?.additionalContext).toContain("ctx_");
     });
 
-    it("redirects gradle test to execute sandbox", () => {
-      const result = routePreToolUse("Bash", {
-        command: "gradle test --info",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-    });
-
-    it("redirects mvn package to execute sandbox", () => {
-      const result = routePreToolUse("Bash", {
-        command: "mvn clean package -DskipTests",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-    });
-
-    it("redirects ./mvnw verify to execute sandbox", () => {
-      const result = routePreToolUse("Bash", {
-        command: "./mvnw verify",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-    });
-
-    it("does not false-positive on gradle in quoted text", () => {
-      // Use a command whose first word is NOT in the #463 structurally-bounded
-      // allowlist (`echo` is allowlisted), so we still exercise the
-      // strip-quotes-then-match-gradle path. The intent is to prove the
-      // gradle build-tool redirect doesn't fire on quoted occurrences.
-      const result = routePreToolUse("Bash", {
-        command: 'find . -name "run gradle build to compile"',
-      });
-      expect(result).not.toBeNull();
-      // stripped version removes quoted content → no gradle match → context
-      expect(result!.action).toBe("context");
-    });
-
-    // Issue #406 — sbt added alongside gradle/maven
-    it("redirects sbt compile to execute sandbox (Issue #406)", () => {
-      const result = routePreToolUse("Bash", {
-        command: "sbt compile",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "Build tool redirected",
-      );
-    });
-
-    it("redirects ./sbt test to execute sandbox", () => {
-      const result = routePreToolUse("Bash", {
-        command: "./sbt test",
-      });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-    });
-
-    it("does not false-positive on substrings like gradle-wrapper-config or mvnDocker", () => {
-      // Word-boundary guard — these are NOT gradle/mvn invocations.
-      const r1 = routePreToolUse("Bash", { command: "ls gradle-wrapper-config" });
-      expect(r1?.action).not.toBe("modify");
-      const r2 = routePreToolUse("Bash", { command: "echo mvnDocker-image" });
-      // Quoted/echo passes context, not modify
-      expect(r2?.action).not.toBe("modify");
+    it("does not route a managed command when shell composition can add an unbounded sink", () => {
+      expect(routePreToolUse("Bash", { command: "cat README.md && trellis task status" })).toBeNull();
+      expect(routePreToolUse("Bash", { command: "git diff | unknown-workflow-cli" })).toBeNull();
     });
   });
 
@@ -563,6 +518,14 @@ describe("routePreToolUse", () => {
       expect(prompt).not.toContain("<ctx_commands>");
     });
 
+    it("passes Codex Agent through without prompt rewriting", () => {
+      const input = {
+        prompt: "Research this repository",
+        subagent_type: "general-purpose",
+      };
+      expect(routePreToolUse("Agent", input, undefined, "codex")).toBeNull();
+    });
+
     it("ROUTING_BLOCK constant includes ctx_commands for main session", () => {
       expect(ROUTING_BLOCK).toContain("<ctx_commands>");
       expect(ROUTING_BLOCK).toContain("ctx stats");
@@ -706,15 +669,20 @@ describe("routePreToolUse", () => {
 
     it.each([
       ["ctx_execute", { language: "shell", code: "sudo whoami" }],
-      ["mcp__other__ctx_execute", { language: "shell", code: "sudo whoami" }],
       ["ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
-      ["mcp__other__ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
       ["ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
-      ["mcp__other__ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
-    ])("denies shell policy matches for %s", (toolName, toolInput) => {
+    ])("denies shell policy matches for context-mode tool %s", (toolName, toolInput) => {
       const result = routePreToolUse(toolName, toolInput, projectDir);
       expect(result?.action).toBe("deny");
       expect(result?.reason).toContain("deny pattern");
+    });
+
+    it.each([
+      ["mcp__other__ctx_execute", { language: "shell", code: "sudo whoami" }],
+      ["mcp__other__ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
+      ["mcp__other__ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
+    ])("passes an external MCP through even when its name resembles ctx_*: %s", (toolName, toolInput) => {
+      expect(routePreToolUse(toolName, toolInput, projectDir)).toBeNull();
     });
   });
 
@@ -844,157 +812,59 @@ describe("routePreToolUse", () => {
     });
   });
 
-  // ─── External MCP tools (#529) ──────────────────────────
-  //
-  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so
-  // PreToolUse fires on slack/telegram/gdrive/notion-style MCPs whose payloads
-  // would otherwise spill into context before PostToolUse can act. The routing
-  // branch emits a one-shot context guidance nudge — same throttle model as
-  // bash/read/grep guidance.
-  describe("External MCP tools (#529)", () => {
-    it("emits context guidance for an external slack-style MCP tool", () => {
-      const result = routePreToolUse("mcp__slack__list_channels", {});
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
-      expect(result!.additionalContext).toContain("External MCP tools");
+  // ─── External MCP tools ──────────────────────────────────
+
+  describe("External MCP tools", () => {
+    it.each([
+      "mcp__slack__list_channels",
+      "MCP:external_tool",
+      "@jira/search",
+    ])("capture isolation recognizes %s as external", (toolName) => {
+      expect(isExternalMcpToolName(toolName)).toBe(true);
     });
 
-    it("emits context guidance for telegram, gdrive, and notion namespaces", () => {
-      const tools = [
-        "mcp__plugin_telegram__list_messages",
-        "mcp__claude_ai_Google_Drive__search",
-        "mcp__notion__query_database",
-      ];
-      for (const tool of tools) {
-        resetGuidanceThrottle();
-        const result = routePreToolUse(tool, {});
-        expect(result, `expected guidance for ${tool}`).not.toBeNull();
-        expect(result!.action).toBe("context");
+    it.each([
+      "mcp__context-mode__ctx_execute",
+      "mcp__plugin_context-mode_context-mode__ctx_search",
+      "MCP:ctx_execute",
+      "@context-mode/ctx_execute",
+    ])("capture isolation preserves %s", (toolName) => {
+      expect(isExternalMcpToolName(toolName)).toBe(false);
+    });
+
+    it.each([
+      "mcp__slack__list_channels",
+      "mcp__plugin_telegram__list_messages",
+      "mcp__claude_ai_Google_Drive__search",
+      "mcp__unknown_server__future_tool",
+      "mcp__notion__search_context-mode_notes",
+      "mcp__my-context-mode-server__ctx_execute",
+    ])("passes %s through without guidance or policy handling", (toolName) => {
+      expect(routePreToolUse(toolName, {
+        language: "shell",
+        code: "sudo whoami",
+        prompt: "raw external MCP input",
+      })).toBeNull();
+    });
+
+    it("passes malformed MCP-like names through as ordinary unknown tools", () => {
+      for (const toolName of ["", "mcp__", "mcp", "mcp_other__tool"]) {
+        expect(routePreToolUse(toolName, {})).toBeNull();
       }
     });
 
-    it("does NOT match context-mode's own MCP tools (no double-firing)", () => {
-      // These are routed by dedicated branches above (ctx_execute,
-      // ctx_execute_file, ctx_batch_execute) — they must NOT receive the
-      // external-MCP guidance, which would be redundant noise.
-      const contextModeTools = [
-        "mcp__plugin_context-mode_context-mode__ctx_execute",
-        "mcp__plugin_context-mode_context-mode__ctx_execute_file",
-        "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-        "mcp__context-mode__ctx_execute",
-      ];
-      for (const tool of contextModeTools) {
-        resetGuidanceThrottle();
-        const result = routePreToolUse(tool, { language: "javascript", code: "1+1" });
-        // ctx_execute returns null (no security violation, no guidance).
-        // The external-MCP branch must NOT have run for these.
-        if (result !== null) {
-          expect(result.additionalContext ?? "").not.toContain("External MCP tools");
-        }
-      }
-    });
-
-    // #567 follow-up — the external-MCP nudge is intentionally periodic, not
-    // one-shot. A single nudge gets lost in MCP-heavy sessions (50+ Jira
-    // calls) once context compaction kicks in, so we re-fire every N calls to
-    // keep the guidance in the model's recent window.
-    it("re-fires guidance every N calls (default cadence = 10)", () => {
-      const calls = Array.from({ length: 22 }, (_, i) =>
-        routePreToolUse(`mcp__slack__tool_${i}`, {}),
-      );
-
-      // Fires on the 1st, 11th, 21st calls — null in between.
-      const fired = calls.map((c) => c?.action === "context");
-      const expected = calls.map((_, i) => i % 10 === 0);
-      expect(fired).toEqual(expected);
-    });
-
-    it("honors CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY to tune cadence", () => {
-      const prev = process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
-      try {
-        process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = "3";
-        const calls = Array.from({ length: 7 }, (_, i) =>
-          routePreToolUse(`mcp__notion__tool_${i}`, {}),
-        );
-        const fired = calls.map((c) => c?.action === "context");
-        // period=3 → fires on calls 1, 4, 7 (indices 0, 3, 6).
-        expect(fired).toEqual([true, false, false, true, false, false, true]);
-      } finally {
-        if (prev === undefined) delete process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
-        else process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = prev;
-      }
-    });
-
-    it("falls back to default cadence on invalid env values", () => {
-      const prev = process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
-      try {
-        // Out-of-range, NaN, negative — all coerce to the default (10).
-        for (const v of ["0", "-1", "9999", "not-a-number", ""]) {
-          process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = v;
-          resetGuidanceThrottle();
-          const first = routePreToolUse("mcp__slack__a", {});
-          const second = routePreToolUse("mcp__slack__b", {});
-          expect(first?.action, `value=${JSON.stringify(v)}`).toBe("context");
-          // With default=10, the 2nd call must NOT fire.
-          expect(second, `value=${JSON.stringify(v)}`).toBeNull();
-        }
-      } finally {
-        if (prev === undefined) delete process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
-        else process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = prev;
-      }
-    });
-
-    it("resetGuidanceThrottle resets the periodic counter", () => {
-      // Burn one call to advance the counter.
-      const first = routePreToolUse("mcp__slack__post_message", {});
-      expect(first?.action).toBe("context");
-      const second = routePreToolUse("mcp__slack__list_users", {});
-      expect(second).toBeNull();
-
-      // Reset clears both the in-memory throttle and the periodic counter so
-      // the next call re-fires from tick 1 (e.g. start of a fresh session).
-      resetGuidanceThrottle();
-      const afterReset = routePreToolUse("mcp__slack__list_users", {});
-      expect(afterReset?.action).toBe("context");
-    });
-
-    it("does NOT match plain Bash/Read/etc as external MCP", () => {
-      // Sanity: tools without the mcp__ prefix should not hit this branch.
-      // Use a tool name the routing branches don't otherwise handle (Bash
-      // would return a guidance from its own branch).
-      const result = routePreToolUse("Glob", { pattern: "**/*.ts" });
+    it("continues to route context-mode's bare ctx_* tools", () => {
+      const result = routePreToolUse("ctx_execute", {
+        language: "javascript",
+        code: "1 + 1",
+      });
       expect(result).toBeNull();
     });
 
-    it("treats external MCP tools whose tool part contains 'context-mode' as external", () => {
-      // Guards against the substring-on-full-name false negative: only the
-      // server segment (first chunk after the mcp__ prefix) is checked, so a
-      // notion / slack / etc tool that happens to mention context-mode in its
-      // tool name still receives the external-MCP guidance.
-      const externals = [
-        "mcp__notion__search_context-mode_notes",
-        "mcp__slack__post_to_context-mode_channel",
-      ];
-      for (const tool of externals) {
-        resetGuidanceThrottle();
-        const result = routePreToolUse(tool, {});
-        expect(result, `expected guidance for ${tool}`).not.toBeNull();
-        expect(result!.action).toBe("context");
-        expect(result!.additionalContext).toContain("External MCP tools");
-      }
-    });
-
-    it("does NOT trip on degenerate tool names (empty / bare prefix / null)", () => {
-      // String() coerces these to non-MCP names — must pass through silently.
-      for (const tool of ["", "mcp__", null as unknown as string, undefined as unknown as string]) {
-        resetGuidanceThrottle();
-        const result = routePreToolUse(tool, {});
-        // Either null (passthrough) or NOT external-MCP guidance — never the
-        // external-MCP branch.
-        if (result !== null) {
-          expect(result.additionalContext ?? "").not.toContain("External MCP tools");
-        }
-      }
+    it("requires an exact context-mode MCP namespace", () => {
+      expect(isContextModeMcpToolName("mcp__my-context-mode-server__ctx_execute")).toBe(false);
+      expect(isContextModeMcpToolName("mcp__context-mode__ctx_execute")).toBe(true);
+      expect(isContextModeMcpToolName("mcp__plugin_context-mode_context-mode__ctx_search")).toBe(true);
     });
   });
 });

@@ -6,6 +6,7 @@
  *   context-mode                              → Start MCP server (stdio)
  *   context-mode doctor                       → Diagnose runtime issues, hooks, FTS5, version
  *   context-mode upgrade                      → Fix hooks, permissions, and settings
+ *   context-mode observability <action>       → Enable, disable, or inspect Codex observability hooks
  *   context-mode hook <platform> <event>      → Dispatch a hook script (used by platform hook configs)
  *   CONTEXT_MODE_DIR=/abs/path context-mode   → Override sessions/content storage root
  *     Empty/whitespace is ignored; non-empty values must be absolute.
@@ -68,6 +69,7 @@ function browserOpenArgv(
 
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
+import { CodexAdapter } from "./adapters/codex/index.js";
 import { isInProcessPluginPlatform } from "./adapters/types.js";
 
 /* -------------------------------------------------------
@@ -114,6 +116,12 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
     checkpointpostcompact: "hooks/codex/checkpoint-postcompact.mjs",
     checkpointsessionstart: "hooks/codex/checkpoint-sessionstart.mjs",
     checkpointuserpromptsubmit: "hooks/codex/checkpoint-userpromptsubmit.mjs",
+    observabilityposttooluse: "hooks/codex/posttooluse.mjs",
+    observabilitycheckpointposttooluse: "hooks/codex/checkpoint-posttooluse.mjs",
+    observabilitysessionstart: "hooks/codex/sessionstart.mjs",
+    observabilityuserpromptsubmit: "hooks/codex/userpromptsubmit.mjs",
+    observabilitycheckpointuserpromptsubmit: "hooks/codex/checkpoint-userpromptsubmit.mjs",
+    observabilitystop: "hooks/codex/stop.mjs",
   },
   "kiro": {
     pretooluse: "hooks/kiro/pretooluse.mjs",
@@ -188,6 +196,59 @@ async function hookDispatch(platform: string, event: string): Promise<void> {
   await import(pathToFileURL(join(pluginRoot, scriptPath)).href);
 }
 
+async function observabilityCommand(args: string[]): Promise<number> {
+  const action = args[0];
+  if (action !== "enable" && action !== "disable" && action !== "status") {
+    console.error("Usage: context-mode observability <enable|disable|status>");
+    return 2;
+  }
+
+  const detection = detectPlatform();
+  if (detection.platform !== "codex") {
+    console.error(
+      `Codex observability profile is unavailable on ${detection.platform}; no configuration was changed`,
+    );
+    return 1;
+  }
+
+  const adapter = await getAdapter("codex");
+  if (!(adapter instanceof CodexAdapter)) {
+    console.error("Codex adapter could not be loaded; no configuration was changed");
+    return 1;
+  }
+
+  if (action === "status") {
+    const status = adapter.getObservabilityProfileStatus();
+    console.log(`Codex hook profile: ${status.profile}`);
+    console.log(`Config: ${status.configPath}`);
+    console.log(`Active context-mode hooks: ${status.activeHooks.join(", ") || "none"}`);
+    console.log(`Optional observability hooks: ${status.optionalHooks.join(", ") || "none"}`);
+    console.log(`Legacy registrations: ${status.legacyHooks.join(", ") || "none"}`);
+    if (status.error) console.log(`Status detail: ${status.error}`);
+    return status.profile === "unavailable" ? 1 : 0;
+  }
+
+  try {
+    if (action === "enable") {
+      for (const change of adapter.configureAllHooks(getPluginRoot())) {
+        console.log(change);
+      }
+      for (const change of adapter.enableObservabilityProfile()) {
+        console.log(change);
+      }
+      return 0;
+    }
+
+    for (const change of adapter.disableObservabilityProfile()) {
+      console.log(change);
+    }
+    return 0;
+  } catch (error: unknown) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
 /* -------------------------------------------------------
  * Entry point
  * ------------------------------------------------------- */
@@ -202,6 +263,7 @@ function printHelp(): void {
     "  context-mode search <query...>       Search the current project's FTS5 knowledge base",
     "  context-mode doctor                  Diagnose runtime issues, hooks, FTS5, version",
     "  context-mode upgrade                 Fix hooks, permissions, and settings",
+    "  context-mode observability <action>  Codex hooks: enable, disable, or status",
     "  context-mode hook <platform> <event> Dispatch a configured hook script",
     "  context-mode statusline              Print Claude Code status line",
     "",
@@ -213,7 +275,7 @@ function printHelp(): void {
     "  --ext <.ts,.md>                      Comma-separated extension allowlist",
     "  --include <glob>                     Directory include pattern (repeatable)",
     "  --exclude <glob>                     Directory exclude pattern (repeatable)",
-    "  --no-gitignore                       Do not apply .gitignore during directory walks",
+    "  --no-gitignore                       Compatibility flag; ignored tool/runtime paths remain excluded",
     "  --follow-symlinks                    Follow directory symlinks inside the root",
     "",
     "Search options:",
@@ -235,6 +297,8 @@ if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
   searchCommand(args.slice(1)).then((code) => process.exit(code));
 } else if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
+} else if (args[0] === "observability") {
+  observabilityCommand(args.slice(1)).then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
   // Issue #542 — accept --platform <id> from the ctx_upgrade MCP handler,
   // which forwards the live MCP clientInfo's resolved PlatformId. The flag
@@ -720,37 +784,19 @@ async function doctor(): Promise<number> {
   // Runtime check
   p.note(getRuntimeSummary(runtimes), "Runtimes");
 
-  // ── Issue #564 — Linux + Node < 22.5 + no Bun is unsafe ────────────
-  // V8's madvise(MADV_DONTNEED) can corrupt better-sqlite3's native addon
-  // `.got.plt` on Linux, causing sporadic SIGSEGV (1-4/hour). The 22.5
-  // gate (`hasModernSqlite()` in src/db-base.ts:226-244) is the contract:
-  // at or above it we use node:sqlite (built-in, no native addon, no
-  // .got.plt to corrupt); below it we fall through to better-sqlite3
-  // which WILL crash. engines.node + a hard-fail postinstall guard this
-  // at install time, but doctor() surfaces it for already-installed users
-  // (and for adapters whose MCP host swallows stderr during install).
-  // Refs:
-  //   - https://github.com/nodejs/node/issues/62515
-  //   - https://github.com/mksglu/context-mode/issues/564
+  // Prefer built-in SQLite when the host provides it, while keeping the
+  // better-sqlite3 fallback available for older or unusual runtimes. Runtime
+  // capability is reported here; it is not an install or release gate.
   {
     const { hasModernSqlite } = await import("./db-base.js");
-    if (
-      process.platform === "linux" &&
-      !hasModernSqlite() &&
-      !hasBunRuntime()
-    ) {
-      criticalFails++;
-      p.log.error(
-        color.red("Node version: FAIL") +
-          ` — Linux + Node ${process.versions.node} is unsafe (SIGSEGV)` +
-          color.dim(
-            "\n  context-mode requires Node.js >= 22.5 (or Bun) on Linux to avoid the" +
-            "\n  V8 madvise(MADV_DONTNEED) SIGSEGV in better-sqlite3 (1-4/hour)." +
-            "\n  Refs: https://github.com/nodejs/node/issues/62515" +
-            "\n        https://github.com/mksglu/context-mode/issues/564" +
-            "\n  Fix:  nvm install 22.5 && nvm use 22.5 && npm install -g context-mode" +
-            "\n  Or:   curl -fsSL https://bun.sh/install | bash && bun add -g context-mode",
-          ),
+    if (hasBunRuntime()) {
+      p.log.info("SQLite runtime: Bun built-in adapter");
+    } else if (hasModernSqlite()) {
+      p.log.info("SQLite runtime: Node built-in adapter when FTS5 is available");
+    } else {
+      p.log.warn(
+        color.yellow("SQLite runtime: compatibility fallback") +
+          color.dim(" — using better-sqlite3 when its native binding is available"),
       );
     }
   }

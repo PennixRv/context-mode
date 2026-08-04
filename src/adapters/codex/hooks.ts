@@ -4,9 +4,9 @@
  * Codex CLI hooks run behind the current `hooks` feature flag surface.
  * Prefer `[features].hooks`; the legacy `[features].codex_hooks` alias is still
  * accepted in current Codex builds.
- * 6 hook events: PreToolUse, PostToolUse, PreCompact, SessionStart,
- * UserPromptSubmit, Stop. PreCompact is runtime-gated on Codex builds that emit
- * the event.
+ * The default profile uses only PreToolUse, PreCompact, PostCompact, and the
+ * compact SessionStart event. Rich local capture remains available through
+ * the explicit optional observability profile.
  * Same JSON stdin/stdout wire protocol as Claude Code.
  *
  * Config: $CODEX_HOME/hooks.json or ~/.codex/hooks.json.
@@ -35,29 +35,6 @@ export const HOOK_TYPES = {
   USER_PROMPT_SUBMIT: "UserPromptSubmit",
   STOP: "Stop",
 } as const;
-
-// ─────────────────────────────────────────────────────────
-// External MCP routing matcher (#529)
-// ─────────────────────────────────────────────────────────
-
-/**
- * External MCP catch-all matcher for Codex CLI (#529, #547 hotfix).
- *
- * Codex CLI's hook `tool_name` payload uses `mcp__<server>__<tool>` for any
- * MCP-namespaced tool. Originally this constant used a negative lookahead
- * `mcp__(?!.*context-mode)` to exclude context-mode's own MCP tools at the
- * matcher layer. v1.0.124 shipped that pattern and Codex (Rust `regex` crate)
- * rejected the matcher at boot with "look-around not supported", breaking
- * every Codex user (#547).
- *
- * Fix: drop the lookaround. The matcher is now a charset-clean literal
- * (`[A-Za-z0-9_|]` only), satisfying Codex's `is_exact_matcher`
- * (refs/platforms/codex/codex-rs/hooks/src/events/common.rs:152) which
- * short-circuits the regex engine entirely. context-mode's own MCP tools are
- * already filtered in the hook BODY by `isExternalMcpTool()` in
- * hooks/core/routing.mjs — semantics preserved.
- */
-export const EXTERNAL_MCP_MATCHER_PATTERN = "mcp__";
 
 // ─────────────────────────────────────────────────────────
 // Routing instructions

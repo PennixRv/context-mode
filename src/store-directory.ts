@@ -26,9 +26,9 @@ import {
   lstatSync,
   realpathSync,
   existsSync,
-  readFileSync,
 } from "node:fs";
-import { join, extname, relative, sep, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { dirname, extname, isAbsolute, join, relative, sep, resolve } from "node:path";
 
 export interface WalkOptions {
   /** Glob-ish include patterns. Empty/undefined means include all (subject to extensions). */
@@ -41,7 +41,10 @@ export interface WalkOptions {
   maxFiles?: number;
   /** Allowed file extensions (with leading dot). Empty/undefined means default set. */
   extensions?: string[];
-  /** Apply nearest .gitignore rules during walk. Default true. */
+  /**
+   * Retained for compatibility. Git-ignored paths are always excluded by the
+   * source-path policy and this option cannot weaken that boundary.
+   */
   respectGitignore?: boolean;
   /** Follow directory symlinks. Default false (cycle hazard + escape risk). */
   followSymlinks?: boolean;
@@ -86,6 +89,131 @@ const DEFAULT_EXTENSIONS = [
 
 const DEFAULT_MAX_DEPTH = 5;
 const DEFAULT_MAX_FILES = 200;
+
+const PROTECTED_SOURCE_SEGMENTS = new Set([".trellis", ".codegraph"]);
+
+/**
+ * Return the nearest directory that owns a valid Git work tree for
+ * `sourcePath`. Invalid `.git` markers are skipped; a Git runtime failure in a
+ * marker-bearing directory is retained so ignore evaluation can fail closed.
+ */
+function findGitWorkTree(sourcePath: string): string | undefined {
+  let directory = sourcePath;
+  try {
+    if (!statSync(sourcePath).isDirectory()) {
+      directory = dirname(sourcePath);
+    }
+  } catch {
+    directory = dirname(sourcePath);
+  }
+
+  while (true) {
+    if (existsSync(join(directory, ".git"))) {
+      try {
+        execFileSync(
+          "git",
+          ["-C", directory, "rev-parse", "--show-toplevel"],
+          { stdio: "ignore" },
+        );
+        return directory;
+      } catch (error) {
+        // An invalid `.git` marker (for example a temporary fixture at /tmp)
+        // is not a Git work tree. Continue searching ancestors. If Git itself
+        // cannot run, retain the marker so the ignore check fails closed.
+        const exitStatus = typeof error === "object" && error !== null && "status" in error
+          ? (error as { status?: unknown }).status
+          : undefined;
+        if (exitStatus !== 128) {
+          return directory;
+        }
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
+}
+
+function getPathVariants(sourcePath: string): string[] {
+  const resolvedPath = resolve(sourcePath);
+  const paths = [sourcePath, resolvedPath];
+  try {
+    paths.push(realpathSync(resolvedPath));
+  } catch {
+    // A missing path is still checked lexically; index() will report the read
+    // failure if it is otherwise admissible.
+  }
+  return [...new Set(paths)];
+}
+
+function hasForbiddenSourceSegment(sourcePath: string): string | undefined {
+  for (const segment of sourcePath.split(/[\\/]+/)) {
+    if (PROTECTED_SOURCE_SEGMENTS.has(segment)) return segment;
+    if (
+      segment.length > 1
+      && segment.startsWith(".")
+      && segment !== "."
+      && segment !== ".."
+    ) {
+      return segment;
+    }
+  }
+  return undefined;
+}
+
+function isPathInside(rootPath: string, candidatePath: string): boolean {
+  const relativePath = relative(rootPath, candidatePath);
+  return relativePath === ""
+    || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath));
+}
+
+function getGitIgnoredPathReason(sourcePath: string): string | undefined {
+  const workTree = findGitWorkTree(sourcePath);
+  if (!workTree || !isPathInside(workTree, sourcePath)) return undefined;
+
+  const relativePath = relative(workTree, sourcePath);
+  if (relativePath === "") return undefined;
+
+  try {
+    execFileSync(
+      "git",
+      ["-C", workTree, "check-ignore", "--quiet", "--no-index", "--", relativePath],
+      { stdio: "ignore" },
+    );
+    return "Git-ignored source path";
+  } catch (error) {
+    const exitStatus = typeof error === "object" && error !== null && "status" in error
+      ? (error as { status?: unknown }).status
+      : undefined;
+    if (exitStatus === 1) return undefined;
+    return "Git ignore status could not be verified";
+  }
+}
+
+/**
+ * A non-bypassable policy for file-backed FTS sources. It inspects both the
+ * caller spelling and the canonical target, so `..` and symlink spelling
+ * cannot hide protected directories. Git performs ignore evaluation because
+ * it is the only source that accurately combines nested `.gitignore`,
+ * `.git/info/exclude`, and global excludes without another dependency.
+ */
+export function getSourcePathExclusionReason(sourcePath: string): string | undefined {
+  for (const pathVariant of getPathVariants(sourcePath)) {
+    const segment = hasForbiddenSourceSegment(pathVariant);
+    if (segment) {
+      return PROTECTED_SOURCE_SEGMENTS.has(segment)
+        ? `protected source path segment: ${segment}`
+        : `hidden source path segment: ${segment}`;
+    }
+  }
+
+  for (const pathVariant of getPathVariants(sourcePath)) {
+    const gitIgnoredReason = getGitIgnoredPathReason(pathVariant);
+    if (gitIgnoredReason) return gitIgnoredReason;
+  }
+
+  return undefined;
+}
 
 /**
  * Convert a simple glob pattern (`*`, `**`, `?`) to a RegExp. Anchors at
@@ -135,25 +263,6 @@ function matchesAny(relPosix: string, patterns: string[]): boolean {
 }
 
 /**
- * Parse a .gitignore file into a list of patterns. Comments and blank lines
- * are stripped. Negation (`!`) is not supported — kept conservative.
- */
-function parseGitignore(rootPath: string): string[] {
-  const giPath = join(rootPath, ".gitignore");
-  if (!existsSync(giPath)) return [];
-  try {
-    const text = readFileSync(giPath, "utf-8");
-    return text
-      .split(/\r?\n/)
-      .map(l => l.trim())
-      .filter(l => l.length > 0 && !l.startsWith("#") && !l.startsWith("!"))
-      .map(l => l.replace(/^\//, "").replace(/\/$/, ""));
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Convert an absolute path under rootPath to a POSIX-style relative path
  * so glob matching is identical across macOS/Linux/Windows.
  */
@@ -183,7 +292,6 @@ export function walkDirectoryDetailed(rootPath: string, opts: WalkOptions = {}):
     maxDepth = DEFAULT_MAX_DEPTH,
     maxFiles = DEFAULT_MAX_FILES,
     extensions,
-    respectGitignore = true,
     followSymlinks = false,
   } = opts;
 
@@ -194,13 +302,15 @@ export function walkDirectoryDetailed(rootPath: string, opts: WalkOptions = {}):
   } catch {
     return { files: [], capped: false, totalSeen: 0 };
   }
+  if (getSourcePathExclusionReason(rootPath)) {
+    return { files: [], capped: false, totalSeen: 0 };
+  }
 
   const exts = (extensions && extensions.length > 0 ? extensions : DEFAULT_EXTENSIONS)
     .map(e => (e.startsWith(".") ? e : "." + e).toLowerCase());
   const excludes = [
     ...DEFAULT_EXCLUDES,
     ...(exclude ?? []),
-    ...(respectGitignore ? parseGitignore(rootReal) : []),
   ];
   const includes = include ?? [];
 
@@ -223,7 +333,12 @@ export function walkDirectoryDetailed(rootPath: string, opts: WalkOptions = {}):
       const absChild = join(absDir, ent.name);
       const relPosix = toPosixRel(rootReal, absChild);
 
-      // Exclude check applies to both files and dirs — early prune.
+      // The source policy is independent of caller filters. Apply it before
+      // glob matching and recursion so include/exclude/no-gitignore cannot
+      // admit project workflow state, hidden runtime paths, or ignored files.
+      if (getSourcePathExclusionReason(absChild)) continue;
+
+      // Caller excludes apply to both files and dirs — early prune.
       if (matchesAny(relPosix, excludes)) continue;
       // Include filter applies to files only — see below.
 
@@ -247,11 +362,10 @@ export function walkDirectoryDetailed(rootPath: string, opts: WalkOptions = {}):
           continue; // dangling
         }
         // Symlink-escape: refuse to follow if the resolved target leaves rootReal.
-        const escapeRel = relative(rootReal, resolved);
-        if (escapeRel.startsWith("..") || resolve(escapeRel) === resolved) {
-          // resolve(absolute) === absolute → target is absolute outside root
-          if (escapeRel.startsWith("..")) continue;
-        }
+        // Reuse the path-boundary helper instead of prefix checks: a legitimate
+        // child named `..fixtures` is inside the root even though its relative
+        // spelling starts with two dots.
+        if (!isPathInside(rootReal, resolved)) continue;
         if (visited.has(resolved)) continue;
         visited.add(resolved);
         try {

@@ -184,40 +184,37 @@ describe("Bash: Redirected Commands", () => {
     assertRedirect(result, "context-mode");
   });
 
-  test("Bash + ./gradlew build: redirected to execute sandbox (Issue #38)", () => {
+  test("Bash + ./gradlew build: passes external CLI through", () => {
     const result = runHook({
       tool_name: "Bash",
       tool_input: { command: "./gradlew build --info" },
     });
-    assertRedirect(result, "Build tool redirected");
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "");
   });
 
-  test("Bash + mvn package: redirected to execute sandbox (Issue #38)", () => {
+  test("Bash + mvn package: passes external CLI through", () => {
     const result = runHook({
       tool_name: "Bash",
       tool_input: { command: "mvn clean package -DskipTests" },
     });
-    assertRedirect(result, "Build tool redirected");
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "");
   });
 });
 
 describe("Bash: Allowed Commands", () => {
   // After #463 the Bash routing nudge is short-circuited for structurally-
   // bounded commands (pwd, whoami, git status, mkdir, --version probes,
-  // etc.) — those return null. Use unbounded commands here so we still pin
-  // the "normal Bash command → context guidance" path end-to-end.
-  test("Bash + npm install: additionalContext with BASH_GUIDANCE", () => {
+  // etc.) — those return null. Only the positive data-read/search grammar
+  // receives context-mode guidance; external CLI commands stay untouched.
+  test("Bash + npm install: passes external CLI through", () => {
     const result = runHook({
       tool_name: "Bash",
       tool_input: { command: "npm install" },
     });
     assert.equal(result.exitCode, 0);
-    const parsed = JSON.parse(result.stdout);
-    assert.ok(parsed.hookSpecificOutput.additionalContext, "Expected additionalContext for Bash");
-    assert.ok(
-      parsed.hookSpecificOutput.additionalContext.includes("<context_guidance>"),
-      "Expected <context_guidance> in Bash additionalContext",
-    );
+    assert.equal(result.stdout, "");
   });
 
   test("Bash + find /: additionalContext with BASH_GUIDANCE", () => {

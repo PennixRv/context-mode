@@ -935,12 +935,12 @@ context-mode automatically selects the best SQLite backend at runtime based on t
 | Priority | Condition | Backend | Why |
 |----------|-----------|---------|-----|
 | 1 | Bun runtime | `bun:sqlite` | Built-in, no native addon |
-| 2 | Linux + Node.js >= 22.5 | `node:sqlite` | Built-in, avoids [SIGSEGV from V8 madvise bug](https://github.com/nodejs/node/issues/62515) |
-| 3 | All other environments | `better-sqlite3` | Mature native addon, prebuilt binaries |
+| 2 | FTS5-capable Node.js runtime | `node:sqlite` | Built-in, avoids native-addon compatibility issues |
+| 3 | Other Node.js environments | `better-sqlite3` | Mature native addon, prebuilt binaries |
 
-**Why node:sqlite on Linux?** Node.js's V8 garbage collector can call `madvise(MADV_DONTNEED)` on memory ranges that overlap `better-sqlite3`'s native addon `.got.plt` section, corrupting resolved symbol addresses and causing sporadic SIGSEGV crashes (1-4/hour on Node v22-v24). `node:sqlite` is compiled into the Node.js binary itself — no separate `.node` file, no `dlopen()`, no `.got.plt` to corrupt.
+**Why node:sqlite?** It is compiled into the Node.js binary itself, avoiding a separate native addon when the host provides an FTS5-capable implementation.
 
-**Fallback:** If `node:sqlite` is unavailable (Node < 22.5), context-mode silently falls back to `better-sqlite3`. No user configuration needed.
+**Fallback:** If `node:sqlite` is unavailable or lacks FTS5, context-mode falls back to `better-sqlite3`. No Node or Codex version is enforced at installation time; the fallback still requires a compatible native binding on the selected runtime.
 
 **Override:** Not currently supported — backend selection is automatic. If you need to force a specific backend, open an issue.
 

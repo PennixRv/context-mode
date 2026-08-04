@@ -11,13 +11,13 @@
  */
 
 import {
-  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE, EXTERNAL_MCP_GUIDANCE,
+  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE,
   createRoutingBlock, createReadGuidance, createGrepGuidance, createBashGuidance,
-  createExternalMcpGuidance,
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
-import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, readFileSync, writeFileSync, statSync, constants as fsConstants } from "node:fs";
+import { isContextModeMcpToolName, isExternalMcpToolName } from "./external-mcp.mjs";
+import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, statSync, constants as fsConstants } from "node:fs";
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
@@ -50,62 +50,6 @@ import { resolve } from "node:path";
 // invocations of the same logical session.
 const _guidanceShown = new Set();
 
-// Periodic-guidance counters: how many times each (sessionId, type) pair has
-// fired the periodic branch. Keyed by `${sessionId-or-ppid}::${type}`.
-// File-backed for cross-process so hook invocations from the same logical
-// session keep the counter coherent.
-const _guidanceCounters = new Map();
-
-// External-MCP nudge cadence — fire every N matching tool calls.
-// Default 10: keeps the guidance fresh in long MCP-heavy sessions (e.g. a
-// Jira/Slack/Notion run with 50+ tool calls — see #567 follow-up) without
-// flooding context with repeat nudges. Bounds [1, 100]; invalid env values
-// fall back to default. period=1 means "fire every call" (opt-in only).
-const EXTERNAL_MCP_NUDGE_DEFAULT = 10;
-const EXTERNAL_MCP_NUDGE_MIN = 1;
-const EXTERNAL_MCP_NUDGE_MAX = 100;
-const EXTERNAL_MCP_NUDGE_ENV = "CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY";
-
-function getExternalMcpNudgeEvery() {
-  const raw = process.env[EXTERNAL_MCP_NUDGE_ENV];
-  if (raw == null || raw === "") return EXTERNAL_MCP_NUDGE_DEFAULT;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < EXTERNAL_MCP_NUDGE_MIN || parsed > EXTERNAL_MCP_NUDGE_MAX) {
-    return EXTERNAL_MCP_NUDGE_DEFAULT;
-  }
-  return parsed;
-}
-
-// #817: size threshold so small Bash calls skip the routing nudge.
-//
-// PreToolUse fires BEFORE the command runs, so the actual output size is
-// unknowable here. The only deterministic pre-execution signal is the command
-// string itself. The Gemini CLI adapter solves the same over-interception
-// problem with a matcher that only fires on large-output tools — "avoids
-// unnecessary hook overhead on lightweight tools" (README). We mirror that at
-// the routing layer: when CONTEXT_MODE_BASH_NUDGE_MIN_COMMAND_BYTES is set to
-// N>0, an unbounded Bash command whose UTF-8 byte length is below N is treated
-// as expected-lightweight and the generic routing nudge is suppressed.
-//
-// Default is 0 (unset) → CURRENT BEHAVIOR: every unbounded command is nudged.
-// This preserves the context-saving guarantee for large outputs by default —
-// the threshold is strictly opt-in. Bounds [0, 100000]; invalid/zero/negative
-// values fall back to 0 (disabled). The threshold gates ONLY the generic Bash
-// nudge — curl/wget, inline-HTTP, and build-tool redirects run earlier and are
-// never relaxed, because those are deterministic floods regardless of command
-// length.
-const BASH_NUDGE_MIN_BYTES_ENV = "CONTEXT_MODE_BASH_NUDGE_MIN_COMMAND_BYTES";
-const BASH_NUDGE_MIN_BYTES_MAX = 100_000;
-
-function getBashNudgeMinCommandBytes() {
-  const raw = process.env[BASH_NUDGE_MIN_BYTES_ENV];
-  if (raw == null || raw === "") return 0;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > BASH_NUDGE_MIN_BYTES_MAX) {
-    return 0;
-  }
-  return parsed;
-}
 
 function defaultGuidanceId() {
   return process.env.VITEST_WORKER_ID
@@ -144,56 +88,6 @@ function guidanceOnce(type, content, sessionId) {
 }
 
 /**
- * Like guidanceOnce, but fires on a periodic cadence (calls 1, period+1,
- * 2·period+1, …) rather than once per session.
- *
- * Motivation: external-MCP tool runs can span 50+ calls (e.g. a Jira/Slack
- * search loop — see #567 follow-up). A single one-shot nudge gets lost
- * after the model's context compaction kicks in, and subsequent large MCP
- * payloads flood context unchecked. Re-firing the nudge every N calls
- * keeps the guidance in the model's recent window without saturating it.
- *
- * Counter state is process-aware: in-memory Map for same-process callers,
- * file-backed `<guidanceDir>/<type>.count` for cross-process hook
- * invocations. On any IO/parse failure we fall back to firing — losing a
- * counter is preferable to silently dropping the advisory.
- */
-function guidancePeriodic(type, content, sessionId, period) {
-  const safePeriod = Math.max(1, period | 0);
-  const id = sessionId ? `s-${sessionId}` : defaultGuidanceId();
-  const key = `${id}::${type}`;
-
-  // Read counter from memory first; fall through to disk on miss.
-  let count = _guidanceCounters.get(key);
-  const dir = guidanceDirFor(sessionId);
-  const counterPath = resolve(dir, `${type}.count`);
-
-  if (count == null) {
-    try {
-      const parsed = Number.parseInt(readFileSync(counterPath, "utf8"), 10);
-      count = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-    } catch {
-      count = 0;
-    }
-  }
-
-  const next = count + 1;
-  _guidanceCounters.set(key, next);
-
-  try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(counterPath, String(next), "utf8");
-  } catch {
-    // Best-effort: cross-process counter may drift on FS failure, but we
-    // still return a decision based on the in-memory tick.
-  }
-
-  // Fire on the 1st, (period+1)th, (2·period+1)th… call.
-  if ((next - 1) % safePeriod !== 0) return null;
-  return { action: "context", additionalContext: content };
-}
-
-/**
  * Robust recursive delete. On Windows, `fs.rmSync` on directories under a
  * tmpdir whose path contains non-ASCII characters (e.g. a Chinese / Japanese /
  * Korean username) silently no-ops without throwing — see #454. Fall back to a
@@ -213,7 +107,6 @@ function rmSyncRobust(dir) {
 
 export function resetGuidanceThrottle(sessionId) {
   _guidanceShown.clear();
-  _guidanceCounters.clear();
   // Clear ppid-based dir (legacy / fallback callers) and the sessionId dir if given
   rmSyncRobust(guidanceDirFor());
   if (sessionId) {
@@ -568,52 +461,19 @@ function matchesContextModeTool(toolName, ctxName, legacyName) {
   const raw = String(toolName ?? "");
   const leaf = toolLeafName(raw);
   if (leaf === ctxName) return true;
-  if (raw.startsWith("MCP:") && leaf === legacyName) return true;
-  return raw.includes("context-mode") && leaf === legacyName;
+  if (isContextModeMcpToolName(raw) && leaf === legacyName) return true;
+  return false;
 }
 
-// External MCP detection (#529 + 15-adapter coverage follow-up).
-//
-// MCP-namespaced tool names follow per-platform conventions (see
-// core/tool-naming.mjs):
-//   - `mcp__<server>__<tool>`     Claude Code / Gemini CLI / Antigravity / Qwen Code / Codex
-//   - `MCP:<tool>`                Cursor
-//   - `@<server>/<tool>`          Kiro
-//
-// Tools belonging to context-mode itself are excluded — they have dedicated
-// routing branches above (ctx_execute, ctx_execute_file, ctx_batch_execute)
-// and re-routing them here would double-process the call.
-const MCP_PREFIX = "mcp__";
-const CURSOR_MCP_PREFIX = "MCP:";
-const KIRO_MCP_PREFIX = "@";
-const CTX_TOOL_PREFIX = "ctx_";
-const CONTEXT_MODE_SUBSTRING = "context-mode";
+const MANAGED_BASH_DATA_COMMANDS = [
+  /^(?:cat|head|tail|sed|awk|cut|sort|uniq|wc|du|df|find|rg|grep)(?:\s|$)/,
+  /^git\s+(?:diff|log|show|grep)(?:\s|$)/,
+];
 
-function isExternalMcpTool(toolName) {
-  const raw = String(toolName ?? "");
-
-  // Claude / Codex / Gemini / Qwen / Antigravity wire shape.
-  if (raw.startsWith(MCP_PREFIX)) {
-    const server = raw.slice(MCP_PREFIX.length).split("__")[0];
-    if (!server) return false;
-    return !server.includes(CONTEXT_MODE_SUBSTRING);
-  }
-
-  // Cursor wire shape: `MCP:<tool>` — own tools are `MCP:ctx_*`. There is no
-  // server segment, so the discriminator is the tool-leaf prefix.
-  if (raw.startsWith(CURSOR_MCP_PREFIX)) {
-    const tool = raw.slice(CURSOR_MCP_PREFIX.length);
-    return tool.length > 0 && !tool.startsWith(CTX_TOOL_PREFIX);
-  }
-
-  // Kiro wire shape: `@<server>/<tool>` — own tools are `@context-mode/ctx_*`.
-  if (raw.startsWith(KIRO_MCP_PREFIX) && raw.includes("/")) {
-    const server = raw.slice(KIRO_MCP_PREFIX.length).split("/")[0];
-    if (!server) return false;
-    return !server.includes(CONTEXT_MODE_SUBSTRING);
-  }
-
-  return false;
+function isManagedBashDataCommand(command) {
+  const trimmed = command.trim();
+  if (!trimmed || SHELL_CONTROL_OPERATORS.test(trimmed)) return false;
+  return MANAGED_BASH_DATA_COMMANDS.some((pattern) => pattern.test(trimmed));
 }
 
 function getShellCommand(toolInput) {
@@ -669,6 +529,11 @@ function getPlatformSettingsPath(platform) {
  */
 export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId, options = {}) {
   const mcpToolsAvailable = options.mcpToolsAvailable !== false;
+
+  // External MCP servers own their output, semantics, and lifecycle. Keep
+  // this before context-mode's security/routing gates so no fail-closed
+  // context-mode policy can accidentally claim an external tool.
+  if (isExternalMcpToolName(toolName)) return null;
 
   // ─── Opt-in fail-closed gate (#468 follow-up) ───
   // Default behavior on security-module load failure is fail-OPEN (a stderr
@@ -804,39 +669,16 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       }, mcpToolsAvailable);
     }
 
-    // Build tools (gradle, maven, sbt) → redirect to execute sandbox (Issue #38, #406).
-    // These produce extremely verbose output that should stay in sandbox.
-    // Word-boundary guard prevents matching `gradle-wrapper-config`, `mvnDocker`, etc.
-    if (/(^|\s|&&|\||\;)(\.\/gradlew|gradlew|gradle|\.\/mvnw|mvnw|mvn|\.\/sbt|sbt)(\s|$)/i.test(stripped)) {
-      const safeCmd = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      return mcpRedirect({
-        action: "modify",
-        updatedInput: {
-          command: `echo "context-mode: Build tool redirected. Call ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") to run the build and print only the tail — the verbose build log stays in the sandbox instead of entering your conversation. For more targeted output, replace \\"tail -30\\" with \\"grep -E '(error|warning|FAIL|✗|×)'\\" or similar, so only the lines that matter come back."`,
-        },
-      }, mcpToolsAvailable);
-    }
-
-    // Skip the routing nudge for commands whose output is structurally
-    // bounded (#463) — pwd, whoami, git status, --version probes, etc.
-    // Conservative: any pipe/redirect/chain disqualifies, unknown commands
-    // still get the nudge.
+    // Bounded commands and commands outside the managed data-read/search
+    // grammar pass through. External CLIs retain their own lifecycle and
+    // output semantics; context-mode does not inject generic prompts.
     if (isStructurallyBounded(command)) {
       return null;
     }
 
-    // #817: opt-in size threshold. When the operator configures
-    // CONTEXT_MODE_BASH_NUDGE_MIN_COMMAND_BYTES, a short unbounded command is
-    // treated as expected-lightweight and passes through untouched — reserving
-    // the nudge for commands large/complex enough to plausibly flood context.
-    // Default (0) preserves current behavior, so large-output savings are not
-    // weakened unless the operator explicitly opts in.
-    const minCommandBytes = getBashNudgeMinCommandBytes();
-    if (minCommandBytes > 0 && Buffer.byteLength(command, "utf8") < minCommandBytes) {
-      return null;
-    }
+    if (!isManagedBashDataCommand(command)) return null;
 
-    // allow all other Bash commands, but inject routing nudge (once per session)
+    // Managed data reads and searches may flood the conversation.
     return guidanceOnce("bash", bashGuidance, sessionId);
   }
 
@@ -891,7 +733,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
   // ─── Agent: inject context-mode routing into subagent prompts ───
   // Subagents cannot use ctx commands (stats/doctor/upgrade/purge) — omit that section (#233)
-  if (canonical === "Agent") {
+  if (canonical === "Agent" && platform !== "codex") {
     const subagentType = toolInput.subagent_type ?? "";
     // Detect the correct field name for the prompt/request/objective/question/query
     const fieldName = ["prompt", "request", "objective", "question", "query", "task"].find(f => f in toolInput) ?? "prompt";
@@ -994,22 +836,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       return { action: "modify", updatedInput: { ...toolInput, cwd: projectDir } };
     }
     return null;
-  }
-
-  // ─── External MCP tools: periodic guidance about routing large payloads ─── (#529, #567 follow-up)
-  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so this
-  // branch fires for slack/telegram/gdrive/notion-style MCPs whose results would
-  // otherwise spill into context. We don't deny or modify — the agent still needs
-  // the tool's output; we just nudge it to pipe large results through ctx_execute.
-  //
-  // Cadence: every N calls (default 10, tunable via CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY).
-  // The original one-shot nudge (#529) was lost after context compaction in
-  // MCP-heavy sessions (e.g. 50+ Jira calls in #567 follow-up), letting later
-  // payloads flood context unchecked. Re-firing periodically keeps the guidance
-  // in the model's recent window without saturating it.
-  if (isExternalMcpTool(toolName)) {
-    const externalMcpGuidance = platform ? createExternalMcpGuidance(t) : EXTERNAL_MCP_GUIDANCE;
-    return guidancePeriodic("external-mcp", externalMcpGuidance, sessionId, getExternalMcpNudgeEvery());
   }
 
   // Unknown tool — pass through

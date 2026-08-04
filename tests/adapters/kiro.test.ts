@@ -186,10 +186,25 @@ describe("KiroAdapter", () => {
       expect(preEntries[0].matcher).toContain("@context-mode/ctx_execute");
     });
 
-    it("postToolUse matcher stays wildcard for event capture", () => {
+    it("postToolUse matcher excludes external MCP", () => {
       const config = adapter.generateHookConfig("/some/plugin/root");
       const postEntries = config["postToolUse"] as Array<{ matcher: string }>;
-      expect(postEntries[0].matcher).toBe("*");
+      expect(postEntries[0].matcher).toBe(PRE_TOOL_USE_MATCHER_PATTERN);
+    });
+
+    it("bundled agent config stays scoped to native and context-mode tools", () => {
+      const config = JSON.parse(
+        readFileSync(resolve(process.cwd(), "configs/kiro/agent.json"), "utf8"),
+      ) as {
+        hooks: {
+          preToolUse: Array<{ matcher: string }>;
+          postToolUse: Array<{ matcher: string }>;
+        };
+      };
+      expect(config.hooks.preToolUse[0]?.matcher).toBe(PRE_TOOL_USE_MATCHER_PATTERN);
+      expect(config.hooks.postToolUse[0]?.matcher).toBe(PRE_TOOL_USE_MATCHER_PATTERN);
+      expect(config.hooks.preToolUse[0]?.matcher).not.toContain("(?!");
+      expect(config.hooks.preToolUse[0]?.matcher).not.toContain("@(?!");
     });
 
     it("PRE_TOOL_USE_MATCHER_PATTERN is pipe-separated string", () => {

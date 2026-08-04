@@ -378,7 +378,7 @@ describe("routePreToolUse with platform parameter", () => {
     // Use an unbounded command so the #463 structurally-bounded allowlist
     // does not short-circuit the guidance — this test is about platform
     // tool-naming inside the guidance, not allowlist behavior.
-    const result = routePreToolUse("Bash", { command: "npm install" }, "/tmp", "openclaw");
+    const result = routePreToolUse("Bash", { command: "rg TODO src" }, "/tmp", "openclaw");
     expect(result).not.toBeNull();
     expect(result!.action).toBe("context");
     expect(result!.additionalContext).toContain("ctx_batch_execute");
@@ -387,7 +387,7 @@ describe("routePreToolUse with platform parameter", () => {
   });
 
   it("OpenClaw lowercase native tools route through canonical aliases", () => {
-    const exec = routePreToolUse("exec", { command: "npm install" }, "/tmp", "openclaw");
+    const exec = routePreToolUse("exec", { command: "rg TODO src" }, "/tmp", "openclaw");
     expect(exec).not.toBeNull();
     expect(exec!.action).toBe("context");
     expect(exec!.additionalContext).toContain("ctx_batch_execute");
@@ -419,11 +419,7 @@ describe("routePreToolUse with platform parameter", () => {
 
   it("build tool redirect uses platform tool names when platform=gemini-cli", () => {
     const result = routePreToolUse("Bash", { command: "./gradlew build" }, "/tmp", "gemini-cli");
-    expect(result).not.toBeNull();
-    expect(result!.action).toBe("modify");
-    const cmd = (result!.updatedInput as Record<string, string>).command;
-    expect(cmd).toContain("mcp__context-mode__ctx_execute");
-    expect(cmd).not.toContain("mcp__plugin_context-mode_context-mode__");
+    expect(result).toBeNull();
   });
 
   // ─── SLICE Qwen-3: routing.mjs Qwen native names ───

@@ -15,7 +15,11 @@ import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, 
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { walkDirectoryDetailed, type WalkOptions } from "./store-directory.js";
+import {
+  getSourcePathExclusionReason,
+  walkDirectoryDetailed,
+  type WalkOptions,
+} from "./store-directory.js";
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -872,6 +876,12 @@ export class ContentStore {
     if (!hasContent && path && isRecoveryBriefIndexPath(path)) {
       throw new Error(`refusing to index controlled RecoveryBrief state: ${path}`);
     }
+    if (path) {
+      const exclusionReason = getSourcePathExclusionReason(path);
+      if (exclusionReason) {
+        throw new Error(`refusing to index ${exclusionReason}: ${path}`);
+      }
+    }
 
     // Read file via fd to close the TOCTOU window between the security
     // gate (security.ts evaluateFilePath calls realpathSync) and the read
@@ -1101,6 +1111,14 @@ export class ContentStore {
       totalChunks: chunks.length,
       codeChunks,
     };
+  }
+
+  #removeSource(label: string): void {
+    withRetry(() => this.#db.transaction(() => {
+      this.#stmtDeleteChunksByLabel.run(label);
+      this.#stmtDeleteChunksTrigramByLabel.run(label);
+      this.#stmtDeleteSourcesByLabel.run(label);
+    })());
   }
 
   // ── Search ──
@@ -1434,6 +1452,14 @@ export class ContentStore {
 
     for (const src of sources) {
       try {
+        // Source-path exclusions are a standing authority boundary, not a
+        // one-time admission check. Remove a formerly valid source when its
+        // path becomes protected or ignored so stale FTS content cannot remain
+        // retrievable after the project policy changes.
+        if (getSourcePathExclusionReason(src.file_path)) {
+          this.#removeSource(src.label);
+          continue;
+        }
         if (!existsSync(src.file_path)) continue; // file deleted — keep cached results
         // Re-check deny policy before re-reading. The Read deny list may
         // have been edited after this source was originally indexed; a

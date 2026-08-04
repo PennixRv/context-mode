@@ -126,7 +126,7 @@ This gives you all 11 MCP tools without automatic routing. The model can still u
 <details>
 <summary><strong>Gemini CLI</strong> — one config file, hooks included</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Gemini CLI installed.
+**Prerequisites:** Node.js or Bun, Gemini CLI installed. Use a current runtime when possible.
 
 **Install:**
 
@@ -199,7 +199,7 @@ Full config reference: [`configs/gemini-cli/settings.json`](configs/gemini-cli/s
 <details>
 <summary><strong>VS Code Copilot</strong> — hooks with SessionStart</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), VS Code with Copilot Chat v0.32+.
+**Prerequisites:** Node.js or Bun, VS Code with Copilot Chat v0.32+.
 
 **Install:**
 
@@ -256,7 +256,7 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 <details>
 <summary><strong>JetBrains Copilot</strong> — hooks with SessionStart</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), JetBrains IDE with GitHub Copilot plugin v1.5.57+.
+**Prerequisites:** Node.js or Bun, JetBrains IDE with GitHub Copilot plugin v1.5.57+.
 
 **Install:**
 
@@ -307,7 +307,7 @@ Full setup guide: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md)
 <details>
 <summary><strong>GitHub Copilot CLI</strong> — MCP + hooks</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), GitHub Copilot CLI (`copilot`) installed. Set `COPILOT_HOME` first if you use an isolated Copilot home.
+**Prerequisites:** Node.js or Bun, GitHub Copilot CLI (`copilot`) installed. Set `COPILOT_HOME` first if you use an isolated Copilot home.
 
 **Install — Option A (plugin, one command — recommended):**
 
@@ -367,7 +367,7 @@ See [`docs/platform-support.md`](docs/platform-support.md#github-copilot-cli) fo
 <details>
 <summary><strong>Cursor</strong> — hooks with stop support</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Cursor with agent mode.
+**Prerequisites:** Node.js or Bun, Cursor with agent mode.
 
 > **🚧 Work in progress** — the Marketplace plugin is **awaiting Cursor team review**. Until it's listed, install via the local-folder path described in Option A. Tracking in [#485](https://github.com/mksglu/context-mode/issues/485) / [#489](https://github.com/mksglu/context-mode/pull/489).
 
@@ -468,7 +468,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 <details>
 <summary><strong>OpenCode</strong> — TypeScript plugin with hooks</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), OpenCode installed.
+**Prerequisites:** Node.js or Bun, OpenCode installed.
 
 **Install:**
 
@@ -508,7 +508,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 <details>
 <summary><strong>KiloCode</strong> — TypeScript plugin with hooks</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), KiloCode installed.
+**Prerequisites:** Node.js or Bun, KiloCode installed.
 
 **Install:**
 
@@ -583,7 +583,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 <details>
 <summary><strong>Codex CLI</strong> — MCP + hooks</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Codex CLI installed.
+**Prerequisites:** Node.js or Bun, Codex CLI installed. The release workflow validates against the latest Codex CLI.
 
 **Install:**
 
@@ -658,19 +658,17 @@ The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
    ```json
    {
      "hooks": {
-      "PreToolUse": [{ "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }],
-       "PostToolUse": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex posttooluse" }] }],
-       "SessionStart": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex sessionstart" }] }],
-       "PreCompact": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex precompact" }] }],
-       "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex userpromptsubmit" }] }],
-       "Stop": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex stop" }] }]
+       "PreToolUse": [{ "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }],
+       "PreCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointprecompact" }] }],
+       "PostCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointpostcompact" }] }],
+       "SessionStart": [{ "matcher": "^compact$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointsessionstart", "additionalContextLimit": 1500 }] }]
      }
    }
    ```
 
-   `PreToolUse` enforces deny/block routing today and is prepared for input rewrites once Codex supports them. `PostToolUse` captures session events. `PreCompact` builds the resume snapshot before compaction. `SessionStart` restores state after compaction. `UserPromptSubmit` captures user decisions and corrections. `Stop` records turn-end state.
+   `PreToolUse` enforces deny/block routing today and is prepared for input rewrites once Codex supports them. `PreCompact`, `PostCompact`, and `SessionStart(compact)` retain same-session checkpoint recovery. The default profile does not intercept external MCP tools or register generic `PostToolUse`, ordinary `SessionStart`, `UserPromptSubmit`, or `Stop` hooks. Use `context-mode observability enable` only when additional local session capture is needed; it adds hook-panel entries and local state writes.
 
-   > **Note:** Codex PreToolUse routing currently supports deny rules only (blocks dangerous commands). It still needs upstream `updatedInput` support before context-mode can rewrite tool input; track [openai/codex#18491](https://github.com/openai/codex/issues/18491). Context injection (`additionalContext`) is not supported in Codex PreToolUse — it works via PostToolUse and SessionStart instead. This is handled automatically.
+   > **Note:** Codex PreToolUse routing currently supports deny rules only (blocks dangerous commands). It still needs upstream `updatedInput` support before context-mode can rewrite tool input; track [openai/codex#18491](https://github.com/openai/codex/issues/18491). Context injection (`additionalContext`) is not supported in Codex PreToolUse. The default profile restores checkpoint state through `SessionStart(compact)`; optional observability also enables PostToolUse capture.
    >
    > `PreCompact` support is runtime-gated: it is present in Codex CLI 0.130.0, while the public Codex hooks docs may lag the shipped hook-event list. Older Codex builds that do not emit `PreCompact` will not create pre-compaction snapshots.
 
@@ -694,7 +692,7 @@ The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
 <details>
 <summary><strong>Kimi Code</strong> — MCP + hooks (TOML config, same JSON wire protocol as Codex)</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Kimi Code CLI installed.
+**Prerequisites:** Node.js or Bun, Kimi Code CLI installed.
 
 1. Install context-mode:
 
@@ -773,7 +771,7 @@ Full documentation: [`docs/adapters/kimi-code.md`](docs/adapters/kimi-code.md)
 <details>
 <summary><strong>Qwen Code</strong> — MCP + hooks (identical wire protocol to Claude Code)</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Qwen Code installed (`npm install -g @qwen-code/qwen-code`).
+**Prerequisites:** Node.js or Bun, Qwen Code installed (`npm install -g @qwen-code/qwen-code`).
 
 1. Install context-mode:
 
@@ -829,7 +827,7 @@ Full documentation: [`docs/adapters/kimi-code.md`](docs/adapters/kimi-code.md)
 
 > This is the Antigravity **desktop IDE**. For the `agy` **command-line tool**, see **Antigravity CLI (`agy`)** below — it installs as a full plugin with hooks.
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), the Antigravity IDE installed.
+**Prerequisites:** Node.js or Bun, the Antigravity IDE installed.
 
 **Install:**
 
@@ -872,7 +870,7 @@ Full configs: [`configs/antigravity/mcp_config.json`](configs/antigravity/mcp_co
 
 > The `agy` **command-line tool**, not the Antigravity desktop IDE above.
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Antigravity CLI (`agy`) **≥ 1.0.7** (`agy update` to upgrade). Verified on agy 1.0.10.
+**Prerequisites:** Node.js or Bun, Antigravity CLI (`agy`) **≥ 1.0.7** (`agy update` to upgrade). Verified on agy 1.0.10.
 
 **Install:**
 
@@ -898,7 +896,7 @@ Restart `agy`.
 <details>
 <summary><strong>Kiro</strong> — hooks with steering file</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Kiro with MCP enabled (Settings > search "MCP").
+**Prerequisites:** Node.js or Bun, Kiro with MCP enabled (Settings > search "MCP").
 
 **Install:**
 
@@ -956,7 +954,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>Zed</strong> — MCP-only, no hooks</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Zed installed.
+**Prerequisites:** Node.js or Bun, Zed installed.
 
 **Install:**
 
@@ -999,7 +997,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>Pi Coding Agent</strong> — extension with full hook support</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Pi Coding Agent installed.
+**Prerequisites:** Node.js or Bun, Pi Coding Agent installed.
 
 **Install:**
 
@@ -1046,7 +1044,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>OMP (Oh My Pi)</strong> — plugin with full hook support</summary>
 
-**Prerequisites:** Node.js >= 22.5 (or Bun), Oh My Pi installed.
+**Prerequisites:** Node.js or Bun, Oh My Pi installed.
 
 **Install — plugin path (recommended):**
 
@@ -1123,7 +1121,7 @@ Full configs: [`configs/omp/mcp.json`](configs/omp/mcp.json) | [`configs/omp/SYS
 
 Context Mode uses [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) on Node.js, which ships prebuilt native binaries for most platforms. On glibc >= 2.31 systems (Ubuntu 20.04+, Debian 11+, Fedora 34+, macOS, Windows), `npm install` works without any build tools.
 
-**Linux + Node.js >= 22.5:** Context Mode automatically uses the built-in `node:sqlite` module instead of `better-sqlite3`. This eliminates the native addon entirely, avoiding [sporadic SIGSEGV crashes](https://github.com/nodejs/node/issues/62515) caused by V8's `madvise(MADV_DONTNEED)` corrupting the addon's `.got.plt` section on Linux. No configuration needed — detection is automatic. **Linux + Node < 22.5 is unsupported** ([#564](https://github.com/mksglu/context-mode/issues/564)) — `npm install` will fail with remediation instructions.
+**SQLite runtime selection:** Context Mode uses Bun's built-in SQLite when running under Bun, and prefers Node's built-in `node:sqlite` when the host provides an FTS5-capable implementation. Other runtimes use the bundled `better-sqlite3` fallback when its native binding is available. Installation does not enforce a Node or Codex version; use a current runtime for the best native SQLite path.
 
 **Bun users:** No native compilation needed. Context Mode automatically detects Bun and uses the built-in `bun:sqlite` module via a compatibility adapter. `better-sqlite3` and all its build dependencies are skipped entirely.
 
@@ -1185,7 +1183,7 @@ When output exceeds 5 KB and an `intent` is provided, Context Mode switches to i
 
 ## How the Knowledge Base Works
 
-The `ctx_index` tool chunks markdown content by headings while keeping code blocks intact, then stores them in a **SQLite FTS5** (Full-Text Search 5) virtual table. The SQLite backend is selected automatically at runtime: `bun:sqlite` on Bun, `node:sqlite` on Node.js >= 22.5, and `better-sqlite3` everywhere else. Search uses **BM25 ranking** — a probabilistic relevance algorithm that scores documents based on term frequency, inverse document frequency, and document length normalization. **Porter stemming** is applied at index time so "running", "runs", and "ran" match the same stem. Titles and headings are weighted **5x** in BM25 scoring for precise navigational queries.
+The `ctx_index` tool chunks markdown content by headings while keeping code blocks intact, then stores them in a **SQLite FTS5** (Full-Text Search 5) virtual table. The SQLite backend is selected automatically at runtime: `bun:sqlite` on Bun, an FTS5-capable `node:sqlite` when available, and `better-sqlite3` as the compatibility fallback. Search uses **BM25 ranking** — a probabilistic relevance algorithm that scores documents based on term frequency, inverse document frequency, and document length normalization. **Porter stemming** is applied at index time so "running", "runs", and "ran" match the same stem. Titles and headings are weighted **5x** in BM25 scoring for precise navigational queries.
 
 When you call `ctx_search`, it returns relevant content snippets focused around matching query terms — not full documents, not approximations, the actual indexed content with smart extraction around what you're looking for. `ctx_fetch_and_index` extends this to URLs: fetch, convert HTML to markdown, chunk, index. The raw page never enters context. Use the `contentType` parameter to filter results by type (e.g. `code` or `prose`).
 
@@ -1351,7 +1349,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 
 **OpenClaw / Pi Agent** — High coverage. All tool lifecycle hooks (`after_tool_call`, `before_compaction`, `session_start`) fire via the native gateway plugin. User decisions aren't captured but file edits, git ops, errors, and tasks are fully tracked. Falls back to DB snapshot reconstruction if compaction hooks fail on older gateway versions. See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md).
 
-**Codex CLI** — MCP active, hooks require `[features].hooks = true`. Hook scripts (PreToolUse, PostToolUse, PreCompact, SessionStart, UserPromptSubmit, Stop) are implemented and tested; `PreCompact` remains runtime-gated on Codex builds that emit the event. PreToolUse deny routing works; input rewriting still depends on upstream `updatedInput` support ([openai/codex#18491](https://github.com/openai/codex/issues/18491)).
+**Codex CLI** — MCP active, hooks require `[features].hooks = true`. The default profile keeps native routing plus `PreCompact`, `PostCompact`, and `SessionStart(compact)` for same-session recovery. Optional observability enables additional session hooks. `PreCompact` remains runtime-gated on Codex builds that emit the event. PreToolUse deny routing works; input rewriting still depends on upstream `updatedInput` support ([openai/codex#18491](https://github.com/openai/codex/issues/18491)).
 
 **Antigravity** — No session support. No hooks, no event capture. Requires manually copying `GEMINI.md` to your project root. Auto-detected via MCP protocol handshake (`clientInfo.name`).
 

@@ -328,7 +328,7 @@ describe("AntigravityCliAdapter", () => {
             { matcher: "run_command|view_file|grep_search|web_fetch|read_url_content", hooks: [{ type: "command", command: "context-mode hook antigravity-cli pretooluse" }] },
           ],
           PostToolUse: [
-            { matcher: "", hooks: [{ type: "command", command: "context-mode hook antigravity-cli posttooluse" }] },
+            { matcher: "run_command|view_file|grep_search|web_fetch|read_url_content", hooks: [{ type: "command", command: "context-mode hook antigravity-cli posttooluse" }] },
           ],
         },
       }),
@@ -386,6 +386,7 @@ describe("configs/antigravity-cli — agy plugin bundle", () => {
     expect(pre?.hooks?.[0]?.command).toBe("context-mode hook antigravity-cli pretooluse");
     expect(post?.type).toBe("command");
     expect(post?.command).toBe("context-mode hook antigravity-cli posttooluse");
+    expect(hooks.hooks?.PostToolUse?.[0]?.matcher).toBe("run_command|view_file|grep_search|web_fetch|read_url_content");
     expect(stop?.type).toBe("command");
     expect(stop?.command).toBe("context-mode hook antigravity-cli stop");
     // Do not over-map invocation hooks until agy payload/response semantics are verified.

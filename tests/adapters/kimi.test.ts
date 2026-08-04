@@ -216,7 +216,7 @@ describe("KimiAdapter", () => {
       expect(config).toHaveProperty("Stop");
       expect(config.PreToolUse[0]?.matcher).toContain("Bash");
       expect(config.PreToolUse[0]?.matcher).toContain("ctx_execute");
-      expect(config.PreToolUse[0]?.matcher).toMatch(/(^|\|)mcp__$/);
+      expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)mcp__$/);
       expect(config.SessionEnd[0]?.hooks[0]?.command).toBe("context-mode hook kimi sessionend");
       expect(config.Stop[0]?.hooks[0]?.command).toBe("context-mode hook kimi stop");
     });

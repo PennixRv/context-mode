@@ -81,9 +81,7 @@ describe("Routing: Subagents (Agent only — Task removed per #241)", () => {
 
   it("Agent block omits the ToolSearch bootstrap on platforms without deferred tools (#724)", () => {
     const decision = routePreToolUse("Agent", { prompt: "test" }, "/test", "codex");
-    const prompt = decision.updatedInput.prompt;
-    expect(prompt).not.toContain("deferred_tool_bootstrap");
-    expect(prompt).not.toContain("ToolSearch");
+    expect(decision).toBeNull();
   });
 
   it("Task tool is NOT routed — returns null (passthrough) (#241)", () => {
@@ -177,12 +175,12 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     resetGuidanceThrottle(SID);
     expect(routePreToolUse("Bash", { command: "ls -la /etc" }, "/test", "claude-code", SID)).toBeNull();
     resetGuidanceThrottle(SID);
-    // ls -R could flood — must still nudge
+    // Recursive ls is outside the positive managed grammar and passes through.
     const lsR = routePreToolUse("Bash", { command: "ls -R /" }, "/test", "claude-code", SID);
-    expect(lsR?.action).toBe("context");
+    expect(lsR).toBeNull();
     resetGuidanceThrottle(SID);
     const lsLong = routePreToolUse("Bash", { command: "ls --recursive" }, "/test", "claude-code", SID);
-    expect(lsLong?.action).toBe("context");
+    expect(lsLong).toBeNull();
   });
 
   it("unbounded commands still get the nudge", () => {
@@ -190,7 +188,6 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
       "find /",
       "cat /var/log/syslog",
       "grep -r foo /etc",
-      "ps aux",
       "git log",      // no -<N> bound
       "git diff",     // raw diff can be huge
     ]) {
@@ -200,7 +197,7 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     }
   });
 
-  it("safe command + shell control operator → still nudged (composition risk)", () => {
+  it("safe command + shell control operator passes through", () => {
     // A pipe, redirect, command substitution, or chain can attach an
     // unbounded sink to an otherwise-safe command. The allowlist must
     // refuse to short-circuit these — otherwise users can wrap floods
@@ -224,11 +221,11 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+      expect(decision, `expected passthrough for ${command}`).toBeNull();
     }
   });
 
-  it("cp / mv / rm with -v / --verbose → still nudged (verbose floods on big trees)", () => {
+  it("cp / mv / rm with -v / --verbose passes through", () => {
     // The "silent on success" invariant of cp/mv/rm only holds without -v.
     // Verbose flag prints one line per file, which can flood on big trees
     // (recursive copy of /etc, mass rename, etc.).
@@ -255,7 +252,7 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+      expect(decision, `expected passthrough for ${command}`).toBeNull();
     }
   });
 
@@ -322,7 +319,7 @@ describe("Bash structurally-bounded allowlist: extended commands (#517)", () => 
     }
   });
 
-  it("regression guard — operator composition still trips on new commands", () => {
+  it("regression guard — operator composition passes through", () => {
     // Defense-in-depth (#470): the SHELL_CONTROL_OPERATORS gate must still
     // disqualify any of the new #517 commands when composed with an
     // unbounded sink (pipe, redirect, &&, ;, single &, $(...), heredoc-less
@@ -340,7 +337,7 @@ describe("Bash structurally-bounded allowlist: extended commands (#517)", () => 
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${JSON.stringify(command)}`).toBe("context");
+      expect(decision, `expected passthrough for ${JSON.stringify(command)}`).toBeNull();
     }
   });
 
@@ -364,7 +361,7 @@ describe("Bash structurally-bounded allowlist: extended commands (#517)", () => 
     ]) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+      expect(decision, `expected passthrough for ${command}`).toBeNull();
     }
   });
 });
@@ -389,7 +386,7 @@ describe("Bash structurally-bounded allowlist: newline injection (#470)", () => 
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${JSON.stringify(command)}`).toBe("context");
+      expect(decision, `expected passthrough for ${JSON.stringify(command)}`).toBeNull();
     }
   });
 
@@ -402,7 +399,7 @@ describe("Bash structurally-bounded allowlist: newline injection (#470)", () => 
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
-      expect(decision?.action, `expected nudge for ${JSON.stringify(command)}`).toBe("context");
+      expect(decision, `expected passthrough for ${JSON.stringify(command)}`).toBeNull();
     }
   });
 
@@ -452,9 +449,7 @@ describe("Bash nudge size threshold (#817)", () => {
   });
 
   it("default (unset): short unbounded command STILL nudges — no behavior change", () => {
-    // Regression guard: without the env var, nothing changes. `ps` is short and
-    // unbounded — it must keep getting the nudge so the default stays safe.
-    const decision = routePreToolUse("Bash", { command: "ps" }, "/test", "claude-code", SID);
+    const decision = routePreToolUse("Bash", { command: "find /" }, "/test", "claude-code", SID);
     expect(decision?.action).toBe("context");
   });
 
@@ -488,7 +483,7 @@ describe("Bash nudge size threshold (#817)", () => {
     for (const bad of ["0", "-5", "abc", ""]) {
       resetGuidanceThrottle(SID);
       process.env[ENV] = bad;
-      const decision = routePreToolUse("Bash", { command: "ps" }, "/test", "claude-code", SID);
+      const decision = routePreToolUse("Bash", { command: "find /" }, "/test", "claude-code", SID);
       expect(decision?.action, `env="${bad}" should behave as default`).toBe("context");
     }
   });

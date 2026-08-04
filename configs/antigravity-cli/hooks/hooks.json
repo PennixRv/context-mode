@@ -13,7 +13,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "",
+        "matcher": "run_command|view_file|grep_search|web_fetch|read_url_content",
         "hooks": [
           {
             "type": "command",

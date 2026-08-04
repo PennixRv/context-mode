@@ -9,6 +9,7 @@ import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectD
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
+import { isExternalMcpToolName } from "../core/external-mcp.mjs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
@@ -31,6 +32,10 @@ function normalizeToolName(toolName) {
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
+  if (isExternalMcpToolName(input.tool_name)) {
+    process.stdout.write(JSON.stringify({ additional_context: "" }) + "\n");
+    process.exit(0);
+  }
   const projectDir = getInputProjectDir(input, CURSOR_OPTS);
 
   if (projectDir && !process.env.CURSOR_CWD) {

@@ -2311,7 +2311,7 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
         "Directory-only: allowed file extensions (default: .md .mdx .txt .json .yaml .yml .ts .tsx .js .jsx .py .rs .go .sh).",
       ),
       respectGitignore: z.boolean().optional().describe(
-        "Directory-only: apply nearest .gitignore (default: true).",
+        "Directory-only compatibility option. Git-ignored tool/runtime paths, hidden paths, .trellis/, and .codegraph/ remain excluded regardless of this value.",
       ),
       followSymlinks: z.boolean().optional().describe(
         "Directory-only: follow directory symlinks (default: false — cycle hazard + escape risk).",

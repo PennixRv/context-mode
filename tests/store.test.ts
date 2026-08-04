@@ -7,8 +7,17 @@
 
 import { describe, test, expect } from "vitest";
 import { strict as assert } from "node:assert";
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
+import { dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -2109,6 +2118,64 @@ describe("ctx_index TOCTOU symlink swap (#442 round-3)", () => {
       store.close();
     } finally {
       try { fsSync.unlinkSync(safePath); } catch { /* ignore */ }
+    }
+  });
+});
+
+describe("ContentStore source path isolation", () => {
+  test("rejects direct protected, hidden, and Git-ignored file paths", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ctx-store-isolation-"));
+    const store = createStore();
+    const protectedPath = join(rootDir, ".trellis", "runtime.md");
+    const codegraphPath = join(rootDir, ".codegraph", "runtime.md");
+    const hiddenPath = join(rootDir, ".hidden", "runtime.md");
+    const ignoredPath = join(rootDir, "runtime.md");
+
+    try {
+      execFileSync("git", ["init", "-q", rootDir]);
+      mkdirSync(join(rootDir, ".trellis"), { recursive: true });
+      mkdirSync(join(rootDir, ".codegraph"), { recursive: true });
+      mkdirSync(join(rootDir, ".hidden"), { recursive: true });
+      writeFileSync(join(rootDir, ".gitignore"), "runtime.md\n");
+      writeFileSync(protectedPath, "# protected\n");
+      writeFileSync(codegraphPath, "# codegraph\n");
+      writeFileSync(hiddenPath, "# hidden\n");
+      writeFileSync(ignoredPath, "# ignored\n");
+
+      for (const path of [
+        relative(process.cwd(), protectedPath),
+        codegraphPath,
+        hiddenPath,
+        relative(process.cwd(), ignoredPath),
+      ]) {
+        expect(() => store.index({ content: "# supplied content", path })).toThrow(
+          /refusing to index/,
+        );
+      }
+
+      expect(store.getStats().sources).toBe(0);
+    } finally {
+      store.close();
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("removes a source when stale refresh discovers a new Git ignore rule", () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ctx-store-stale-isolation-"));
+    const store = createStore();
+    const sourcePath = join(rootDir, "runtime.md");
+
+    try {
+      execFileSync("git", ["init", "-q", rootDir]);
+      writeFileSync(sourcePath, "# Runtime\n\nThis must not remain searchable.\n");
+      store.index({ path: sourcePath, source: "runtime-source" });
+
+      writeFileSync(join(rootDir, ".gitignore"), "runtime.md\n");
+      expect(store.searchWithFallback("must not remain searchable", 3)).toEqual([]);
+      expect(store.getSourceMeta("runtime-source")).toBeNull();
+    } finally {
+      store.close();
+      rmSync(rootDir, { recursive: true, force: true });
     }
   });
 });

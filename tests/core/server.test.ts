@@ -5589,7 +5589,7 @@ describe("hook routing prompt-surface contract (#683 ADR-0002 + ADR-0003)", () =
   // is CASE B (exempt). String segments are extracted naively from the
   // source by walking forward from each return statement and capturing the
   // template-literal payload up to the closing backtick — sufficient for
-  // the four current call sites (L707, L738, L751, L804) and any future
+  // the current curl/wget, inline HTTP, and WebFetch call sites and any future
   // ones a contributor adds.
   describe("ADR-0003 CASE A: routing.mjs redirect deny reasons", () => {
     type CaseAString = { lineNo: number; payload: string };
@@ -5606,7 +5606,7 @@ describe("hook routing prompt-surface contract (#683 ADR-0002 + ADR-0003)", () =
         const trimmed = ln.replace(/^\s+/, "");
         if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
         // Require BOTH "redirected" AND a template-literal backtick
-        // (current shape for L707/738/751/804). CASE B strings use the
+        // (current redirect shape). CASE B strings use the
         // `Blocked by security policy: …` form and are excluded.
         if (
           /redirected/i.test(ln) &&
@@ -5621,11 +5621,12 @@ describe("hook routing prompt-surface contract (#683 ADR-0002 + ADR-0003)", () =
 
     const caseAs = extractCaseAStrings(routingMjs);
 
-    test("at least 4 CASE A redirect strings present (sanity check on extractor)", () => {
-      // Current corpus: L707 curl/wget, L738 inline HTTP, L751 build tools,
-      // L804 WebFetch. If a contributor removes one, the count drops and
+    test("at least 3 CASE A redirect strings present (sanity check on extractor)", () => {
+      // Current corpus: curl/wget, inline HTTP, WebFetch. Build-tool redirects
+      // are deliberately absent because workflow CLIs now pass through. If a
+      // contributor removes one remaining redirect, the count drops and
       // this sanity check forces the test author to revisit the extractor.
-      expect(caseAs.length).toBeGreaterThanOrEqual(4);
+      expect(caseAs.length).toBeGreaterThanOrEqual(3);
     });
 
     for (const cs of caseAs) {
@@ -5643,7 +5644,7 @@ describe("hook routing prompt-surface contract (#683 ADR-0002 + ADR-0003)", () =
 
         test("MUST name at least one ctx_* alternative tool", () => {
           // ADR-0003 §CASE A: "MUST specify the alternative tool to use."
-          // The current four sites all name ctx_execute and/or
+          // The current sites all name ctx_execute and/or
           // ctx_fetch_and_index — we just enforce that SOMETHING ctx_*
           // is mentioned so the agent has a concrete next call.
           expect(cs.payload).toMatch(/ctx_(execute|fetch_and_index|search|batch_execute)/);

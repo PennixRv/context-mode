@@ -10,7 +10,6 @@ import {
   PRE_TOOL_USE_MATCHERS,
   POST_TOOL_USE_MATCHERS,
   POST_TOOL_USE_MATCHER_PATTERN,
-  EXTERNAL_MCP_MATCHER_PATTERN,
 } from "../../src/adapters/claude-code/hooks.js";
 
 describe("ClaudeCodeAdapter", () => {
@@ -785,35 +784,34 @@ describe("ClaudeCodeAdapter", () => {
       expect(PRE_TOOL_USE_MATCHERS).toContain("Agent");
     });
 
-    // ── External MCP routing (#529) ─────────────────────
-    it("PRE_TOOL_USE_MATCHERS contains EXTERNAL_MCP_MATCHER_PATTERN (#529)", () => {
-      expect(PRE_TOOL_USE_MATCHERS).toContain(EXTERNAL_MCP_MATCHER_PATTERN);
+    // ── External MCP isolation (#529) ───────────────────
+    it("PRE_TOOL_USE_MATCHERS excludes external MCP catch-all", () => {
+      expect(PRE_TOOL_USE_MATCHERS).not.toContain("mcp__");
     });
 
-    it("EXTERNAL_MCP_MATCHER_PATTERN is the literal `mcp__` substring (#529, #547 hotfix)", () => {
+    it("external MCP names remain identifiable without registering a matcher", () => {
       // v1.0.124 used `mcp__(?!plugin_context-mode_)` — the same hooks.json
       // is bundled to Codex CLI whose Rust `regex` crate rejects look-around
       // at boot. v1.0.125 drops the lookaround on both adapters; the hook
       // BODY (`isExternalMcpTool()` in hooks/core/routing.mjs) filters
       // context-mode's own MCP tools, so semantics are preserved.
-      expect(EXTERNAL_MCP_MATCHER_PATTERN).toBe("mcp__");
-      expect(EXTERNAL_MCP_MATCHER_PATTERN).toMatch(/^[A-Za-z0-9_|]+$/);
+      expect("mcp__").toMatch(/^[A-Za-z0-9_|]+$/);
 
       // Substring semantics: every external MCP tool name starts with `mcp__`.
-      expect("mcp__slack__list_channels".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(true);
-      expect("mcp__plugin_telegram__list_messages".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(true);
+      expect("mcp__slack__list_channels".startsWith("mcp__")).toBe(true);
+      expect("mcp__plugin_telegram__list_messages".startsWith("mcp__")).toBe(true);
       // Bare non-MCP tool names do not contain the prefix.
-      expect("Bash".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(false);
-      expect("Read".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(false);
+      expect("Bash".startsWith("mcp__")).toBe(false);
+      expect("Read".startsWith("mcp__")).toBe(false);
     });
 
-    it("generateHookConfig includes the external MCP matcher entry (#529)", () => {
+    it("generateHookConfig excludes the external MCP matcher entry", () => {
       const config = adapter.generateHookConfig("/some/plugin/root") as Record<
         string,
         Array<{ matcher: string }>
       >;
       const matchers = config.PreToolUse.map((entry) => entry.matcher);
-      expect(matchers).toContain(EXTERNAL_MCP_MATCHER_PATTERN);
+      expect(matchers).not.toContain("mcp__");
       // Must match the canonical list 1:1 — no drift between adapter source and
       // the runtime config object.
       expect(matchers).toEqual([...PRE_TOOL_USE_MATCHERS]);
@@ -1042,7 +1040,7 @@ describe("ClaudeCodeAdapter", () => {
       expect(jsonMatchers).toEqual([...PRE_TOOL_USE_MATCHERS]);
     });
 
-    it("hooks/hooks.json external MCP entry wires to pretooluse.mjs (#529)", () => {
+    it("hooks/hooks.json does not register an external MCP entry", () => {
       const repoRoot = resolve(__dirname, "..", "..");
       const hooksJsonPath = join(repoRoot, "hooks", "hooks.json");
       const parsed = JSON.parse(readFileSync(hooksJsonPath, "utf8")) as {
@@ -1054,15 +1052,9 @@ describe("ClaudeCodeAdapter", () => {
         };
       };
       const entry = parsed.hooks.PreToolUse.find(
-        (e) => e.matcher === EXTERNAL_MCP_MATCHER_PATTERN,
+        (e) => e.matcher === "mcp__",
       );
-      expect(entry, "external-MCP matcher entry missing from hooks.json").toBeDefined();
-      expect(entry!.hooks).toHaveLength(1);
-      expect(entry!.hooks[0].type).toBe("command");
-      // The runtime hook must point at the PreToolUse handler — losing this
-      // wiring would silently disable external-MCP routing even though the
-      // matcher is still present.
-      expect(entry!.hooks[0].command).toContain("pretooluse.mjs");
+      expect(entry, "external-MCP matcher must not be registered").toBeUndefined();
     });
 
     it("hooks/hooks.json registers Stop for Claude Code turn-end capture", () => {
@@ -1091,7 +1083,6 @@ describe("ClaudeCodeAdapter", () => {
         "TodoWrite", "TaskCreate", "TaskUpdate",
         "EnterPlanMode", "ExitPlanMode",
         "Skill", "Agent", "AskUserQuestion", "EnterWorktree",
-        "mcp__",
       ];
       for (const tool of required) {
         expect(POST_TOOL_USE_MATCHERS).toContain(tool);

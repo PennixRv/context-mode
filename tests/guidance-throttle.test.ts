@@ -32,11 +32,10 @@ describe("guidance throttle", () => {
   });
 
   it("Bash: first call returns guidance, second returns null", () => {
-    // npm install / find are unbounded — the structurally-bounded allowlist
-    // (#463) does NOT short-circuit them, so the throttle semantics still
-    // apply: guidance once, then null.
-    const r1 = routePreToolUse("Bash", { command: "npm install" }, PROJECT_DIR);
-    const r2 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
+    // The positive managed grammar routes data reads/searches only. The
+    // throttle remains one-shot within that grammar.
+    const r1 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
+    const r2 = routePreToolUse("Bash", { command: "rg TODO src" }, PROJECT_DIR);
 
     expect(r1?.action).toBe("context");
     expect(r2).toBeNull();
@@ -52,10 +51,7 @@ describe("guidance throttle", () => {
 
   it("throttle is per-type: Read throttle does not affect Bash or Grep", () => {
     const read1 = routePreToolUse("Read", { file_path: "/tmp/a.ts" }, PROJECT_DIR);
-    // Use unbounded commands so the #463 allowlist does not short-circuit
-    // the bash branch — we are validating per-type throttle independence,
-    // not the allowlist itself.
-    const bash1 = routePreToolUse("Bash", { command: "npm install" }, PROJECT_DIR);
+    const bash1 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
     const grep1 = routePreToolUse("Grep", { pattern: "foo" }, PROJECT_DIR);
 
     // All first calls return guidance
@@ -65,7 +61,7 @@ describe("guidance throttle", () => {
 
     // All second calls return null
     const read2 = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR);
-    const bash2 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
+    const bash2 = routePreToolUse("Bash", { command: "rg TODO src" }, PROJECT_DIR);
     const grep2 = routePreToolUse("Grep", { pattern: "bar" }, PROJECT_DIR);
 
     expect(read2).toBeNull();
@@ -119,13 +115,11 @@ describe("guidance throttle", () => {
     expect(r2).toBeNull();
   });
 
-  it("Bash passthrough returns null after guidance throttled (not context)", () => {
-    // Use unbounded commands so the #463 allowlist does not interfere —
-    // this test pins post-throttle null-vs-context, not allowlist behavior.
-    const r1 = routePreToolUse("Bash", { command: "npm install" }, PROJECT_DIR);
+  it("Bash managed route returns null after guidance is throttled", () => {
+    const r1 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
     expect(r1?.action).toBe("context");
 
-    const r2 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
+    const r2 = routePreToolUse("Bash", { command: "rg TODO src" }, PROJECT_DIR);
     expect(r2).toBeNull();
   });
 
@@ -209,8 +203,7 @@ describe("guidance throttle", () => {
       try { fs.writeFileSync(path.resolve(ppidDir, "bash"), "", "utf-8"); } catch {}
 
       // A sessionId-scoped call should NOT see the ppid marker — different namespace.
-      // Use an unbounded command so the #463 allowlist does not short-circuit it.
-      const r = routePreToolUse("Bash", { command: "npm install" }, PROJECT_DIR, "claude-code", SESSION_A);
+      const r = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR, "claude-code", SESSION_A);
       expect(r?.action).toBe("context");
     });
 

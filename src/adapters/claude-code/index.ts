@@ -45,6 +45,7 @@ import {
   REQUIRED_HOOKS,
   PRE_TOOL_USE_MATCHERS,
   PRE_TOOL_USE_MATCHER_PATTERN,
+  POST_TOOL_USE_MATCHER_PATTERN,
   isContextModeHook,
   isAnyContextModeHook,
   extractHookScriptPath,
@@ -141,7 +142,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
       })),
       PostToolUse: [
         {
-          matcher: "",
+          matcher: POST_TOOL_USE_MATCHER_PATTERN,
           hooks: [
             {
               type: "command",

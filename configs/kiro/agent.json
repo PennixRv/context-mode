@@ -4,13 +4,13 @@
   "hooks": {
     "preToolUse": [
       {
-        "matcher": "execute_bash|fs_read|@context-mode/ctx_execute|@context-mode/ctx_execute_file|@context-mode/ctx_batch_execute|@(?!context-mode/)",
+        "matcher": "execute_bash|fs_read|@context-mode/ctx_execute|@context-mode/ctx_execute_file|@context-mode/ctx_batch_execute",
         "command": "context-mode hook kiro pretooluse"
       }
     ],
     "postToolUse": [
       {
-        "matcher": "*",
+        "matcher": "execute_bash|fs_read|@context-mode/ctx_execute|@context-mode/ctx_execute_file|@context-mode/ctx_batch_execute",
         "command": "context-mode hook kiro posttooluse"
       }
     ]

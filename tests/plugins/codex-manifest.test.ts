@@ -146,10 +146,34 @@ describe(".codex-plugin/hooks.json", () => {
     expect(hooks.hooks.PreCompact?.[0]?.hooks[0]?.command).toContain("checkpoint-precompact.mjs");
     expect(hooks.hooks.PostCompact?.[0]?.matcher).toBe("^(manual|auto)$");
     expect(hooks.hooks.PostCompact?.[0]?.hooks[0]?.command).toContain("checkpoint-postcompact.mjs");
-    expect(hooks.hooks.SessionStart?.[0]?.matcher).toBe("^(startup|resume|clear)$");
-    expect(hooks.hooks.SessionStart?.[1]?.matcher).toBe("^compact$");
-    expect(hooks.hooks.SessionStart?.[1]?.hooks[0]?.command).toContain("checkpoint-sessionstart.mjs");
-    expect(hooks.hooks.SessionStart?.[1]?.hooks[0]?.additionalContextLimit).toBe(1500);
+    expect(hooks.hooks.SessionStart?.[0]?.matcher).toBe("^compact$");
+    expect(hooks.hooks.SessionStart?.[0]?.hooks[0]?.command).toContain("checkpoint-sessionstart.mjs");
+    expect(hooks.hooks.SessionStart?.[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
+  });
+
+  it("ships only the statically low-noise default hook profile", () => {
+    expect(Object.keys(hooks.hooks).sort()).toEqual([
+      "PostCompact",
+      "PreCompact",
+      "PreToolUse",
+      "SessionStart",
+    ]);
+    expect(hooks.hooks.PostToolUse).toBeUndefined();
+    expect(hooks.hooks.UserPromptSubmit).toBeUndefined();
+    expect(hooks.hooks.Stop).toBeUndefined();
+
+    const preToolMatcher = hooks.hooks.PreToolUse?.[0]?.matcher ?? "";
+    expect(preToolMatcher).not.toContain("mcp__");
+    expect(preToolMatcher).not.toContain("Agent");
+    expect(preToolMatcher).toContain("ctx_execute");
+
+    const commands = Object.values(hooks.hooks)
+      .flatMap((groups) => groups)
+      .flatMap((group) => group.hooks)
+      .map((hook) => hook.command)
+      .join("\n");
+    expect(commands).not.toContain("posttooluse.mjs");
+    expect(commands).not.toContain("checkpoint-posttooluse.mjs");
   });
 });
 

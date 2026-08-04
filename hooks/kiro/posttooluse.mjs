@@ -12,6 +12,7 @@ import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectD
 import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isExternalMcpToolName } from "../core/external-mcp.mjs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
@@ -20,6 +21,7 @@ const OPTS = KIRO_OPTS;
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
+  if (isExternalMcpToolName(input.tool_name)) process.exit(0);
 
   const { extractEvents } = await loadExtract();
   const { resolveProjectAttributions } = await loadProjectAttribution();

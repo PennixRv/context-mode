@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Shell|Read|Edit|Write|WebFetch|Agent|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__",
+        "matcher": "Bash|Shell|Read|Edit|Write|WebFetch|Agent|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index",
         "hooks": [
           { "type": "command", "command": "context-mode hook kimi pretooluse" }
         ]
@@ -10,6 +10,7 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash|Shell|Read|Edit|Write|WebFetch|Agent|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index",
         "hooks": [
           { "type": "command", "command": "context-mode hook kimi posttooluse" }
         ]

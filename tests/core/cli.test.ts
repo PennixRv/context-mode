@@ -3084,7 +3084,7 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(hookMap).toContain('"codex"');
   });
 
-  test("codex HOOK_MAP has all Codex hook dispatches", () => {
+  test("codex HOOK_MAP retains default and explicit optional-profile dispatches", () => {
     const mapStart = CLI_SOURCE.indexOf("const HOOK_MAP");
     const mapEnd = CLI_SOURCE.indexOf("};", mapStart) + 2;
     const hookMap = CLI_SOURCE.slice(mapStart, mapEnd);
@@ -3102,6 +3102,25 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(codexBlock).toContain("checkpointpostcompact");
     expect(codexBlock).toContain("checkpointsessionstart");
     expect(codexBlock).toContain("checkpointuserpromptsubmit");
+    expect(codexBlock).toContain("observabilityposttooluse");
+    expect(codexBlock).toContain("observabilitycheckpointposttooluse");
+    expect(codexBlock).toContain("observabilitysessionstart");
+    expect(codexBlock).toContain("observabilityuserpromptsubmit");
+    expect(codexBlock).toContain("observabilitycheckpointuserpromptsubmit");
+    expect(codexBlock).toContain("observabilitystop");
+  });
+
+  test("optional observability aliases dispatch to the existing capture handlers", () => {
+    const mapStart = CLI_SOURCE.indexOf("const HOOK_MAP");
+    const mapEnd = CLI_SOURCE.indexOf("};", mapStart) + 2;
+    const hookMap = CLI_SOURCE.slice(mapStart, mapEnd);
+    const codexStart = hookMap.indexOf('"codex"');
+    const codexEnd = hookMap.indexOf("}", codexStart + 10) + 1;
+    const codexBlock = hookMap.slice(codexStart, codexEnd);
+    expect(codexBlock).toMatch(/observabilityposttooluse:\s*"hooks\/codex\/posttooluse\.mjs"/);
+    expect(codexBlock).toMatch(/observabilitycheckpointposttooluse:\s*"hooks\/codex\/checkpoint-posttooluse\.mjs"/);
+    expect(codexBlock).toMatch(/observabilitysessionstart:\s*"hooks\/codex\/sessionstart\.mjs"/);
+    expect(codexBlock).toMatch(/observabilitystop:\s*"hooks\/codex\/stop\.mjs"/);
   });
 
   test("codex hooks point to dedicated hooks/codex/ directory", () => {
@@ -3723,13 +3742,8 @@ describe("better-sqlite3 binding self-heal (#408)", () => {
   });
 });
 
-// ── Issue #564 — docs sync to hasModernSqlite() source of truth ────────
-// README and docs/platform-support.md historically promised "Node 18+"
-// (9 spots in README) and "Node >= 22.13" (platform-support), while the
-// runtime gate (`hasModernSqlite()` in src/db-base.ts:226-244) uses 22.5.
-// Three numbers, three contracts. v1.0.132 collapses them to one — the
-// runtime gate is the canonical source.
-describe("Issue #564 — docs match hasModernSqlite() source of truth", () => {
+// ── Runtime-version-neutral documentation contract ───────────────────────
+describe("runtime-version-neutral documentation", () => {
   const DB_BASE_SRC = readFileSync(resolve(ROOT, "src", "db-base.ts"), "utf-8");
 
   it("src/db-base.ts hasModernSqlite() uses the 22.5 floor (sanity / source of truth)", () => {
@@ -3741,42 +3755,22 @@ describe("Issue #564 — docs match hasModernSqlite() source of truth", () => {
     expect(DB_BASE_SRC).toMatch(/major\s*===\s*22\s*&&\s*minor\s*>=\s*5/);
   });
 
-  it("README.md does NOT promise Node.js 18+ on platforms where Linux is unsafe", () => {
+  it("README.md does not declare an unsupported Node floor or install failure", () => {
     const readme = readFileSync(resolve(ROOT, "README.md"), "utf-8");
-    // The literal string "Node.js 18+" must be gone from prerequisites
-    // lines — it's a false promise on Linux.
-    const nodeJs18PrereqLines = readme
-      .split("\n")
-      .filter((l) => /Node\.js\s+18\s*\+/.test(l));
-    expect(nodeJs18PrereqLines).toEqual([]);
-    // README must positively state the 22.5 (or Bun) floor somewhere.
-    expect(readme).toMatch(/22\.5/);
+    expect(readme).not.toMatch(/Linux \+ Node < 22\.5 is unsupported/i);
+    expect(readme).not.toMatch(/npm install will fail/i);
+    expect(readme).toMatch(/Installation does not enforce a Node or Codex version/i);
   });
 
-  it("docs/platform-support.md SQLite Backend Selection table uses 22.5, not 22.13", () => {
+  it("docs/platform-support.md describes capability-based SQLite fallback", () => {
     const doc = readFileSync(resolve(ROOT, "docs", "platform-support.md"), "utf-8");
-    // The literal "22.13" must be gone — it disagrees with hasModernSqlite().
-    expect(doc).not.toMatch(/22\.13/);
-    // The 22.5 floor must be present.
-    expect(doc).toMatch(/22\.5/);
+    expect(doc).toContain("FTS5-capable Node.js runtime");
+    expect(doc).toContain("No Node or Codex version is enforced");
   });
 });
 
-// ── Issue #564 — doctor RED FAIL on Linux + Node < 22.5 + no Bun ──────
-// Six prior fixes (#228, #331, #461, #540, #551, #556) silently assumed
-// Node >= 22.5 on Linux. Reporter #564 hit SIGSEGV on Node 20 because
-// engines.node was absent and doctor never flagged the unsafe config.
-//
-// Architect contract for v1.0.132: doctor MUST emit an explicit RED FAIL
-// (not a warn / not a passing note) for the predicate
-//   process.platform === "linux" && !hasModernSqlite() && globalThis.Bun === undefined
-// linking to issue #564.
-//
-// Static-analysis assertion (same pattern as cli.test.ts:289, :820, :970):
-// runtime spawning would need a fake-Linux fake-Node-20 environment that
-// is not portable; asserting the gate exists in source catches the
-// regression at PR time and is the precedent used elsewhere in this file.
-describe("Issue #564 — doctor() flags Linux + Node < 22.5 + no Bun", () => {
+// ── Doctor runtime fallback contract ─────────────────────────────────────
+describe("doctor() reports runtime capability without a version gate", () => {
   const CLI_SRC = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
 
   function doctorBody(): string {
@@ -3789,37 +3783,12 @@ describe("Issue #564 — doctor() flags Linux + Node < 22.5 + no Bun", () => {
     return CLI_SRC.slice(start, end);
   }
 
-  it("doctor fails on Linux + Node < 22.5 + no bun (RED FAIL line)", () => {
+  it("doctor reports compatibility fallback without failing on Node version", () => {
     const body = doctorBody();
-    // The Linux predicate must be in doctor().
-    expect(body).toMatch(/process\.platform\s*===\s*["']linux["']/);
-    // Must consult the 22.5 gate via hasModernSqlite (the source of truth
-    // in src/db-base.ts:226-244) OR an equivalent inline major/minor check.
-    const usesHelper = /hasModernSqlite/.test(body);
-    const usesInlineGate =
-      /process\.versions\.node/.test(body) && /22(?:\.5|[^0-9])/.test(body);
-    expect(usesHelper || usesInlineGate).toBe(true);
-    // Bun must be allowed through (Linux + Bun is fine).
-    expect(body).toMatch(/globalThis\.Bun|hasBunRuntime|process\.versions\.bun/);
-    // Must be a RED FAIL (architect mandate) — not a warn/info. Reuses
-    // the existing FAIL surface: `p.log.error(color.red(... FAIL ...`.
-    // We assert FAIL appears in the new block by matching against an
-    // anchor unique to it (issue #564 reference).
-    const issueIdx = body.indexOf("#564");
-    expect(issueIdx).toBeGreaterThan(-1);
-    // Look at a wide window around the #564 anchor — the comment block
-    // sits above the predicate and the FAIL emission sits below, so we
-    // grab text on both sides.
-    const surrounding = body.slice(
-      Math.max(0, issueIdx - 1500),
-      issueIdx + 2000,
-    );
-    expect(surrounding).toMatch(/p\.log\.error/);
-    expect(surrounding).toMatch(/FAIL/);
-    // The block must increment criticalFails so the doctor exits non-zero.
-    expect(surrounding).toMatch(/criticalFails\+\+/);
-    // Remediation: must point users at 22.5+ (or Bun).
-    expect(body).toMatch(/22\.5/);
+    expect(body).toContain("compatibility fallback");
+    expect(body).toContain("hasModernSqlite");
+    expect(body).toContain("better-sqlite3");
+    expect(body).not.toMatch(/Node version: FAIL/);
   });
 });
 

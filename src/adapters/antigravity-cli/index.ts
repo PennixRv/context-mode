@@ -170,6 +170,7 @@ function readRegisteredHooks(paths: string[]): {
 const PRE_HOOK_COMMAND = "context-mode hook antigravity-cli pretooluse";
 const PRE_HOOK_MATCHER = "run_command|view_file|grep_search|web_fetch|read_url_content";
 const POST_HOOK_COMMAND = "context-mode hook antigravity-cli posttooluse";
+const POST_HOOK_MATCHER = PRE_HOOK_MATCHER;
 const STOP_HOOK_COMMAND = "context-mode hook antigravity-cli stop";
 
 // Keep in sync with the identical agyContextReason in hooks/core/formatters.mjs:
@@ -345,7 +346,7 @@ export class AntigravityCliAdapter extends AntigravityAdapter {
       hooks: [{ type: "command", command: PRE_HOOK_COMMAND }],
     };
     const desiredPost = {
-      matcher: "",
+      matcher: POST_HOOK_MATCHER,
       hooks: [{ type: "command", command: POST_HOOK_COMMAND }],
     };
     const desiredStop = {

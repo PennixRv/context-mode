@@ -16,6 +16,7 @@ import { appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { isExternalMcpToolName } from "../core/external-mcp.mjs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
@@ -25,6 +26,7 @@ const DEBUG_LOG = join(homedir(), ".vscode", "context-mode", "posttooluse-debug.
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
+  if (isExternalMcpToolName(input.tool_name)) process.exit(0);
   const projectDir = getInputProjectDir(input, OPTS);
 
   appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] CALL: ${input.tool_name}\n`);

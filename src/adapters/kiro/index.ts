@@ -203,7 +203,7 @@ export class KiroAdapter extends BaseAdapter implements HookAdapter {
         hooks: [{ type: "command", command: buildKiroHookCommand(KIRO_HOOK_TYPES.PRE_TOOL_USE, pluginRoot) }],
       }],
       [KIRO_HOOK_TYPES.POST_TOOL_USE]: [{
-        matcher: "*",
+        matcher: KIRO_PRE_TOOL_USE_MATCHER_PATTERN,
         hooks: [{ type: "command", command: buildKiroHookCommand(KIRO_HOOK_TYPES.POST_TOOL_USE, pluginRoot) }],
       }],
       [KIRO_HOOK_TYPES.AGENT_SPAWN]: [{
@@ -351,7 +351,7 @@ export class KiroAdapter extends BaseAdapter implements HookAdapter {
       // Hooks to add: [hookType, matcher]
       const hookSpecs: Array<[string, string]> = [
         [KIRO_HOOK_TYPES.PRE_TOOL_USE, KIRO_PRE_TOOL_USE_MATCHER_PATTERN],
-        [KIRO_HOOK_TYPES.POST_TOOL_USE, "*"],
+        [KIRO_HOOK_TYPES.POST_TOOL_USE, KIRO_PRE_TOOL_USE_MATCHER_PATTERN],
         [KIRO_HOOK_TYPES.AGENT_SPAWN, "*"],
         [KIRO_HOOK_TYPES.USER_PROMPT_SUBMIT, "*"],
       ];
