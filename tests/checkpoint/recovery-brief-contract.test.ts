@@ -44,10 +44,13 @@ describe("RecoveryBrief MCP contracts", () => {
     expect(init).toContain('storage: z.enum(["local", "tracked"])');
     expect(init).toContain("initializeProjectRecoveryBriefProvider");
     expect(status).toContain("readOnlyHint: true");
-    expect(status).toContain("currentAttribution()?.sessionId");
+    expect(status).toContain("withRecoveryBriefAttribution");
+    expect(status).toContain("[RECOVERY_BRIEF_CAPABILITY_FIELD]: z.unknown().optional()");
     expect(status).not.toContain("session_id");
     expect(update).toContain('z.literal("absent")');
     expect(update).toContain("updateRecoveryBriefProvider");
+    expect(update).toContain("withRecoveryBriefAttribution");
+    expect(update).toContain("[RECOVERY_BRIEF_CAPABILITY_FIELD]: z.unknown().optional()");
     expect(update).toContain("Never echoes the submitted Brief");
     expect(update).not.toContain("JSON.stringify(brief");
   });

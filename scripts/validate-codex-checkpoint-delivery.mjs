@@ -107,6 +107,7 @@ export function resolveOptions() {
     ".codex-plugin/plugin.json",
     ".codex-plugin/hooks.json",
     "hooks/checkpoint.bundle.mjs",
+    "hooks/recovery-brief-capability.bundle.mjs",
     "hooks/checkpoint-diagnostics.mjs",
     "start.mjs",
     "server.bundle.mjs",

@@ -6,6 +6,12 @@
         "hooks": [
           { "type": "command", "command": "context-mode hook codex pretooluse" }
         ]
+      },
+      {
+        "matcher": "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex pretooluse" }
+        ]
       }
     ],
     "PreCompact": [

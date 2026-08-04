@@ -61,6 +61,7 @@ describe("assert-bundle script", () => {
     expect(scripts["assert-bundle"]).toMatch(/cli\.bundle\.mjs/);
     expect(scripts["assert-bundle"]).toMatch(/fetch-worker\.bundle\.cjs/);
     expect(scripts["assert-bundle"]).toMatch(/hooks\/checkpoint\.bundle\.mjs/);
+    expect(scripts["assert-bundle"]).toMatch(/hooks\/recovery-brief-capability\.bundle\.mjs/);
     expect(scripts["assert-bundle"]).toMatch(/hooks\/.*\.bundle\.mjs/);
 
     // The build chain must invoke it. Either `build` calls `assert-bundle`
@@ -136,6 +137,7 @@ describe("assert-bundle script", () => {
       "hooks/session-snapshot.bundle.mjs",
       "hooks/session-db.bundle.mjs",
       "hooks/checkpoint.bundle.mjs",
+      "hooks/recovery-brief-capability.bundle.mjs",
     ].map((p) => join(repoRoot, p));
 
     const r = runAssert(...bundles);

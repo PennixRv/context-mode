@@ -69,6 +69,7 @@ jobs:
             hooks/session-snapshot.bundle.mjs \
             hooks/session-db.bundle.mjs \
             hooks/checkpoint.bundle.mjs \
+            hooks/recovery-brief-capability.bundle.mjs \
             hooks/security.bundle.mjs
 
       - name: Run all tests
@@ -130,6 +131,7 @@ jobs:
             hooks/session-snapshot.bundle.mjs \
             hooks/session-db.bundle.mjs \
             hooks/checkpoint.bundle.mjs \
+            hooks/recovery-brief-capability.bundle.mjs \
             hooks/security.bundle.mjs
 
       - name: Build reproducible offline marketplace asset

@@ -11,6 +11,8 @@ const DEFAULT_HOOK_EVENTS = [
   "PreToolUse",
   "SessionStart",
 ];
+const RECOVERY_BRIEF_MATCHER =
+  "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$";
 
 describe("Codex default external MCP isolation", () => {
   let adapter: CodexAdapter;
@@ -35,6 +37,10 @@ describe("Codex default external MCP isolation", () => {
     expect(matcher).not.toContain("mcp__");
     expect(matcher).toContain("ctx_execute");
     expect(matcher).toContain("ctx_search");
+    expect(config.PreToolUse?.map((entry) => entry.matcher)).toEqual([
+      matcher,
+      RECOVERY_BRIEF_MATCHER,
+    ]);
   });
 
   it("ships the same low-noise static profile in both Codex manifests", () => {
@@ -49,8 +55,14 @@ describe("Codex default external MCP isolation", () => {
       };
 
       expect(Object.keys(manifest.hooks).sort()).toEqual(DEFAULT_HOOK_EVENTS);
-      expect(manifest.hooks.PreToolUse?.[0]?.matcher).not.toContain("mcp__");
-      expect(manifest.hooks.PreToolUse?.[0]?.matcher).toContain("ctx_execute");
+      const preToolMatchers = manifest.hooks.PreToolUse?.map((entry) => entry.matcher) ?? [];
+      expect(preToolMatchers).toEqual([
+        expect.stringContaining("ctx_execute"),
+        RECOVERY_BRIEF_MATCHER,
+      ]);
+      expect(preToolMatchers[0]).not.toContain("mcp__");
+      expect(preToolMatchers[1]).not.toMatch(/mcp__\*|mcp__\|/);
+      expect(preToolMatchers[1]).not.toContain("ctx_recovery_brief_init");
       expect(manifest.hooks).not.toHaveProperty("PostToolUse");
       expect(manifest.hooks).not.toHaveProperty("UserPromptSubmit");
       expect(manifest.hooks).not.toHaveProperty("Stop");

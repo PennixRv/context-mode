@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 
 import { BaseAdapter, resolveContextModeDataRoot } from "../base.js";
 import { hashProjectDirCanonical } from "../../session/db.js";
+import { CODEX_RECOVERY_BRIEF_TOOL_MATCHER } from "../../checkpoint/recovery-brief-capability.js";
 import { resolveCodexConfigDir } from "./paths.js";
 
 import {
@@ -548,6 +549,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             },
           ],
         },
+        {
+          matcher: CODEX_RECOVERY_BRIEF_TOOL_MATCHER,
+          hooks: [
+            {
+              type: "command",
+              command: DEFAULT_HOOK_COMMANDS.PreToolUse,
+            },
+          ],
+        },
       ],
       PreCompact: [
         {
@@ -975,15 +985,23 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           this.isExpectedHookEntry(hookName, entry as HookEntry, expectedEntry),
         ).length > 1,
       );
+      const hasStaleManagedEntry = actualEntries.some((entry) =>
+        this.isManagedContextModeEntry(hookName, entry as HookEntry)
+        && !expectedEntries.some((expectedEntry) =>
+          this.isExpectedHookEntry(hookName, entry as HookEntry, expectedEntry),
+        ),
+      );
       const managedCount = actualEntries.filter(
         (entry) => this.isManagedContextModeEntry(hookName, entry as HookEntry),
       ).length;
-      if (duplicateExpectedEntry || managedCount > expectedEntries.length) {
+      if (duplicateExpectedEntry || hasStaleManagedEntry || managedCount > expectedEntries.length) {
         duplicateChecks.push({
           check: `${hookName} duplicates`,
           status: "warn",
           message: duplicateExpectedEntry
             ? `Duplicate ${duplicateExpectedEntry.hooks[0]?.command ?? "context-mode"} entries found for ${hookName} in ${this.getHooksPath()}; Codex will fire all of them`
+            : hasStaleManagedEntry
+              ? `Stale context-mode ${hookName} entry found in ${this.getHooksPath()}; run upgrade to install the exact default matcher`
             : `${managedCount} context-mode entries found for ${hookName} in ${this.getHooksPath()}; expected at most ${expectedEntries.length}`,
           fix: "context-mode upgrade (collapses duplicate context-mode entries; preserves unrelated hooks)",
         });

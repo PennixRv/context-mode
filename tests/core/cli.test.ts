@@ -1371,6 +1371,33 @@ describe("start.mjs CLI self-heal", () => {
     }
   });
 
+  test("Algo-D4 treats the RecoveryBrief capability bundle as boot-critical", async () => {
+    const {
+      assertPluginCacheIntegrity,
+      getRequiredRuntimeSiblings,
+    } = await import("../../scripts/plugin-cache-integrity.mjs");
+    const fakeRoot = mkdtempSync(join(tmpdir(), "ctx-mode-d4-recovery-brief-"));
+    try {
+      writeFileSync(
+        join(fakeRoot, "package.json"),
+        readFileSync(resolve(ROOT, "package.json"), "utf-8"),
+      );
+      const missingBundle = join("hooks", "recovery-brief-capability.bundle.mjs");
+      for (const relativePath of getRequiredRuntimeSiblings(fakeRoot)) {
+        if (relativePath === missingBundle) continue;
+        const absolutePath = join(fakeRoot, relativePath);
+        mkdirSync(dirname(absolutePath), { recursive: true });
+        writeFileSync(absolutePath, "");
+      }
+
+      const result = assertPluginCacheIntegrity({ pluginRoot: fakeRoot });
+      expect(result.ok).toBe(false);
+      expect(result.missing).toEqual([join(fakeRoot, missingBundle)]);
+    } finally {
+      rmSync(fakeRoot, { recursive: true, force: true });
+    }
+  });
+
   test("Algo-D4 derivation reads scripts.bundle outfiles — pure-data, no parallel hardcoded list", async () => {
     // Algorithmic guarantee: a future runtime bundle added to
     // `scripts.bundle` (with `--outfile=hooks/foo.bundle.mjs`) is

@@ -475,6 +475,10 @@ describe("CodexAdapter", () => {
       expect(written.hooks.PreToolUse[0]?.matcher).toContain("ctx_execute");
       expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("mcp__");
       expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
+      expect(written.hooks.PreToolUse[1]?.matcher).toBe(
+        "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
+      );
+      expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(written.hooks.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
       expect(written.hooks.SessionStart[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
@@ -502,12 +506,15 @@ describe("CodexAdapter", () => {
       const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
         hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
       };
-      expect(written.hooks.PreToolUse).toHaveLength(2);
+      expect(written.hooks.PreToolUse).toHaveLength(3);
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.hooks[0]?.command === "node /opt/other-plugin/hooks/pretooluse.mjs",
       )).toBe(true);
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.matcher?.includes("local_shell|shell|shell_command"),
+      )).toBe(true);
+      expect(written.hooks.PreToolUse.some((entry) =>
+        entry.matcher === "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
       )).toBe(true);
       expect(written.hooks.SessionStart).toHaveLength(2);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
@@ -619,8 +626,9 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
 
-      expect(written.hooks.PreToolUse).toHaveLength(1);
+      expect(written.hooks.PreToolUse).toHaveLength(2);
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.SessionStart).toHaveLength(1);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
       expect(changes.some((c) => c.includes("Updated SessionStart hook"))).toBe(true);
@@ -649,8 +657,9 @@ describe("CodexAdapter", () => {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
 
-      expect(written.hooks.PreToolUse).toHaveLength(1);
+      expect(written.hooks.PreToolUse).toHaveLength(2);
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PostToolUse).toBeUndefined();
     });
 
@@ -729,7 +738,7 @@ describe("CodexAdapter", () => {
       const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
         hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
       };
-      expect(written.hooks.PreToolUse).toHaveLength(2);
+      expect(written.hooks.PreToolUse).toHaveLength(3);
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.hooks[0]?.command === "context-mode hook codex pretooluse",
       )).toBe(true);
@@ -950,7 +959,7 @@ trusted_hash = "sha256:stale"
       writeFileSync(hooksPath, JSON.stringify({
         hooks: {
           PreToolUse: [
-            { matcher: "local_shell|shell|ctx_execute|mcp__", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
+            { matcher: "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
           ],
         },
       }, null, 2), "utf-8");
@@ -1094,18 +1103,18 @@ args = ["-y", "context-mode"]
       writeFileSync(hooksPath, JSON.stringify({
         hooks: {
           PreToolUse: [
-            { matcher: "", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
-            { matcher: "", hooks: [{ type: "command", command: "node /Users/foo/.nvm/versions/node/v20/lib/node_modules/context-mode/hooks/codex/pretooluse.mjs" }] },
+            { matcher: "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
+            { matcher: "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
           ],
           PostToolUse: [
             { hooks: [{ type: "command", command: "context-mode hook codex posttooluse" }] },
             { hooks: [{ type: "command", command: "context-mode hook codex posttooluse" }] },
           ],
           SessionStart: [
-            { hooks: [{ type: "command", command: "context-mode hook codex sessionstart" }] },
+            { matcher: "^compact$", hooks: [{ type: "command", command: "context-mode hook codex sessionstart" }] },
           ],
           PreCompact: [
-            { hooks: [{ type: "command", command: "context-mode hook codex precompact" }] },
+            { matcher: "^(manual|auto)$", hooks: [{ type: "command", command: "context-mode hook codex precompact" }] },
           ],
           UserPromptSubmit: [
             { hooks: [{ type: "command", command: "context-mode hook codex userpromptsubmit" }] },
@@ -1121,7 +1130,7 @@ args = ["-y", "context-mode"]
 
       const preToolDup = results.find((r) => r.check === "PreToolUse duplicates");
       expect(preToolDup?.status).toBe("warn");
-      expect(preToolDup?.message).toMatch(/2 context-mode entries/);
+      expect(preToolDup?.message).toMatch(/Duplicate context-mode hook codex pretooluse entries.*PreToolUse/);
       expect(preToolDup?.fix).toMatch(/context-mode upgrade/);
 
       const legacy = results.find((r) => r.check === "Codex legacy hook registrations");
@@ -1129,9 +1138,16 @@ args = ["-y", "context-mode"]
       expect(legacy?.message).toMatch(/PostToolUse \(2\).*context-mode upgrade/);
       expect(legacy?.fix).toBe("context-mode upgrade");
 
-      // Events with only one context-mode entry must NOT trigger the duplicate warning.
-      expect(results.some((r) => r.check === "SessionStart duplicates")).toBe(false);
-      expect(results.some((r) => r.check === "PreCompact duplicates")).toBe(false);
+      // Legacy lifecycle entries are surfaced as stale even when there is only
+      // one managed entry, because their matcher/command is no longer canonical.
+      expect(results.some((r) =>
+        r.check === "SessionStart duplicates"
+        && /Stale context-mode SessionStart entry/.test(r.message),
+      )).toBe(true);
+      expect(results.some((r) =>
+        r.check === "PreCompact duplicates"
+        && /Stale context-mode PreCompact entry/.test(r.message),
+      )).toBe(true);
       expect(results.some((r) => r.check === "Stop duplicates")).toBe(false);
     });
 

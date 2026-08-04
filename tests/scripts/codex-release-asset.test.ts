@@ -132,6 +132,7 @@ describe("Codex offline marketplace release asset", () => {
       const payloadRoot = join(extractionDirectory, "plugins", "context-mode");
       expect(existsSync(join(payloadRoot, "fetch-worker.bundle.cjs"))).toBe(true);
       expect(existsSync(join(payloadRoot, "hooks", "checkpoint-diagnostics.mjs"))).toBe(true);
+      expect(existsSync(join(payloadRoot, "hooks", "recovery-brief-capability.bundle.mjs"))).toBe(true);
       for (const forbidden of [".git", ".github", ".claude", "configs", "node_modules", "src", "tests", "build"]) {
         expect(existsSync(join(payloadRoot, forbidden)), forbidden).toBe(false);
       }
@@ -188,6 +189,7 @@ describe("Codex offline marketplace release asset", () => {
         "README.md",
         "server.bundle.mjs",
         "hooks/checkpoint.bundle.mjs",
+        "hooks/recovery-brief-capability.bundle.mjs",
       ]) {
         utimesSync(join(firstSourceRoot, relativePath), new Date("2020-01-01T00:00:00.000Z"), new Date("2020-01-01T00:00:00.000Z"));
         utimesSync(join(secondSourceRoot, relativePath), new Date("2040-01-01T00:00:00.000Z"), new Date("2040-01-01T00:00:00.000Z"));

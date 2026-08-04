@@ -75,8 +75,15 @@ import {
   getCheckpointReliabilityReport,
   getRecoveryBriefProviderStatus,
   initializeProjectRecoveryBriefProvider,
+  readTrellisEvidence,
   updateRecoveryBriefProvider,
 } from "./checkpoint/runtime.js";
+import {
+  CODEX_RECOVERY_BRIEF_TOOL_MATCHER,
+  RECOVERY_BRIEF_CAPABILITY_FIELD,
+  consumeRecoveryBriefCapability,
+  getRecoveryBriefCapabilityReadiness,
+} from "./checkpoint/recovery-brief-capability.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { stripJsonComments } from "./util/jsonc.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
@@ -470,6 +477,38 @@ export function currentAttribution(): { sessionId?: string } | undefined {
   const sessionId = process.env.CLAUDE_SESSION_ID ?? resolveSessionIdFromSessionDB();
   if (!sessionId) return undefined;
   return { sessionId };
+}
+
+/**
+ * Resolve only the exact Codex RecoveryBrief identity bridge. A Codex MCP
+ * process has no trustworthy project environment, so an absent or invalid
+ * capability deliberately passes no session id to the provider layer. The
+ * provider then returns its existing content-free SESSION_UNAVAILABLE result
+ * before selecting or mutating any provider.
+ */
+async function withRecoveryBriefAttribution<T>(
+  capability: unknown,
+  operation: (projectRoot: string, sessionId: string | undefined) => T | Promise<T>,
+): Promise<T> {
+  if (process.env.CONTEXT_MODE_PLATFORM !== "codex") {
+    return operation(getProjectDir(), currentAttribution()?.sessionId);
+  }
+
+  const identity = consumeRecoveryBriefCapability(capability);
+  if (!identity) return operation(getProjectDir(), undefined);
+
+  try {
+    if (readTrellisEvidence(identity.projectDir, identity.sessionId).bridgeStatus !== "active") {
+      return operation(getProjectDir(), undefined);
+    }
+  } catch {
+    return operation(getProjectDir(), undefined);
+  }
+
+  return withProjectDirOverride(
+    { projectDir: identity.projectDir, sessionId: identity.sessionId },
+    async () => operation(getProjectDir(), identity.sessionId),
+  );
 }
 
 let __cachedSessionId: { sid: string; checkedAt: number } | undefined;
@@ -3985,11 +4024,15 @@ RETURNS:
 
 EXAMPLE:
 ctx_recovery_brief_status({})`,
-    inputSchema: z.object({}),
+    inputSchema: z.object({
+      [RECOVERY_BRIEF_CAPABILITY_FIELD]: z.unknown().optional(),
+    }),
   },
-  async () => {
-    const sessionId = currentAttribution()?.sessionId;
-    const status = getRecoveryBriefProviderStatus(getProjectDir(), sessionId);
+  async (args) => {
+    const status = await withRecoveryBriefAttribution(
+      args[RECOVERY_BRIEF_CAPABILITY_FIELD],
+      (projectRoot, sessionId) => getRecoveryBriefProviderStatus(projectRoot, sessionId),
+    );
     return trackResponse("ctx_recovery_brief_status", {
       content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
       isError: status.errorCode === "SESSION_UNAVAILABLE",
@@ -4030,14 +4073,18 @@ ctx_recovery_brief_update({ "expected_sha256": "absent", "brief": { "schema_vers
       ]),
       brief: z.unknown(),
       source_paths: z.array(z.string().min(1).max(512)).max(16).optional(),
+      [RECOVERY_BRIEF_CAPABILITY_FIELD]: z.unknown().optional(),
     }),
   },
-  async ({ expected_sha256, brief, source_paths }) => {
-    const result = updateRecoveryBriefProvider(getProjectDir(), currentAttribution()?.sessionId, {
-      expectedSha256: expected_sha256,
-      brief,
-      sourcePaths: source_paths,
-    });
+  async ({ expected_sha256, brief, source_paths, ...args }) => {
+    const result = await withRecoveryBriefAttribution(
+      args[RECOVERY_BRIEF_CAPABILITY_FIELD],
+      (projectRoot, sessionId) => updateRecoveryBriefProvider(projectRoot, sessionId, {
+        expectedSha256: expected_sha256,
+        brief,
+        sourcePaths: source_paths,
+      }),
+    );
     return trackResponse("ctx_recovery_brief_update", {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       isError: !result.ok,
@@ -4185,6 +4232,15 @@ server.registerTool(
       lines.push(`${preCompact ? "[OK]" : "[FAIL]"} Codex PreCompact checkpoint hook: ${preCompact ? "registered" : "missing"}`);
       lines.push(`${postCompact ? "[OK]" : "[FAIL]"} Codex PostCompact checkpoint hook: ${postCompact ? "registered" : "missing"}`);
       lines.push(`${sessionStart ? "[OK]" : "[FAIL]"} Codex SessionStart(compact) checkpoint hook: ${sessionStart ? "registered" : "missing"}`);
+      const recoveryBriefMatcher = Array.isArray(hookEntries.PreToolUse)
+        && JSON.stringify(hookEntries.PreToolUse).includes(CODEX_RECOVERY_BRIEF_TOOL_MATCHER);
+      if (currentPlatform === "codex") {
+        const readiness = getRecoveryBriefCapabilityReadiness();
+        const bridgeReady = readiness.ready && recoveryBriefMatcher;
+        lines.push(`${bridgeReady ? "[OK]" : "[FAIL]"} Codex RecoveryBrief identity bridge: ${bridgeReady ? "ready (private storage and exact default matcher)" : "unavailable; explicit RecoveryBrief calls fail closed"}`);
+      } else {
+        lines.push(`[WARN] Codex RecoveryBrief identity bridge: unavailable outside Codex runtime`);
+      }
       const checkpointBundlePath = join(pluginRoot, "hooks", "checkpoint.bundle.mjs");
       lines.push(`${existsSync(checkpointBundlePath) ? "[OK]" : "[FAIL]"} Checkpoint bundle: ${checkpointBundlePath}`);
 
