@@ -30,14 +30,14 @@ Canonicalize the trusted OS temp root in capability security fixtures so macOS s
 
 ## Acceptance Criteria
 
-- [ ] All three affected suites derive fixture paths below the shared trusted
+- [x] All three affected suites derive fixture paths below the shared trusted
   host temp root; POSIX roots are canonical and Windows retains its native
   `TEMP`/`TMP` spelling.
-- [ ] The explicit symlink-directory and symlink-ancestor rejection tests
+- [x] The explicit symlink-directory and symlink-ancestor rejection tests
   continue to pass without production source changes.
-- [ ] Focused tests pass repeatedly and the full local test suite, typecheck,
+- [x] Focused tests pass repeatedly and the full local test suite, typecheck,
   build, and bundle drift checks pass.
-- [ ] GitHub CI passes on `ubuntu-latest`, `macos-latest`, and
+- [x] GitHub CI passes on `ubuntu-latest`, `macos-latest`, and
   `windows-latest` for the follow-up commit.
 - [ ] `v1.0.184` passes the existing native provider-authenticated attestation,
   annotated-tag, release-asset, and remote ancestry gates.
