@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-10T05:47:35.449Z",
+  "objective": {
+    "value": "Deliver ROOT-ISSUE-025 unified fail-closed restricted execution and ROOT-ISSUE-041 compact auditable MCP response presentation.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+    "valid_at": "2026-08-10T05:47:35.449Z"
+  },
+  "hard_constraints": [
+    {
+      "value": "Modify only the context-mode repository; do not push, publish, or modify parent, global, or sibling repositories.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Restricted execution must be project-contained, read-only, network-disabled, non-persistent, and fail closed when isolation is unavailable.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Implementation and checking stay inline in the current main session without Codex subagents or Trellis channel workers.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Codex host-owned Called input rendering is out of scope and must remain an explicit limitation.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    }
+  ],
+  "decisions": [
+    {
+      "value": "Use one server-controlled execution policy for ctx_execute, ctx_execute_file, and ctx_batch_execute; caller input cannot create authority.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Restricted mode requires an explicit canonical CONTEXT_MODE_RESTRICTED_PROJECT_ROOT and a successful Linux bubblewrap probe; other platforms fail closed.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Use one typed bounded presentation policy; source and command zero values map to a tested 64-character minimum required by upstream #717/#736.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Restricted provenance and batch search remain request-local and never write FTS5, statistics, events, preload files, or readiness sentinels.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    }
+  ],
+  "completed_work": [
+    {
+      "value": "Implementation commit a3f97937 delivers the shared policy, bubblewrap launcher, request-local search, bounded presentation, startup and shutdown guards, tests, bundles, README, evidence, and backend spec.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Targeted tests, full 5011-test suite, typecheck, build, bundle assertions, deterministic hash check, real response measurements, task validation, and trellis-check all pass.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    },
+    {
+      "value": "Final task result records platform support, upstream #717/#736 conclusions, measured response reductions, host-owned Called limits, and residual risks.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    }
+  ],
+  "open_work": [
+    {
+      "value": "Archive the completed Trellis task, record the session journal against implementation commit a3f97937, and verify the resulting repository is clean.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+      "valid_at": "2026-08-10T05:47:35.449Z"
+    }
+  ],
+  "latest_blocker": null,
+  "next_action": {
+    "value": "Run task.py archive for the active task, then add the finish-work session journal and verify final Git state.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+    "valid_at": "2026-08-10T05:47:35.449Z"
+  },
+  "project_state": {
+    "value": "Task harden-execution-project-boundary is validated and ready for archive; implementation commit a3f97937 exists and only managed task-result changes remain uncommitted.",
+    "priority": "important",
+    "source_kind": "trellis_task",
+    "source_sha256": "4e786699753921c1cc6160e4295da8eeffed8f4a3746911504ffcaa00f7e7611",
+    "valid_at": "2026-08-10T05:47:35.449Z"
+  }
+}

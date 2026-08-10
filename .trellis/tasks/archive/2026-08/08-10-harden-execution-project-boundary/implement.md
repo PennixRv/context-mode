@@ -84,9 +84,9 @@ git status --short
       check subagent.
 - [x] Capture reusable execution-security contracts in the applicable
       `.trellis/spec/` document; keep one-off logs in task evidence.
-- [ ] Commit source, tests, documentation, and task assets. Do not push,
+- [x] Commit source, tests, documentation, and task assets. Do not push,
       publish, or update the parent Gitlink.
-- [ ] Leave the worktree clean and report branch, base, commits, changed files,
+- [x] Leave the worktree clean and report branch, base, commits, changed files,
       validation, platform support, response-size measurements, both root issue
       IDs, host-owned limitations, and residual risks.
 
