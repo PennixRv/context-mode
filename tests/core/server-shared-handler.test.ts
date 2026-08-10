@@ -166,8 +166,10 @@ describe("registered shared-mode ctx_index and ctx_search handlers", () => {
     const { REGISTERED_CTX_TOOLS, withProjectDirOverride } = await import("../../src/server.js");
     const indexTool = REGISTERED_CTX_TOOLS.find((tool) => tool.name === "ctx_index");
     const searchTool = REGISTERED_CTX_TOOLS.find((tool) => tool.name === "ctx_search");
+    const purgeTool = REGISTERED_CTX_TOOLS.find((tool) => tool.name === "ctx_purge");
     expect(indexTool).toBeDefined();
     expect(searchTool).toBeDefined();
+    expect(purgeTool).toBeDefined();
 
     const directoryResult = await withProjectDirOverride(
       { projectDir: projectA, sessionId: "protected-index-session" },
@@ -205,5 +207,11 @@ describe("registered shared-mode ctx_index and ctx_search handlers", () => {
       }),
     );
     expect(responseText(searchResult)).toContain("No results found.");
+
+    const purged = await withProjectDirOverride(
+      { projectDir: projectA, sessionId: "protected-index-session" },
+      async () => purgeTool!.handler({ confirm: true, scope: "project" }),
+    ) as ToolResponse;
+    expect(purged.isError).not.toBe(true);
   });
 });

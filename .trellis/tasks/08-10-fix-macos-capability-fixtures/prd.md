@@ -18,7 +18,11 @@ Canonicalize the trusted OS temp root in capability security fixtures so macOS s
   ownership, or permission checks. Explicitly constructed symbolic-link
   storage and ancestor fixtures must remain rejected.
 - Preserve Windows skips for permission and symbolic-link behavior that the
-  current tests cannot prove there.
+  current tests cannot prove there. Positive private capability persistence
+  and capability-backed routing remain POSIX-only until Windows ACL privacy is
+  independently provable; exact tool-name matching remains cross-platform.
+- Close shared FTS5 stores through `ctx_purge` before deleting test fixture
+  roots so Windows does not retain an open SQLite handle.
 - Validate the focused suites, full test suite, typecheck, build, generated
   bundle drift, release asset, and native Codex release gates.
 - Publish the immutable follow-up as `v1.0.184`; do not rewrite or delete the

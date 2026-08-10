@@ -25,6 +25,8 @@ import { HOST_TEMP_DIRECTORY } from "../../src/util/system-temp.js";
 const REPOSITORY_ROOT = resolve(__dirname, "..", "..");
 const PRETOOLUSE_PATH = join(REPOSITORY_ROOT, "hooks", "codex", "pretooluse.mjs");
 const cleanup: string[] = [];
+const testPrivateCapability = process.platform === "win32" ? test.skip : test;
+const describePrivateCapability = process.platform === "win32" ? describe.skip : describe;
 
 type HookOutput = {
   hookSpecificOutput?: Record<string, unknown>;
@@ -87,7 +89,7 @@ describe("Codex MCP capability proof", () => {
     expect(isCodexCtxExecuteToolName("mcp__context_mode__ctx_execute_file")).toBe(false);
   });
 
-  test("is opaque, content-free, session-bound, and short-lived", () => {
+  testPrivateCapability("is opaque, content-free, session-bound, and short-lived", () => {
     const storageDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
     cleanup.push(storageDir);
     const sessionId = "codex-session-a";
@@ -111,7 +113,7 @@ describe("Codex MCP capability proof", () => {
     })).toBe(false);
   });
 
-  test("fails open when the exact session marker is malformed", () => {
+  testPrivateCapability("fails open when the exact session marker is malformed", () => {
     const storageDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
     cleanup.push(storageDir);
     const sessionId = "codex-session-malformed";
@@ -123,7 +125,7 @@ describe("Codex MCP capability proof", () => {
     expect(hasCodexMcpCapability(sessionId, { storageDir })).toBe(false);
   });
 
-  test("fails open for non-private capability storage without changing it", () => {
+  testPrivateCapability("fails open for non-private capability storage without changing it", () => {
     const storageDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
     cleanup.push(storageDir);
     const sessionId = "codex-session-non-private";
@@ -151,7 +153,7 @@ describe("Codex MCP capability proof", () => {
   );
 });
 
-describe("Codex PreToolUse capability routing", () => {
+describePrivateCapability("Codex PreToolUse capability routing", () => {
   test("requires a bare ctx_execute proof even when an MCP-ready sentinel is live", () => {
     const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-hook-"));
     cleanup.push(root);

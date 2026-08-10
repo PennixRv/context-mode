@@ -190,6 +190,11 @@ interface RecoveryBriefProviderUpdateResult {
   existing descendant ancestor must be free of symbolic links. Windows keeps
   its native `TEMP`/`TMP` spelling; do not convert it to a `\\?\` namespace
   path that downstream `path.resolve()` callers do not accept as equivalent.
+- Private capability persistence and capability-backed PreToolUse routing are
+  POSIX-only while their security contract depends on owner UID and exact
+  `0700`/`0600` modes. Node mode bits do not prove Windows ACL privacy, so the
+  bridge fails closed there. Exact owned-tool matching remains cross-platform;
+  tests must not turn an unproved Windows ACL into a positive capability.
 - `ctx_recovery_brief_update.brief` uses a strict, fully shaped Zod object with
   slot-specific priority literals, source-kind values, list bounds, timestamp
   and digest shapes. The runtime validator independently enforces exact UTF-8
@@ -215,6 +220,7 @@ interface RecoveryBriefProviderUpdateResult {
 | External or similar-name MCP | No context-mode bridge invocation or argument rewrite |
 | Hook/server capability storage differs in an isolated profile | Mark the probe invalid; do not interpret it as provider or Trellis failure |
 | Trusted OS temp root is exposed through a platform alias | Canonicalize the trusted root through `HOST_TEMP_DIRECTORY` before creating the fixture; retain fail-closed checks for explicit descendant links |
+| Windows cannot prove private capability ACLs through Node mode bits | Capability issuance/persistence and capability-backed routing fail closed; exact tool-name matching remains available |
 | Submitted Brief violates a runtime structural/byte rule | `INVALID_RECOVERY_BRIEF` plus one bounded content-free `validationIssue`; no write |
 | Existing Brief is absent, malformed, unsafe, or source-drifted | `briefBytes: null`; do not report canonical JSON length as file size |
 | Successful update followed by immediate status | Update bytes, status bytes, and persisted file size are equal |
@@ -252,6 +258,10 @@ interface RecoveryBriefProviderUpdateResult {
   rejection cases. Windows tests must retain the native temp spelling. The
   three RecoveryBrief/MCP capability suites must pass on macOS, Linux, and
   their existing bounded Windows coverage.
+- Windows coverage asserts exact capability tool-name ownership and skips
+  positive private-storage/routing cases. Shared-store handler tests must call
+  `ctx_purge` before deleting fixture roots so FTS5 handles are closed on
+  Windows rather than relying on POSIX open-file unlink behavior.
 - Release smoke must use a disposable profile for manual/automatic compact and
   a normal-profile fresh session for the explicit bridge. Record only status,
   provider, task, health, and error code; never retain raw tool input/output.
