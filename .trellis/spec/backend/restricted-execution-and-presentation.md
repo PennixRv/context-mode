@@ -34,6 +34,14 @@ interface ExecutionPolicyDecision {
 }
 ```
 
+Compatibility execution and host-side indexable test fixtures share one
+caller-independent temp resolver:
+
+```typescript
+resolveHostTempDirectory(): string
+HOST_TEMP_DIRECTORY: string
+```
+
 Server environment:
 
 | Key | Contract |
@@ -89,6 +97,14 @@ server decision.
 - Startup and shutdown cleanup must be mode-aware. Restricted mode must not
   create or delete compatibility preload or readiness-sentinel paths, including
   paths left by a previous PID owner.
+- Compatibility execution resolves its host temp root without trusting an
+  inherited POSIX `TMPDIR`, then creates a per-call dot-prefixed
+  `.ctx-mode-*` directory and exports that private directory as child
+  `TMPDIR`. The dot prefix remains required by upstream Issue #186.
+- A test fixture that must represent an indexable project root uses
+  `HOST_TEMP_DIRECTORY`, not ambient `os.tmpdir()`: real `ctx_execute` children
+  intentionally see a hidden `.ctx-mode-*` ancestor, and hidden ancestors must
+  remain non-indexable. This is fixture placement, never an indexer exception.
 
 ### Presentation
 
@@ -120,6 +136,7 @@ server decision.
 | Restricted call asks for background execution | `CTX_EXEC_BACKGROUND_FORBIDDEN` |
 | `cwd`/file path is outside, missing, or escapes through a symlink | `CTX_EXEC_PATH_OUTSIDE_PROJECT` or `CTX_EXEC_PATH_INVALID` before launch |
 | Restricted batch asks for `query_scope: "global"` | `CTX_EXEC_GLOBAL_QUERY_FORBIDDEN` |
+| Indexable test fixture runs under hidden sandbox `TMPDIR` | Resolve the outer fixture from `HOST_TEMP_DIRECTORY`; do not relax hidden-path checks |
 | Presentation value is absent, empty, negative, non-numeric, or unsafe integer | Use the documented default |
 | Positive presentation value is below/above range | Clamp to the documented minimum/maximum |
 | Source or command is truncated | Keep preview plus original/preview/omitted/truncated/digest metadata |
@@ -137,7 +154,8 @@ path or source body.
   persistent behavior remains available and its tool metadata says so.
 - Bad: a handler trusts `cwd`, `readOnly: true`, a deny string scan, or a recent
   transcript as authority; mounts a writable temporary directory; writes
-  restricted output to FTS5; or silently falls back when isolation fails.
+  restricted output to FTS5; silently falls back when isolation fails; or makes
+  hidden paths indexable solely to accommodate a test fixture.
 
 ## 6. Tests Required
 
@@ -162,6 +180,13 @@ project reads, absolute/traversal/prefix/symlink/indirect paths, command-interna
 children, network, concurrency, timeout cleanup, background survival, later
 `ctx_search` non-recall, missing isolation, compatibility metadata, invalid and
 zero presentation values, Unicode, digest stability, and generated bundles.
+
+Run the shared indexing fixture through the real `ctx_execute` MCP without
+overriding its hidden `TMPDIR`; assert the `.ctx-mode-*` basename and passing
+file/test totals. Temp cleanup tests must capture the exact child `TMPDIR` and
+assert that path is removed after completion. They must not scan all
+`.ctx-mode-*` entries under a shared host temp root because parallel executor
+tests legitimately create unrelated live directories.
 
 For generated drift, run `build` twice and require stable hashes for
 `server.bundle.mjs` and `cli.bundle.mjs`, then run `git diff --check`.
@@ -198,3 +223,13 @@ return finalizeExecutionResponse(decision, toolName, render(result));
 
 The decision and isolation object originate at the server, and restricted
 finalization bypasses every persistent accounting path.
+
+For host-side indexable fixtures:
+
+```typescript
+// Wrong: ctx_execute makes this path a descendant of hidden .ctx-mode-*.
+const project = mkdtempSync(join(tmpdir(), "indexable-project-"));
+
+// Correct: preserve both sandbox hiding and hidden-path index exclusion.
+const project = mkdtempSync(join(HOST_TEMP_DIRECTORY, "indexable-project-"));
+```

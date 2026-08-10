@@ -1,11 +1,11 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { SessionDB, resolveSessionDbPath } from "../../src/session/db.js";
+import { HOST_TEMP_DIRECTORY } from "../../src/util/system-temp.js";
 
 interface ToolResponse {
   content?: Array<{ type?: string; text?: string }>;
@@ -31,7 +31,7 @@ describe("registered shared-mode ctx_index and ctx_search handlers", () => {
   };
 
   beforeEach(() => {
-    rootDir = mkdtempSync(join(tmpdir(), "ctx-shared-handler-"));
+    rootDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-shared-handler-"));
     storageRoot = join(rootDir, "storage");
     projectA = join(rootDir, "project-a");
     projectB = join(rootDir, "project-b");

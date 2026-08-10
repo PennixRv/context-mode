@@ -44,6 +44,13 @@ Every fact has `value`, `priority`, `source_kind`, `source_sha256`, and
 `valid_at`; lists contain at most 16 facts and the full serialized Brief is
 bounded by 12,000 bytes.
 
+`briefBytes` is the byte length of the persisted UTF-8 Brief file, including
+formatting and the final newline written by an update. `briefSha256` is
+separate: it hashes canonical compact JSON, so formatting-only changes do not
+change compare-and-swap identity. Successful update and subsequent status
+responses report the same file-byte value; absent or invalid Briefs report
+`briefBytes: null`.
+
 Project-provider facts may use `explicit_project_state` only when their digest
 matches one of the registered source files, or `git` when it matches the
 current Git status digest. `trellis_task` is rejected for project providers.
@@ -55,6 +62,13 @@ or Git diffs. It is a freshness binding for the Brief, not a semantic-quality
 claim.
 
 ## Error Handling
+
+Structurally invalid direct updates retain the stable
+`INVALID_RECOVERY_BRIEF` error code and may include one `validationIssue` with
+only a fixed rule code, a bounded field path, and the expected contract. The
+diagnostic never contains the rejected value, Brief body, or source content.
+MCP schema validation may reject malformed wire input before provider lookup;
+the runtime repeats authoritative validation for every caller.
 
 `CAS_CONFLICT` means another update changed the live Brief. Read status again,
 re-evaluate only current trusted evidence, and retry with the new digest.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { existsSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import {
@@ -137,25 +137,14 @@ describe.runIf(runtimes.python)(
 describe("#788(b) — sandbox temp dir is cleaned up after run", () => {
   it("leaves no .ctx-mode-* dir behind after a completed non-shell run", async () => {
     const executor = new PolyglotExecutor({ runtimes });
-    const tmpRoot = process.platform === "win32"
-      ? (process.env.TEMP ?? process.env.TMP ?? tmpdir())
-      : tmpdir();
-
-    const before = new Set(
-      existsSync(tmpRoot)
-        ? readdirSync(tmpRoot).filter((n) => n.startsWith(".ctx-mode-"))
-        : [],
-    );
-
-    const lang = runtimes.python ? "python" : "shell";
-    const code = lang === "python" ? "print('hi')" : "echo hi";
-    const result = await executor.execute({ language: lang, code });
+    const result = await executor.execute({
+      language: "javascript",
+      code: "console.log(process.env.TMPDIR)",
+    });
     expect(result.exitCode).toBe(0);
 
-    const after = existsSync(tmpRoot)
-      ? readdirSync(tmpRoot).filter((n) => n.startsWith(".ctx-mode-"))
-      : [];
-    const leaked = after.filter((n) => !before.has(n));
-    expect(leaked).toEqual([]);
+    const sandboxDirectory = result.stdout.trim();
+    expect(basename(sandboxDirectory)).toMatch(/^\.ctx-mode-/);
+    expect(existsSync(sandboxDirectory)).toBe(false);
   });
 });

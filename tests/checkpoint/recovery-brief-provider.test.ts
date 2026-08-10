@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -252,10 +252,106 @@ afterEach(() => {
 });
 
 describe("RecoveryBrief providers", () => {
+  it("returns deterministic content-free diagnostics for invalid update Briefs", () => {
+    const current = fixture();
+    const valid = brief("trellis_task", "a".repeat(64));
+    const secret = "RECOVERY-BRIEF-SECRET-SENTINEL";
+    const cases: Array<{
+      candidate: unknown;
+      issue: { code: string; path: string };
+    }> = [
+      { candidate: null, issue: { code: "EXPECTED_OBJECT", path: "brief" } },
+      { candidate: { schema_version: 1 }, issue: { code: "MISSING_FIELD", path: "brief.updated_at" } },
+      {
+        candidate: { ...valid, [secret]: "must never be returned" },
+        issue: { code: "UNEXPECTED_FIELD", path: "brief" },
+      },
+      {
+        candidate: { ...valid, objective: { ...valid.objective, priority: "optional" } },
+        issue: { code: "INVALID_PRIORITY", path: "brief.objective.priority" },
+      },
+      {
+        candidate: { ...valid, objective: { ...valid.objective, source_kind: secret } },
+        issue: { code: "INVALID_SOURCE_KIND", path: "brief.objective.source_kind" },
+      },
+      {
+        candidate: { ...valid, objective: { ...valid.objective, source_sha256: "A".repeat(64) } },
+        issue: { code: "INVALID_SHA256", path: "brief.objective.source_sha256" },
+      },
+      {
+        candidate: { ...valid, updated_at: "2026-08-10" },
+        issue: { code: "INVALID_TIMESTAMP", path: "brief.updated_at" },
+      },
+      {
+        candidate: { ...valid, objective: { ...valid.objective, value: "line\nbreak" } },
+        issue: { code: "CONTROL_CHARACTER", path: "brief.objective.value" },
+      },
+      {
+        candidate: { ...valid, objective: { ...valid.objective, value: "界".repeat(171) } },
+        issue: { code: "VALUE_TOO_LARGE", path: "brief.objective.value" },
+      },
+      {
+        candidate: {
+          ...valid,
+          hard_constraints: Array.from({ length: 17 }, () => valid.objective),
+        },
+        issue: { code: "TOO_MANY_ITEMS", path: "brief.hard_constraints" },
+      },
+    ];
+
+    for (const { candidate, issue } of cases) {
+      const result = updateRecoveryBriefProvider(current.projectDir, "session-invalid", {
+        expectedSha256: "absent",
+        brief: candidate,
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        errorCode: "INVALID_RECOVERY_BRIEF",
+        validationIssue: issue,
+      });
+      expect(result.validationIssue?.expected.length).toBeGreaterThan(0);
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(result)).not.toContain("must never be returned");
+    }
+  });
+
+  it("reports the persisted Brief limit without echoing oversized facts", () => {
+    const current = fixture();
+    const sessionId = "session-oversized-brief";
+    createActiveTrellisTask(current.projectDir, sessionId);
+    const sourceSha256 = currentTrellisSourceSha256(current.projectDir, sessionId);
+    const valid = brief("trellis_task", sourceSha256);
+    const oversizedValue = `OVERSIZED-SENTINEL-${"x".repeat(380)}`;
+    const listFact = fact(oversizedValue, "critical", "trellis_task", sourceSha256);
+    const candidate: RecoveryBrief = {
+      ...valid,
+      hard_constraints: Array.from({ length: 16 }, () => listFact),
+      decisions: Array.from({ length: 16 }, () => ({ ...listFact, priority: "important" })),
+      completed_work: Array.from({ length: 16 }, () => ({ ...listFact, priority: "optional" })),
+      open_work: Array.from({ length: 16 }, () => ({ ...listFact, priority: "important" })),
+    };
+
+    const result = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: candidate,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      provider: "trellis",
+      errorCode: "INVALID_RECOVERY_BRIEF",
+      validationIssue: {
+        code: "BRIEF_TOO_LARGE",
+        path: "brief",
+        expected: "persisted JSON at most 12000 UTF-8 bytes",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("OVERSIZED-SENTINEL");
+  });
+
   it("accepts a valid Trellis runtime through a canonical project alias", () => {
     const current = fixture();
     const sessionId = "session-trellis-project-alias";
-    createActiveTrellisTask(current.projectDir, sessionId);
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
     const projectAlias = createProjectAlias(current.projectDir);
 
     expect(getRecoveryBriefProviderStatus(projectAlias, sessionId)).toMatchObject({
@@ -265,17 +361,53 @@ describe("RecoveryBrief providers", () => {
       task: "active",
       errorCode: "NONE",
     });
-    expect(updateRecoveryBriefProvider(projectAlias, sessionId, {
+    const update = updateRecoveryBriefProvider(projectAlias, sessionId, {
       expectedSha256: "absent",
       brief: brief("trellis_task", currentTrellisSourceSha256(projectAlias, sessionId)),
-    })).toMatchObject({ ok: true, provider: "trellis", errorCode: "NONE" });
-    expect(getRecoveryBriefProviderStatus(projectAlias, sessionId)).toMatchObject({
+    });
+    expect(update).toMatchObject({ ok: true, provider: "trellis", errorCode: "NONE" });
+    const status = getRecoveryBriefProviderStatus(projectAlias, sessionId);
+    expect(status).toMatchObject({
       provider: "trellis",
       health: "available",
       recoveryStatus: "available",
       task: "active",
       errorCode: "NONE",
     });
+    const persistedPath = join(taskDir, "recovery-brief.json");
+    expect(update.briefBytes).toBe(statSync(persistedPath).size);
+    expect(status.briefBytes).toBe(update.briefBytes);
+  });
+
+  it("reports persisted file bytes while keeping canonical digest identity format-insensitive", () => {
+    const current = fixture();
+    const sessionId = "session-trellis-byte-semantics";
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+    const sourceSha256 = currentTrellisSourceSha256(current.projectDir, sessionId);
+    const firstBrief = brief("trellis_task", sourceSha256);
+    const first = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: firstBrief,
+    });
+    const persistedPath = join(taskDir, "recovery-brief.json");
+    expect(first).toMatchObject({ ok: true, errorCode: "NONE" });
+    expect(first.briefBytes).toBe(statSync(persistedPath).size);
+    expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId)).toMatchObject({
+      briefSha256: first.briefSha256,
+      briefBytes: first.briefBytes,
+    });
+
+    writeFileSync(persistedPath, JSON.stringify(firstBrief), "utf8");
+    const compactStatus = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+    expect(compactStatus.briefSha256).toBe(first.briefSha256);
+    expect(compactStatus.briefBytes).toBe(statSync(persistedPath).size);
+    expect(compactStatus.briefBytes).toBeLessThan(first.briefBytes!);
+
+    const second = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: first.briefSha256!,
+      brief: brief("trellis_task", sourceSha256, timestamp(1)),
+    });
+    expect(second).toMatchObject({ ok: true, errorCode: "NONE" });
   });
 
   it("keeps the existing no-provider checkpoint behavior and persists origin none", () => {
@@ -347,6 +479,10 @@ describe("RecoveryBrief providers", () => {
     });
     expect(firstUpdate).toMatchObject({ ok: true, provider: "project", errorCode: "NONE" });
     expect(firstUpdate.briefSha256).toMatch(/^[a-f0-9]{64}$/);
+    const projectBriefPath = join(current.projectDir, ".context-mode", "recovery-brief.json");
+    expect(firstUpdate.briefBytes).toBe(statSync(projectBriefPath).size);
+    expect(getRecoveryBriefProviderStatus(current.projectDir, "session-project").briefBytes)
+      .toBe(firstUpdate.briefBytes);
 
     createPendingCheckpoint(input(current.projectDir, "session-project", "turn-project"), {
       configDir: current.configDir,

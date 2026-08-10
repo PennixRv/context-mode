@@ -4,41 +4,48 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpat
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { loadDatabase, SQLiteBase, type PreparedStatement } from "../db-base.js";
-import type {
-  ChangedPath,
-  CheckpointDeliverySummary,
-  CheckpointSessionStartDiagnosticCode,
-  CheckpointSessionStartDiagnosticOutcome,
-  CheckpointSessionStartDiagnosticSummary,
-  CheckpointHookInput,
-  CheckpointIdentity,
-  CheckpointLatencySummary,
-  CheckpointPayload,
-  CheckpointProjectionMode,
-  CheckpointReliabilityReport,
-  CheckpointRow,
-  CheckpointSignal,
-  CheckpointState,
-  CheckpointStateCounts,
-  CheckpointTriggerReliability,
-  CompactionTrigger,
-  GitEvidence,
-  RecoveryBrief,
-  RecoveryBriefErrorCode,
-  RecoveryBriefFact,
-  RecoveryBriefOrigin,
-  RecoveryBriefOriginCounts,
-  RecoveryBriefProviderInitResult,
-  RecoveryBriefProviderKind,
-  RecoveryBriefProviderStatus,
-  RecoveryBriefProviderUpdateResult,
-  RecoveryBriefProjectionSummary,
-  RecoveryBriefReliabilitySummary,
-  RecoveryBriefSnapshotCounts,
-  RecoveryBriefStatus,
-  RecoveryBriefSourceSummary,
-  TrellisArtifact,
-  TrellisEvidence,
+import {
+  RECOVERY_BRIEF_FACT_FIELDS,
+  RECOVERY_BRIEF_LIMITS,
+  RECOVERY_BRIEF_SLOT_PRIORITIES,
+  RECOVERY_BRIEF_SOURCE_KINDS,
+  RECOVERY_BRIEF_TOP_LEVEL_FIELDS,
+  type RecoveryBriefSlot,
+  type RecoveryBriefValidationIssue,
+  type ChangedPath,
+  type CheckpointDeliverySummary,
+  type CheckpointSessionStartDiagnosticCode,
+  type CheckpointSessionStartDiagnosticOutcome,
+  type CheckpointSessionStartDiagnosticSummary,
+  type CheckpointHookInput,
+  type CheckpointIdentity,
+  type CheckpointLatencySummary,
+  type CheckpointPayload,
+  type CheckpointProjectionMode,
+  type CheckpointReliabilityReport,
+  type CheckpointRow,
+  type CheckpointSignal,
+  type CheckpointState,
+  type CheckpointStateCounts,
+  type CheckpointTriggerReliability,
+  type CompactionTrigger,
+  type GitEvidence,
+  type RecoveryBrief,
+  type RecoveryBriefErrorCode,
+  type RecoveryBriefFact,
+  type RecoveryBriefOrigin,
+  type RecoveryBriefOriginCounts,
+  type RecoveryBriefProviderInitResult,
+  type RecoveryBriefProviderKind,
+  type RecoveryBriefProviderStatus,
+  type RecoveryBriefProviderUpdateResult,
+  type RecoveryBriefProjectionSummary,
+  type RecoveryBriefReliabilitySummary,
+  type RecoveryBriefSnapshotCounts,
+  type RecoveryBriefStatus,
+  type RecoveryBriefSourceSummary,
+  type TrellisArtifact,
+  type TrellisEvidence,
 } from "./types.js";
 
 const CHECKPOINT_SCHEMA_VERSION = 1;
@@ -48,28 +55,13 @@ const MAX_CHANGED_PATHS = 12;
 const MAX_TRELLIS_ARTIFACTS = 4;
 const MAX_SIGNALS = 8;
 const MAX_ADDITIONAL_CONTEXT_BYTES = 1_200;
-const MAX_RECOVERY_BRIEF_BYTES = 12_000;
-const MAX_RECOVERY_FACT_VALUE_BYTES = 512;
-const MAX_RECOVERY_FACTS_PER_LIST = 16;
+const MAX_RECOVERY_BRIEF_BYTES = RECOVERY_BRIEF_LIMITS.briefFileBytes;
 const MAX_PROJECT_RECOVERY_SOURCES = 16;
 const MAX_PROJECT_RECOVERY_SOURCE_BYTES = 128_000;
 const GIT_TIMEOUT_MS = 1_000;
 const CHECKPOINT_DIAGNOSTIC_PHASE = "compact_session_start" as const;
 const CHECKPOINT_DIAGNOSTIC_FILE_SUFFIX = ".sessionstart-diagnostics.jsonl";
 const ARTIFACT_NAMES = new Set(["prd.md", "design.md", "implement.md", "check.md"]);
-const RECOVERY_BRIEF_SOURCE_KINDS = new Set(["trellis_task", "explicit_project_state", "git"]);
-const RECOVERY_BRIEF_TOP_LEVEL_KEYS = new Set([
-  "schema_version",
-  "updated_at",
-  "objective",
-  "hard_constraints",
-  "decisions",
-  "completed_work",
-  "open_work",
-  "latest_blocker",
-  "next_action",
-  "project_state",
-]);
 const PROJECT_RECOVERY_PROVIDER_TOP_LEVEL_KEYS = new Set([
   "schema_version",
   "storage",
@@ -157,6 +149,7 @@ interface RecoveryBriefProviderResolution {
   health: "available" | "absent" | "invalid";
   task: "active" | "absent" | "not_applicable";
   briefPath: string | null;
+  briefFileBytes: number | null;
   snapshot: RecoveryBriefSnapshot;
   currentBriefSha256: string | null;
   trellisSourceSha256: string | null;
@@ -495,94 +488,188 @@ function isValidIsoTimestamp(value: unknown): value is string {
   return value === canonical || value === canonical.replace(".000Z", "Z");
 }
 
-function isValidRecoveryFactValue(value: unknown): value is string {
-  return typeof value === "string"
-    && value.trim().length > 0
-    && Buffer.byteLength(value, "utf8") <= MAX_RECOVERY_FACT_VALUE_BYTES
-    && !/[\u0000-\u001f\u007f]/.test(value);
+type RecoveryBriefValidationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; issue: RecoveryBriefValidationIssue };
+
+function invalidRecoveryBrief<T>(
+  code: RecoveryBriefValidationIssue["code"],
+  path: string,
+  expected: string,
+): RecoveryBriefValidationResult<T> {
+  return { ok: false, issue: { code, path, expected } };
 }
 
-function parseRecoveryBriefFact(
+function exactRecoveryBriefFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  path: string,
+): RecoveryBriefValidationIssue | null {
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(value, field)) {
+      return { code: "MISSING_FIELD", path: `${path}.${field}`, expected: "required field" };
+    }
+  }
+  const allowed = new Set(fields);
+  if (Object.keys(value).some((field) => !allowed.has(field))) {
+    return { code: "UNEXPECTED_FIELD", path, expected: "exact RecoveryBrief v1 fields" };
+  }
+  return null;
+}
+
+function validateRecoveryBriefFact(
   value: unknown,
-  expectedPriority: RecoveryBriefFact["priority"],
-): RecoveryBriefFact | null {
-  if (!isRecord(value) || !hasExactKeys(value, new Set([
-    "value",
-    "priority",
-    "source_kind",
-    "source_sha256",
-    "valid_at",
-  ]))) {
-    return null;
+  slot: RecoveryBriefSlot,
+  path: string,
+): RecoveryBriefValidationResult<RecoveryBriefFact> {
+  if (!isRecord(value)) return invalidRecoveryBrief("EXPECTED_OBJECT", path, "fact object");
+  const fieldIssue = exactRecoveryBriefFields(value, RECOVERY_BRIEF_FACT_FIELDS, path);
+  if (fieldIssue) return { ok: false, issue: fieldIssue };
+
+  if (typeof value.value !== "string") {
+    return invalidRecoveryBrief("EXPECTED_STRING", `${path}.value`, "string");
   }
-  if (!isValidRecoveryFactValue(value.value)
-    || value.priority !== expectedPriority
-    || typeof value.source_kind !== "string"
-    || !RECOVERY_BRIEF_SOURCE_KINDS.has(value.source_kind)
-    || typeof value.source_sha256 !== "string"
-    || !/^[a-f0-9]{64}$/.test(value.source_sha256)
-    || !isValidIsoTimestamp(value.valid_at)) {
-    return null;
+  if (value.value.trim().length === 0) {
+    return invalidRecoveryBrief("EMPTY_VALUE", `${path}.value`, "non-empty text");
   }
+  if (Buffer.byteLength(value.value, "utf8") > RECOVERY_BRIEF_LIMITS.factValueBytes) {
+    return invalidRecoveryBrief(
+      "VALUE_TOO_LARGE",
+      `${path}.value`,
+      `at most ${RECOVERY_BRIEF_LIMITS.factValueBytes} UTF-8 bytes`,
+    );
+  }
+  if (/[\u0000-\u001f\u007f]/.test(value.value)) {
+    return invalidRecoveryBrief("CONTROL_CHARACTER", `${path}.value`, "text without control characters");
+  }
+
+  const expectedPriority = RECOVERY_BRIEF_SLOT_PRIORITIES[slot];
+  if (value.priority !== expectedPriority) {
+    return invalidRecoveryBrief("INVALID_PRIORITY", `${path}.priority`, expectedPriority);
+  }
+  if (typeof value.source_kind !== "string"
+    || !RECOVERY_BRIEF_SOURCE_KINDS.includes(value.source_kind as RecoveryBriefFact["source_kind"])) {
+    return invalidRecoveryBrief(
+      "INVALID_SOURCE_KIND",
+      `${path}.source_kind`,
+      RECOVERY_BRIEF_SOURCE_KINDS.join(" | "),
+    );
+  }
+  if (typeof value.source_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.source_sha256)) {
+    return invalidRecoveryBrief("INVALID_SHA256", `${path}.source_sha256`, "64 lowercase hexadecimal characters");
+  }
+  if (!isValidIsoTimestamp(value.valid_at)) {
+    return invalidRecoveryBrief("INVALID_TIMESTAMP", `${path}.valid_at`, "canonical UTC ISO-8601 timestamp");
+  }
+
   return {
-    value: value.value,
-    priority: expectedPriority,
-    source_kind: value.source_kind as RecoveryBriefFact["source_kind"],
-    source_sha256: value.source_sha256,
-    valid_at: value.valid_at,
+    ok: true,
+    value: {
+      value: value.value,
+      priority: expectedPriority,
+      source_kind: value.source_kind as RecoveryBriefFact["source_kind"],
+      source_sha256: value.source_sha256,
+      valid_at: value.valid_at,
+    },
   };
 }
 
-function parseRecoveryBriefFactList(
+function validateRecoveryBriefFactList(
   value: unknown,
-  expectedPriority: RecoveryBriefFact["priority"],
-): RecoveryBriefFact[] | null {
-  if (!Array.isArray(value) || value.length > MAX_RECOVERY_FACTS_PER_LIST) return null;
-  const facts = value.map((item) => parseRecoveryBriefFact(item, expectedPriority));
-  return facts.every((fact): fact is RecoveryBriefFact => fact !== null) ? facts : null;
+  slot: RecoveryBriefSlot,
+  path: string,
+): RecoveryBriefValidationResult<RecoveryBriefFact[]> {
+  if (!Array.isArray(value)) return invalidRecoveryBrief("EXPECTED_ARRAY", path, "array");
+  if (value.length > RECOVERY_BRIEF_LIMITS.factsPerList) {
+    return invalidRecoveryBrief(
+      "TOO_MANY_ITEMS",
+      path,
+      `at most ${RECOVERY_BRIEF_LIMITS.factsPerList} facts`,
+    );
+  }
+  const facts: RecoveryBriefFact[] = [];
+  for (const [index, item] of value.entries()) {
+    const result = validateRecoveryBriefFact(item, slot, `${path}[${index}]`);
+    if (!result.ok) return result;
+    facts.push(result.value);
+  }
+  return { ok: true, value: facts };
 }
 
-function parseNullableRecoveryBriefFact(
+function validateNullableRecoveryBriefFact(
   value: unknown,
-  expectedPriority: RecoveryBriefFact["priority"],
-): RecoveryBriefFact | null | undefined {
-  if (value === null) return null;
-  return parseRecoveryBriefFact(value, expectedPriority) ?? undefined;
+  slot: RecoveryBriefSlot,
+  path: string,
+): RecoveryBriefValidationResult<RecoveryBriefFact | null> {
+  return value === null
+    ? { ok: true, value: null }
+    : validateRecoveryBriefFact(value, slot, path);
+}
+
+function validateRecoveryBrief(value: unknown): RecoveryBriefValidationResult<RecoveryBrief> {
+  if (!isRecord(value)) return invalidRecoveryBrief("EXPECTED_OBJECT", "brief", "RecoveryBrief v1 object");
+  const fieldIssue = exactRecoveryBriefFields(value, RECOVERY_BRIEF_TOP_LEVEL_FIELDS, "brief");
+  if (fieldIssue) return { ok: false, issue: fieldIssue };
+  if (value.schema_version !== 1) {
+    return invalidRecoveryBrief("EXPECTED_LITERAL", "brief.schema_version", "1");
+  }
+  if (!isValidIsoTimestamp(value.updated_at)) {
+    return invalidRecoveryBrief("INVALID_TIMESTAMP", "brief.updated_at", "canonical UTC ISO-8601 timestamp");
+  }
+
+  const objective = validateRecoveryBriefFact(value.objective, "objective", "brief.objective");
+  if (!objective.ok) return objective;
+  const hardConstraints = validateRecoveryBriefFactList(
+    value.hard_constraints,
+    "hard_constraints",
+    "brief.hard_constraints",
+  );
+  if (!hardConstraints.ok) return hardConstraints;
+  const decisions = validateRecoveryBriefFactList(value.decisions, "decisions", "brief.decisions");
+  if (!decisions.ok) return decisions;
+  const completedWork = validateRecoveryBriefFactList(
+    value.completed_work,
+    "completed_work",
+    "brief.completed_work",
+  );
+  if (!completedWork.ok) return completedWork;
+  const openWork = validateRecoveryBriefFactList(value.open_work, "open_work", "brief.open_work");
+  if (!openWork.ok) return openWork;
+  const latestBlocker = validateNullableRecoveryBriefFact(
+    value.latest_blocker,
+    "latest_blocker",
+    "brief.latest_blocker",
+  );
+  if (!latestBlocker.ok) return latestBlocker;
+  const nextAction = validateNullableRecoveryBriefFact(value.next_action, "next_action", "brief.next_action");
+  if (!nextAction.ok) return nextAction;
+  const projectState = validateNullableRecoveryBriefFact(
+    value.project_state,
+    "project_state",
+    "brief.project_state",
+  );
+  if (!projectState.ok) return projectState;
+
+  return {
+    ok: true,
+    value: {
+      schema_version: 1,
+      updated_at: value.updated_at,
+      objective: objective.value,
+      hard_constraints: hardConstraints.value,
+      decisions: decisions.value,
+      completed_work: completedWork.value,
+      open_work: openWork.value,
+      latest_blocker: latestBlocker.value,
+      next_action: nextAction.value,
+      project_state: projectState.value,
+    },
+  };
 }
 
 function parseRecoveryBrief(value: unknown): RecoveryBrief | null {
-  if (!isRecord(value)
-    || !hasExactKeys(value, RECOVERY_BRIEF_TOP_LEVEL_KEYS)
-    || value.schema_version !== 1
-    || !isValidIsoTimestamp(value.updated_at)) {
-    return null;
-  }
-
-  const objective = parseRecoveryBriefFact(value.objective, "critical");
-  const hardConstraints = parseRecoveryBriefFactList(value.hard_constraints, "critical");
-  const decisions = parseRecoveryBriefFactList(value.decisions, "important");
-  const completedWork = parseRecoveryBriefFactList(value.completed_work, "optional");
-  const openWork = parseRecoveryBriefFactList(value.open_work, "important");
-  const latestBlocker = parseNullableRecoveryBriefFact(value.latest_blocker, "critical");
-  const nextAction = parseNullableRecoveryBriefFact(value.next_action, "critical");
-  const projectState = parseNullableRecoveryBriefFact(value.project_state, "important");
-  if (!objective || !hardConstraints || !decisions || !completedWork || !openWork
-    || latestBlocker === undefined || nextAction === undefined || projectState === undefined) {
-    return null;
-  }
-
-  return {
-    schema_version: 1,
-    updated_at: value.updated_at,
-    objective,
-    hard_constraints: hardConstraints,
-    decisions,
-    completed_work: completedWork,
-    open_work: openWork,
-    latest_blocker: latestBlocker,
-    next_action: nextAction,
-    project_state: projectState,
-  };
+  const result = validateRecoveryBrief(value);
+  return result.ok ? result.value : null;
 }
 
 function trustedRegularFile(trellisRoot: string, path: string): string | null {
@@ -884,6 +971,7 @@ function trellisProviderResolution(
     health: "invalid" as const,
     task,
     briefPath: null,
+    briefFileBytes: null,
     snapshot: recoverySnapshot("invalid", "trellis"),
     currentBriefSha256: null,
     trellisSourceSha256: null,
@@ -925,6 +1013,7 @@ function trellisProviderResolution(
         health: "invalid",
         task: "active",
         briefPath: relativeProjectPath(canonicalProjectRoot, recoveryPath),
+        briefFileBytes: null,
         snapshot: read.snapshot,
         currentBriefSha256: null,
         trellisSourceSha256,
@@ -939,6 +1028,7 @@ function trellisProviderResolution(
         health: "invalid",
         task: "active",
         briefPath: relativeProjectPath(canonicalProjectRoot, recoveryPath),
+        briefFileBytes: null,
         snapshot: recoverySnapshot("invalid", "trellis"),
         currentBriefSha256: read.snapshot.recoverySha256,
         trellisSourceSha256,
@@ -952,6 +1042,7 @@ function trellisProviderResolution(
       health: "available",
       task: "active",
       briefPath: relativeProjectPath(canonicalProjectRoot, recoveryPath),
+      briefFileBytes: read.bytes,
       snapshot: read.snapshot,
       currentBriefSha256: read.snapshot.recoverySha256,
       trellisSourceSha256,
@@ -972,6 +1063,7 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
       health: "absent",
       task: "not_applicable",
       briefPath: null,
+      briefFileBytes: null,
       snapshot: recoverySnapshot("absent", "none"),
       currentBriefSha256: null,
       trellisSourceSha256: null,
@@ -991,6 +1083,7 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
     health: "invalid",
     task: "not_applicable",
     briefPath: relativeProjectPath(projectRoot, paths.briefPath),
+    briefFileBytes: null,
     snapshot: recoverySnapshot("invalid", "project"),
     currentBriefSha256: null,
     trellisSourceSha256: null,
@@ -1025,6 +1118,7 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
       health: sourceValidation.errorCode === "NONE" ? "available" : "invalid",
       task: "not_applicable",
       briefPath: relativeProjectPath(projectRoot, paths.briefPath),
+      briefFileBytes: null,
       snapshot: read.snapshot,
       currentBriefSha256: read.snapshot.recoverySha256,
       trellisSourceSha256: null,
@@ -1045,6 +1139,7 @@ function projectProviderResolution(projectRoot: string): RecoveryBriefProviderRe
     health: "available",
     task: "not_applicable",
     briefPath: relativeProjectPath(projectRoot, paths.briefPath),
+    briefFileBytes: read.bytes,
     snapshot: read.snapshot,
     currentBriefSha256: read.snapshot.recoverySha256,
     trellisSourceSha256: null,
@@ -1086,9 +1181,7 @@ function recoveryBriefProviderStatusFromResolution(
     briefPath: resolution.briefPath,
     briefSha256: resolution.currentBriefSha256,
     trellisSourceSha256: resolution.trellisSourceSha256,
-    briefBytes: resolution.snapshot.recoveryJson
-      ? Buffer.byteLength(resolution.snapshot.recoveryJson, "utf8")
-      : null,
+    briefBytes: resolution.briefFileBytes,
     updatedAt,
     sources: resolution.sources,
     sourceDrift: resolution.sourceDrift,
@@ -1223,6 +1316,7 @@ export function updateRecoveryBriefProvider(
   const failed = (
     errorCode: RecoveryBriefErrorCode,
     resolution?: RecoveryBriefProviderResolution,
+    validationIssue?: RecoveryBriefValidationIssue,
   ): RecoveryBriefProviderUpdateResult => ({
     ok: false,
     provider: resolution?.kind ?? "none",
@@ -1232,13 +1326,15 @@ export function updateRecoveryBriefProvider(
     updatedAt: null,
     sourceCount: resolution?.sources.registered ?? 0,
     errorCode,
+    ...(validationIssue ? { validationIssue } : {}),
   });
   if (!sessionId) return failed("SESSION_UNAVAILABLE");
   if (options.expectedSha256 !== "absent" && !/^[a-f0-9]{64}$/.test(options.expectedSha256)) {
     return failed("INVALID_EXPECTED_SHA256");
   }
-  const recoveryBrief = parseRecoveryBrief(options.brief);
-  if (!recoveryBrief) return failed("INVALID_RECOVERY_BRIEF");
+  const validation = validateRecoveryBrief(options.brief);
+  if (!validation.ok) return failed("INVALID_RECOVERY_BRIEF", undefined, validation.issue);
+  const recoveryBrief = validation.value;
 
   const canonicalProjectRoot = safeRealpath(projectRoot);
   const resolution = resolveRecoveryBriefProvider(canonicalProjectRoot, sessionId);
@@ -1275,7 +1371,11 @@ export function updateRecoveryBriefProvider(
 
   const serializedBrief = `${JSON.stringify(recoveryBrief, null, 2)}\n`;
   if (Buffer.byteLength(serializedBrief, "utf8") > MAX_RECOVERY_BRIEF_BYTES) {
-    return failed("INVALID_RECOVERY_BRIEF", resolution);
+    return failed("INVALID_RECOVERY_BRIEF", resolution, {
+      code: "BRIEF_TOO_LARGE",
+      path: "brief",
+      expected: `persisted JSON at most ${MAX_RECOVERY_BRIEF_BYTES} UTF-8 bytes`,
+    });
   }
 
   if (resolution.kind === "project" && options.sourcePaths) {
@@ -2613,6 +2713,7 @@ export const checkpointInternals = {
   fitContext,
   fitContextDelivery,
   parseRecoveryBrief,
+  validateRecoveryBrief,
   readRecoveryBriefSnapshot,
   sha256,
   sessionIdFrom,

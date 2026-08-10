@@ -97,6 +97,7 @@ import {
   readTrellisEvidence,
   updateRecoveryBriefProvider,
 } from "./checkpoint/runtime.js";
+import { recoveryBriefV1Schema } from "./checkpoint/recovery-brief-schema.js";
 import {
   CODEX_RECOVERY_BRIEF_TOOL_MATCHER,
   RECOVERY_BRIEF_CAPABILITY_FIELD,
@@ -4251,13 +4252,33 @@ RETURNS:
 - Never echoes the submitted Brief or source contents.
 
 EXAMPLE:
-ctx_recovery_brief_update({ "expected_sha256": "absent", "brief": { "schema_version": 1 } })`,
+ctx_recovery_brief_update({
+  "expected_sha256": "absent",
+  "brief": {
+    "schema_version": 1,
+    "updated_at": "2026-08-10T00:00:00.000Z",
+    "objective": {
+      "value": "Finish the current task",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid_at": "2026-08-10T00:00:00.000Z"
+    },
+    "hard_constraints": [],
+    "decisions": [],
+    "completed_work": [],
+    "open_work": [],
+    "latest_blocker": null,
+    "next_action": null,
+    "project_state": null
+  }
+})`,
     inputSchema: z.object({
       expected_sha256: z.union([
         z.literal("absent"),
         z.string().regex(/^[a-f0-9]{64}$/),
       ]),
-      brief: z.unknown(),
+      brief: recoveryBriefV1Schema,
       source_paths: z.array(z.string().min(1).max(512)).max(16).optional(),
       [RECOVERY_BRIEF_CAPABILITY_FIELD]: z.unknown().optional(),
     }),

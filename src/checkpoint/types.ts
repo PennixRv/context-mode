@@ -39,9 +39,77 @@ export type RecoveryBriefErrorCode =
   | "UNSAFE_PROVIDER_PATH"
   | "WRITE_FAILED";
 
-export type RecoveryBriefFactPriority = "critical" | "important" | "optional";
+export const RECOVERY_BRIEF_FACT_PRIORITIES = ["critical", "important", "optional"] as const;
 
-export type RecoveryBriefSourceKind = "trellis_task" | "explicit_project_state" | "git";
+export type RecoveryBriefFactPriority = typeof RECOVERY_BRIEF_FACT_PRIORITIES[number];
+
+export const RECOVERY_BRIEF_SOURCE_KINDS = ["trellis_task", "explicit_project_state", "git"] as const;
+
+export type RecoveryBriefSourceKind = typeof RECOVERY_BRIEF_SOURCE_KINDS[number];
+
+export const RECOVERY_BRIEF_TOP_LEVEL_FIELDS = [
+  "schema_version",
+  "updated_at",
+  "objective",
+  "hard_constraints",
+  "decisions",
+  "completed_work",
+  "open_work",
+  "latest_blocker",
+  "next_action",
+  "project_state",
+] as const;
+
+export const RECOVERY_BRIEF_FACT_FIELDS = [
+  "value",
+  "priority",
+  "source_kind",
+  "source_sha256",
+  "valid_at",
+] as const;
+
+export const RECOVERY_BRIEF_SLOT_PRIORITIES = {
+  objective: "critical",
+  hard_constraints: "critical",
+  decisions: "important",
+  completed_work: "optional",
+  open_work: "important",
+  latest_blocker: "critical",
+  next_action: "critical",
+  project_state: "important",
+} as const satisfies Record<string, RecoveryBriefFactPriority>;
+
+export type RecoveryBriefSlot = keyof typeof RECOVERY_BRIEF_SLOT_PRIORITIES;
+
+export const RECOVERY_BRIEF_LIMITS = {
+  factValueBytes: 512,
+  factsPerList: 16,
+  briefFileBytes: 12_000,
+} as const;
+
+export type RecoveryBriefValidationIssueCode =
+  | "EXPECTED_OBJECT"
+  | "EXPECTED_ARRAY"
+  | "EXPECTED_STRING"
+  | "MISSING_FIELD"
+  | "UNEXPECTED_FIELD"
+  | "EXPECTED_LITERAL"
+  | "INVALID_TIMESTAMP"
+  | "EMPTY_VALUE"
+  | "VALUE_TOO_LARGE"
+  | "CONTROL_CHARACTER"
+  | "INVALID_PRIORITY"
+  | "INVALID_SOURCE_KIND"
+  | "INVALID_SHA256"
+  | "TOO_MANY_ITEMS"
+  | "BRIEF_TOO_LARGE";
+
+/** Bounded structural detail only; never include the rejected value. */
+export interface RecoveryBriefValidationIssue {
+  code: RecoveryBriefValidationIssueCode;
+  path: string;
+  expected: string;
+}
 
 export interface CheckpointIdentity {
   canonicalProjectRoot: string;
@@ -309,6 +377,7 @@ export interface RecoveryBriefProviderUpdateResult {
   updatedAt: string | null;
   sourceCount: number;
   errorCode: RecoveryBriefErrorCode;
+  validationIssue?: RecoveryBriefValidationIssue;
 }
 
 export interface CheckpointHookInput {

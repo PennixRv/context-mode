@@ -1,7 +1,6 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import {
   detectRuntimes,
   buildCommand,
@@ -12,6 +11,7 @@ import {
   appendBubblewrapReadonlyPath,
   type BubblewrapIsolation,
 } from "./execution-policy.js";
+import { HOST_TEMP_DIRECTORY } from "./util/system-temp.js";
 export type { ExecResult } from "./types.js";
 import type { ExecResult } from "./types.js";
 
@@ -94,25 +94,6 @@ export function buildPowerShellScriptContent(code: string): string {
     code,
   ].join("\n");
 }
-
-/**
- * Resolve the real OS temp directory, bypassing any TMPDIR env override.
- * os.tmpdir() reads TMPDIR from the environment, which some shells/tools
- * set to the project root — causing temp files to pollute the working tree.
- */
-const OS_TMPDIR = (() => {
-  if (isWin) return process.env.TEMP ?? process.env.TMP ?? tmpdir();
-  try {
-    const result = execFileSync(
-      process.platform === "darwin" ? "getconf" : "mktemp",
-      process.platform === "darwin" ? ["DARWIN_USER_TEMP_DIR"] : ["-u", "-d"],
-      { env: { ...process.env, TMPDIR: undefined as unknown as string }, encoding: "utf-8" },
-    ).trim();
-    const dir = process.platform === "darwin" ? result : resolve(result, "..");
-    if (dir && dir !== process.cwd()) return dir;
-  } catch { /* fall through */ }
-  return "/tmp";
-})();
 
 /**
  * Pure helper — exported for unit testing. Issue #782.
@@ -402,7 +383,7 @@ export class PolyglotExecutor {
       );
     }
 
-    const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-mode-"));
+    const tmpDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, ".ctx-mode-"));
 
     try {
       const filePath = this.#writeScript(tmpDir, code, language);
