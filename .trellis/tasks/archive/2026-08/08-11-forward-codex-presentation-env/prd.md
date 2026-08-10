@@ -134,12 +134,12 @@ to npm unless a separate user instruction explicitly expands scope.
   restricted-boundary tests pass.
 - [x] Full typecheck, build, test, all bundle/asymmetric drift checks,
   marketplace build/verify, and two consecutive deterministic builds pass.
-- [ ] The final source commit is on remote `devel`; the native attestation is
+- [x] The final source commit is on remote `devel`; the native attestation is
   its only-change direct child; the annotated tag is unoccupied, valid, and
   reachable from the configured release ref.
-- [ ] CI and Release workflow complete successfully; every downloaded release
+- [x] CI and Release workflow complete successfully; every downloaded release
   asset matches its declared SHA-256; npm `latest` remains unchanged.
-- [ ] Task results, applicable specs, release evidence, and final clean status
+- [x] Task results, applicable specs, release evidence, and final clean status
   are committed without touching any forbidden repository or cache path.
 
 ## Rollback

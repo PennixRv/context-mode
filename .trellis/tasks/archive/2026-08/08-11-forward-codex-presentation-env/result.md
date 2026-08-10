@@ -9,8 +9,12 @@ Date: 2026-08-11
 - Implementation branch: `fix/issue-054-codex-plugin-env-forwarding`
 - Implementation commit: `d1918cc9a7758d9327b04b0b934e9e34641e6d34`
 - Version commit: `51ea11f8`
+- Release source commit: `e84de520b7a5eeeec2b1784e4efde45936b280ce`
+- Native attestation evidence commit: `1b784333cae7c30a9100fb314b2140929450b9e7`
+- Annotated tag object: `9a0dc5e52f3e591e2fda090f9bb1d153bf6e00ab`
+- Peeled tag commit: `1b784333cae7c30a9100fb314b2140929450b9e7`
 - Release version: `1.0.185`
-- Release completion: pending native attestation, tag, CI, and asset verification
+- Release completion: published and independently verified
 
 ## Delivered
 
@@ -147,6 +151,72 @@ execution support remains Linux-only with a successful real `bubblewrap`
 probe; macOS and Windows still fail closed in restricted mode and retain
 compatibility mode.
 
+## Release Result
+
+The existing native-attested release flow completed without moving or
+rewriting another tag:
+
+```text
+Provider-authorized native compact preflight
+  PASS; manual and automatic lifecycles both reached
+  pending -> confirmed -> claimed
+  Node 26.6.0; Codex CLI 0.146.0; provider tuple openai-custom
+
+Native attestation
+  path: docs/releases/attestations/v1.0.185.json
+  raw SHA-256: c2a0fc346598bcfa4aa5e33da51d5cc00e6e6b7857ed4bc1e8c62b189a5433b2
+  attestation SHA-256:
+  e0ee8302a68eeb1b8191876af6a04eb5461b340d27d6e80a50f7697164922fc2
+
+node scripts/verify-codex-native-release-attestation.mjs ...
+  PASS; source e84de520 is the direct parent of evidence 1b784333,
+  whose only change is the tracked v1.0.185 attestation
+
+node scripts/validate-fork-release-tag.mjs v1.0.185
+  PASS; tag target is reachable from origin/devel
+
+Source CI
+  Bundle Drift Check 31416294616: PASS
+  OpenClaw E2E 31416294621: PASS
+  CI 31416294635: PASS; offline Codex asset, Ubuntu, macOS, Windows
+
+Evidence CI
+  OpenClaw E2E 31418368123: PASS
+  CI 31418368099: PASS; offline Codex asset, Ubuntu, macOS, Windows
+
+GitHub Release workflow 31418586932
+  PASS; typecheck, build, bundle drift rejection, full test, release assets,
+  immutable native attestation verification, and publish
+
+Downloaded GitHub Release assets
+  CONTENT-MANIFEST.json:
+    7728c44d1ef0b0aeb9a135274e7181d6a3448c0379fd9ca8c9dc84a60f30a0c9
+  context-mode-1.0.185.tgz:
+    dba552437523d50e9d3b8fd97d29d9bc33324773611787e9188e2ec3356d795e
+  context-mode-codex-marketplace-v1.0.185.tar.gz:
+    43e5753cef82077f51bf422dd9d7061c3da498d1b00207468ed1e85099b9a675
+  context-mode-codex-marketplace-v1.0.185.tar.gz.sha256:
+    436d6bbf04f7d242d412bed73a91250b332edf2a9e538b98b57fee489b4274d9
+
+Downloaded marketplace verification
+  PASS; checksum sidecar, byte-identical CONTENT-MANIFEST, 124 entries,
+  exact five-name env_vars, offline install, and MCP initialize
+
+npm view context-mode version dist-tags.latest --json
+  unchanged at 1.0.169; no npm publication
+```
+
+Release URL:
+`https://github.com/PennixRv/context-mode/releases/tag/v1.0.185`
+
+The shell did not expose `OPENAI_API_KEY`. Two attempts using an unrelated
+inherited credential failed at the seed turn with an authorization category
+before any compact or hook event and produced no attestation. The successful
+official preflight used the user-authorized current profile API key only in the
+parent process environment; it persisted no credential, copied no auth file
+into the disposable profile, and removed all temporary provider state and raw
+reports.
+
 ## Residual Risks
 
 - Existing installed Plugin caches do not change until a user installs or
@@ -156,5 +226,10 @@ compatibility mode.
   future Codex regressions remain external.
 - The Codex host may continue displaying the complete `Called` input even when
   context-mode returns a bounded source preview.
-- Final release, CI, downloadable asset hashes, and npm unchanged-state evidence
-  must be added after publication completes.
+- The official preflight intentionally reports a generic child-validator
+  failure after deleting raw reports. Credential-selection failures therefore
+  require a separate content-free diagnostic classification; improving that
+  operator diagnostic is outside this task and was not added to release code.
+- GitHub Actions reported that several pinned actions still target deprecated
+  Node.js 20 metadata and were forced onto Node.js 24. The workflows passed;
+  action-version maintenance remains a separate repository task.

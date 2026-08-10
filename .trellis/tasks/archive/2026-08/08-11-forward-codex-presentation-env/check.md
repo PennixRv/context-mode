@@ -73,12 +73,20 @@ omitted length, truncation state, stable SHA-256 digest, and stdout. A zero
 `Searchable terms` value disables only optional terms; it does not suppress the
 source audit preview required by upstream Issues #717 and #736.
 
-## Remaining Gates
+## Release Gates Completed
 
-- Synchronize version `1.0.185`, archive the task into the exact release source
-  commit, and run the clean-source native preflight. Version synchronization is
-  complete in `51ea11f8`; archive and preflight remain.
-- Create the direct-child attestation-only evidence commit and immutable
-  annotated `v1.0.185` tag.
-- Wait for CI and Release completion, download every asset, verify all hashes
-  and offline installation, and record final release evidence.
+- Release source `e84de520b7a5eeeec2b1784e4efde45936b280ce` is on
+  `origin/devel`; its direct child
+  `1b784333cae7c30a9100fb314b2140929450b9e7` adds only the native
+  attestation.
+- Provider-native manual and automatic compact both reached
+  `pending -> confirmed -> claimed`; attestation and tag metadata verification
+  passed before tag publication.
+- Annotated tag object `9a0dc5e52f3e591e2fda090f9bb1d153bf6e00ab`
+  peels to the evidence commit.
+- Source/evidence CI, OpenClaw E2E, Bundle Drift, and Release workflow passed on
+  all configured platforms. Release workflow `31418586932` published four
+  assets.
+- All downloaded assets, the checksum sidecar, manifest byte parity, npm
+  package version, offline installation, exact `env_vars`, and MCP initialize
+  were independently verified. npm `latest` remained `1.0.169`.
