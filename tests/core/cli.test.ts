@@ -1155,8 +1155,8 @@ describe("start.mjs CLI self-heal", () => {
     // pushing the assertion to compare selfHealIdx=16381 < commentIdx=2347 →
     // FAIL on otherwise-correct ordering. Use uniquely-shaped statement
     // fragments so a future comment cannot shift the test's compass.
-    const ensureDepsIdx    = src.indexOf('import "./hooks/ensure-deps.mjs"');
-    const selfHealIdx      = src.indexOf('if (!existsSync(resolve(__dirname, "cli.bundle.mjs"))');
+    const ensureDepsIdx    = src.indexOf('await import("./hooks/ensure-deps.mjs")');
+    const selfHealIdx      = src.indexOf('// Self-heal: create CLI shim');
     const serverImportIdx  = src.indexOf('await import("./server.bundle.mjs")');
     expect(ensureDepsIdx,   "ensure-deps import statement missing").toBeGreaterThan(-1);
     expect(selfHealIdx,     "cli.bundle.mjs self-heal block missing").toBeGreaterThan(-1);
@@ -1164,6 +1164,10 @@ describe("start.mjs CLI self-heal", () => {
     // Self-heal must be between ensure-deps import and server import.
     expect(selfHealIdx).toBeGreaterThan(ensureDepsIdx);
     expect(selfHealIdx).toBeLessThan(serverImportIdx);
+    expect(src.slice(ensureDepsIdx - 80, ensureDepsIdx)).toContain("if (!restrictedExecutionServer)");
+    expect(src.slice(selfHealIdx, selfHealIdx + 260)).toContain(
+      "if (!restrictedExecutionServer && !existsSync",
+    );
   });
 
   // ── Algo-D4: plugin-cache integrity from package.json files[] ──

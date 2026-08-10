@@ -4,69 +4,69 @@ Correlation IDs: `ROOT-ISSUE-025`, `ROOT-ISSUE-041`
 
 ## 1. Reconfirm The Baseline
 
-- [ ] Run `trellis-start`, bind this task, and use `trellis-before-dev` to read
+- [x] Run `trellis-start`, bind this task, and use `trellis-before-dev` to read
       applicable project specifications.
-- [ ] Confirm branch, preparation commit, and clean status. Stop on unexplained
+- [x] Confirm branch, preparation commit, and clean status. Stop on unexplained
       existing changes.
-- [ ] Map all three handlers, `PolyglotExecutor`, `ContentStore`, platform
+- [x] Map all three handlers, `PolyglotExecutor`, `ContentStore`, platform
       adapters, and bundle-generation paths.
-- [ ] Read upstream Issues #717 and #736, map `CODE_ECHO_MAX`,
+- [x] Read upstream Issues #717 and #736, map `CODE_ECHO_MAX`,
       `buildExecuteEcho()`, indexed-summary formatting, and their regression
       tests before changing response presentation.
-- [ ] Run the existing #852, security-routing, executor, and batch tests before
+- [x] Run the existing #852, security-routing, executor, and batch tests before
       implementation and record the baseline result.
 
 ## 2. Define One Policy Contract
 
-- [ ] Define shared authority levels, authority provenance, isolation status,
+- [x] Define shared authority levels, authority provenance, isolation status,
       and stable error classes.
-- [ ] Make all three handlers obtain decisions from one policy entrance and
+- [x] Make all three handlers obtain decisions from one policy entrance and
       remove duplicate or contradictory boundary interpretations.
-- [ ] Prove through tests that ordinary tool input cannot elevate authority.
-- [ ] Define tool names, annotations, descriptions, and compatibility behavior
+- [x] Prove through tests that ordinary tool input cannot elevate authority.
+- [x] Define tool names, annotations, descriptions, and compatibility behavior
       for ordinary and restricted execution.
 
 ## 3. Enforce Restricted Execution
 
-- [ ] Implement one subprocess-isolation launch path while preserving existing
+- [x] Implement one subprocess-isolation launch path while preserving existing
       timeout, output-cap, and process-group cleanup behavior.
-- [ ] On supported platforms, enforce project read-only access, hide external
+- [x] On supported platforms, enforce project read-only access, hide external
       files, disable network, and prevent background process survival.
-- [ ] Add fail-closed behavior and diagnosable errors for unsupported or
+- [x] Add fail-closed behavior and diagnosable errors for unsupported or
       unverifiable isolation backends.
-- [ ] Connect the explicit `ctx_execute_file` path check to the shared policy
+- [x] Connect the explicit `ctx_execute_file` path check to the shared policy
       without weakening issue #852 behavior.
 
 ## 4. Remove Persistent Side Effects
 
-- [ ] Implement request-lifetime indexing or equivalent non-persistent query
+- [x] Implement request-lifetime indexing or equivalent non-persistent query
       support for restricted batch aggregation.
-- [ ] Prevent restricted `intent`, batch execution, and telemetry/event paths
+- [x] Prevent restricted `intent`, batch execution, and telemetry/event paths
       from writing persistent storage.
-- [ ] Prove that a later `ctx_search` cannot recall restricted output.
-- [ ] Preserve and clearly document ordinary indexed compatibility mode.
+- [x] Prove that a later `ctx_search` cannot recall restricted output.
+- [x] Preserve and clearly document ordinary indexed compatibility mode.
 
 ## 5. Test The Boundary
 
-- [ ] Complete the entrance, authority, language, path, side-effect, storage,
+- [x] Complete the entrance, authority, language, path, side-effect, storage,
       and scheduling matrix from the PRD and design.
-- [ ] Use real subprocess tests for command-internal `cd`, absolute access,
+- [x] Use real subprocess tests for command-internal `cd`, absolute access,
       child processes, writes, network, and background survival.
-- [ ] Cover concurrency, timeout, cancellation, encoded or indirect paths,
+- [x] Cover concurrency, timeout, cancellation, encoded or indirect paths,
       missing targets, and unavailable isolation backends.
-- [ ] Check tool lists, adapters, source, and bundled output for consistency.
+- [x] Check tool lists, adapters, source, and bundled output for consistency.
 
 ## 6. Compact And Test MCP Responses
 
-- [ ] Define one bounded presentation policy for execution-source previews,
+- [x] Define one bounded presentation policy for execution-source previews,
       indexed title previews, and searchable-term counts.
-- [ ] Add documented configuration with a compact default, stable validation,
+- [x] Add documented configuration with a compact default, stable validation,
       Unicode-safe truncation, original size, omitted size, and digest metadata.
-- [ ] Preserve the verified #717/#736 audit contract; support a zero preview only
+- [x] Preserve the verified #717/#736 audit contract; support a zero preview only
       when tests prove it does not bypass required inspection.
-- [ ] Keep restricted execution non-persistent and explicitly document that the
+- [x] Keep restricted execution non-persistent and explicitly document that the
       Codex `Called` argument block is host-owned and unchanged.
-- [ ] Add unit and MCP integration tests that assert both semantic output and
+- [x] Add unit and MCP integration tests that assert both semantic output and
       measured response limits for default and configured cases.
 
 ## 7. Validate And Deliver
@@ -80,9 +80,9 @@ git diff --check
 git status --short
 ```
 
-- [ ] Use `trellis-check` for full-scope review. Inline mode must not dispatch a
+- [x] Use `trellis-check` for full-scope review. Inline mode must not dispatch a
       check subagent.
-- [ ] Capture reusable execution-security contracts in the applicable
+- [x] Capture reusable execution-security contracts in the applicable
       `.trellis/spec/` document; keep one-off logs in task evidence.
 - [ ] Commit source, tests, documentation, and task assets. Do not push,
       publish, or update the parent Gitlink.

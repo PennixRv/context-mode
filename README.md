@@ -1173,13 +1173,31 @@ npm install -g context-mode
 
 ## How the Sandbox Works
 
-Each `ctx_execute` call spawns an isolated subprocess with its own process boundary. Scripts can't access each other's memory or state. The subprocess runs your code, captures stdout, and only that stdout enters the conversation context. The raw data — log files, API responses, snapshots — never leaves the sandbox.
+Each `ctx_execute` call spawns a separate subprocess. In the default `compatibility` mode, this is a process and output boundary, not a read-only filesystem or network security boundary: execution inherits the server's ordinary filesystem and network authority. This preserves existing build, test, authenticated CLI, and persistent-index workflows.
 
 Twelve language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R, Elixir, and C#. Bun is auto-detected for 3-5x faster JS/TS execution.
 
-Authenticated CLIs work through credential passthrough — `gh`, `aws`, `gcloud`, `kubectl`, `docker` inherit environment variables and config paths without exposing them to the conversation.
+Authenticated CLIs work in compatibility mode through credential passthrough — `gh`, `aws`, `gcloud`, `kubectl`, and `docker` inherit environment variables and config paths without exposing them to the conversation.
 
-When output exceeds 5 KB and an `intent` is provided, Context Mode switches to intent-driven filtering: it indexes the full output into the knowledge base, searches for sections matching your intent, and returns only the relevant matches with a vocabulary of searchable terms for follow-up queries.
+When compatibility-mode output exceeds 5 KB and an `intent` is provided, Context Mode switches to intent-driven filtering: it indexes the full output into the knowledge base, searches for sections matching your intent, and returns only the relevant matches with a vocabulary of searchable terms for follow-up queries.
+
+### Restricted project read-only execution
+
+Externally governed read-only sessions can select one server-fixed policy at process startup:
+
+```bash
+CONTEXT_MODE_EXECUTION_MODE=restricted \
+CONTEXT_MODE_RESTRICTED_PROJECT_ROOT=/absolute/path/to/project \
+context-mode
+```
+
+Restricted mode applies to `ctx_execute`, `ctx_execute_file`, and `ctx_batch_execute`. The MCP caller cannot select compatibility mode or replace the project root through tool arguments. The trusted root must be an existing directory explicitly supplied through `CONTEXT_MODE_RESTRICTED_PROJECT_ROOT`; restricted mode never derives it from a caller `cwd`, `PWD`, a transcript, or the server process working directory.
+
+On Linux, context-mode requires a working `bubblewrap` (`bwrap`) backend. The project and selected runtime installation are mounted read-only; files outside that view are hidden; ordinary temporary paths are read-only; the network namespace is isolated; capabilities are dropped; and the full process group is removed on timeout or exit. Shell, JavaScript, TypeScript, and Python are allowed. TypeScript uses Node 22+'s in-memory type stripping or an already selected Bun runtime, avoiding `tsx`/`ts-node` temporary writes.
+
+Restricted output and batch queries remain in request memory. They do not write FTS5, session databases, statistics, recovery state, readiness sentinels, preload scripts, startup self-heal files, or background dependency repairs, and a later `ctx_search` cannot recall them. `query_scope: "global"` and background execution are rejected.
+
+macOS and Windows currently have no proven backend in this component. They return `CTX_EXEC_ISOLATION_UNAVAILABLE`; Linux does the same when `bwrap` is missing or its capability probe fails. A missing or invalid trusted root returns `CTX_EXEC_PROJECT_ROOT_INVALID`. There is no fallback to compatibility execution.
 
 ## How the Knowledge Base Works
 
@@ -1568,9 +1586,25 @@ The guard is **on by default** and requires no configuration. To intentionally p
 }
 ```
 
-context-mode honors that allow rule (read from your `.claude/settings.json` / `~/.claude/settings.json`) exactly as Claude Code does, so an out-of-project grant lives in one place and stays meaningful.
+In compatibility mode, context-mode honors that allow rule (read from your `.claude/settings.json` / `~/.claude/settings.json`) exactly as Claude Code does, so an out-of-project grant lives in one place and stays meaningful. Restricted execution does not treat a host `Read` allow rule as arbitrary-code authority: its explicit trusted project root and operating-system isolation remain final.
 
-Reviewing the prompt: the `ctx_execute` / `ctx_execute_file` approval titles now read as code execution ("Run code in a sandbox…", "Run code over a file…") so an unfamiliar reviewer can recognise the action class even though the MCP prompt renders only the tool title and raw arguments. `ctx_execute` and `ctx_batch_execute` run arbitrary code and still inherit the process's filesystem access, so the boundary guard is a defense-in-depth layer for the *file-read* tool, not a full OS sandbox — treat approving any execution tool as approving arbitrary code, and keep host-level sandboxing enabled.
+Reviewing the prompt: compatibility titles identify arbitrary code execution and use `readOnlyHint: false`, `destructiveHint: true`, and `openWorldHint: true`. Restricted titles identify project read-only code execution and use the inverse read-only metadata. The default compatibility mode still inherits the server process's ordinary filesystem and network access, so treat its execution tools as arbitrary code and keep host-level sandboxing enabled.
+
+### MCP response presentation
+
+Execution source remains directly visible for the audit and inspection contracts established by upstream [Issue #717](https://github.com/mksglu/context-mode/issues/717) and [Issue #736](https://github.com/mksglu/context-mode/issues/736), but one shared policy bounds the duplicate MCP result content. Source responses report language, original characters, preview characters, omitted characters, truncation state, and SHA-256. Command summaries carry the same size, truncation, and digest fields. Truncation counts Unicode code points and chooses a Markdown fence longer than any backtick run in the preview.
+
+| Variable | Default | Range and zero behavior |
+|---|---:|---|
+| `CONTEXT_MODE_CODE_ECHO_MAX` | `240` characters | `64-2000`; `0` becomes the auditable minimum `64`. |
+| `CONTEXT_MODE_COMMAND_ECHO_MAX` | `160` characters | `64-500`; `0` becomes `64`. |
+| `CONTEXT_MODE_TITLE_PREVIEW_MAX` | `96` characters | `16-240`; `0` becomes `16`. |
+| `CONTEXT_MODE_SEARCHABLE_TERMS_MAX` | `20` terms | `0-80`; `0` suppresses the optional term list. |
+| `CONTEXT_MODE_RESULT_PREVIEW_MAX` | `1200` characters | `160-3000`; `0` becomes `160`. |
+
+Values are read at server startup. Small or excessive integers clamp to the stated range; absent, empty, negative, fractional, unsafe, or otherwise invalid values use the default. A zero code or command preview is intentionally not supported because it would bypass the direct source visibility required by #717/#736.
+
+These settings control only context-mode MCP result content. Codex renders the tool input in its host-owned `Called` block before the server returns a result; context-mode cannot shorten, suppress, or claim to have fixed that display.
 
 ### Network fetch hardening
 
@@ -1596,6 +1630,13 @@ That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. U
 | Variable | Default | Purpose |
 |---|---|---|
 | `CONTEXT_MODE_DIR` | Adapter default, for example `~/.codex/context-mode` or `~/.claude/context-mode` | Since v1.0.147. Absolute writable root for context-mode storage. Sessions and stats use `<root>/sessions`; indexed content uses `<root>/content`. Empty or whitespace-only values are treated as unset and shown by `ctx_doctor`; non-empty values must be absolute. `~` is not expanded. |
+
+### Execution policy environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONTEXT_MODE_EXECUTION_MODE` | `compatibility` | Server-fixed execution authority for all three execution tools. Accepted values are `compatibility` and `restricted`. Invalid values fail closed and never select compatibility. |
+| `CONTEXT_MODE_RESTRICTED_PROJECT_ROOT` | None | Required in restricted mode. Must name an existing absolute directory, which the server canonicalizes before probing isolation. It is never sourced from MCP input or forwarded to child processes. |
 
 ### Routing-guidance environment variables
 

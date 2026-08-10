@@ -1,6 +1,6 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   detectRuntimes,
@@ -8,6 +8,10 @@ import {
   type RuntimeMap,
   type Language,
 } from "./runtime.js";
+import {
+  appendBubblewrapReadonlyPath,
+  type BubblewrapIsolation,
+} from "./execution-policy.js";
 export type { ExecResult } from "./types.js";
 import type { ExecResult } from "./types.js";
 
@@ -207,7 +211,7 @@ function killTree(proc: ReturnType<typeof spawn>): void {
   }
 }
 
-interface ExecuteOptions {
+export interface ExecuteOptions {
   language: Language;
   code: string;
   timeout?: number;
@@ -222,10 +226,95 @@ interface ExecuteOptions {
    * a non-project cwd (e.g. $HOME).
    */
   cwd?: string;
+  /** Server-controlled process isolation. Never derived from tool input. */
+  isolation?: BubblewrapIsolation;
 }
 
-interface ExecuteFileOptions extends ExecuteOptions {
+export interface ExecuteFileOptions extends ExecuteOptions {
   path: string;
+}
+
+interface RestrictedSpawnOptions {
+  isolation: BubblewrapIsolation;
+  scriptPath: string;
+  scriptContent: string;
+}
+
+function isInsidePath(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function restrictedRuntimePrefix(
+  command: string[],
+  projectRoot: string,
+): string | null {
+  if (!isAbsolute(command[0])) return null;
+  let executable: string;
+  try {
+    executable = realpathSync(command[0]);
+  } catch {
+    return null;
+  }
+  const visibleRoots = [projectRoot, "/usr", "/bin", "/lib", "/lib64"];
+  if (visibleRoots.some((root) => isInsidePath(root, executable))) return null;
+  return dirname(dirname(executable));
+}
+
+export function buildBubblewrapArgs(
+  restricted: Pick<RestrictedSpawnOptions, "isolation" | "scriptPath">,
+  cwd: string,
+  command: string[],
+): string[] {
+  const args = [
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-all",
+    "--cap-drop", "ALL",
+  ];
+
+  for (const systemPath of ["/usr", "/bin", "/sbin", "/lib", "/lib64"]) {
+    appendBubblewrapReadonlyPath(args, systemPath);
+  }
+  for (const systemFile of ["/etc/ld.so.cache", "/etc/alternatives"]) {
+    if (existsSync(systemFile)) args.push("--ro-bind", systemFile, systemFile);
+  }
+  const runtimePrefix = restrictedRuntimePrefix(command, restricted.isolation.projectRoot);
+  if (runtimePrefix && existsSync(runtimePrefix)) {
+    // User-managed runtimes commonly live under nvm/asdf/custom prefixes.
+    // Mount only that immutable runtime installation, at its original path,
+    // so compiled-in library/resource paths keep working without exposing the
+    // rest of the user's home directory.
+    args.push("--ro-bind", runtimePrefix, runtimePrefix);
+  }
+
+  args.push(
+    "--proc", "/proc",
+    "--dir", "/dev",
+  );
+  for (const device of ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"]) {
+    if (existsSync(device)) args.push("--dev-bind", device, device);
+  }
+  args.push(
+    "--chmod", "0555", "/dev",
+    "--dir", "/tmp",
+    "--ro-bind-data", "0", restricted.scriptPath,
+    "--chmod", "0555", "/tmp",
+    "--ro-bind", restricted.isolation.projectRoot, restricted.isolation.projectRoot,
+    "--chdir", cwd,
+    "--clearenv",
+    "--setenv", "PATH", `${restricted.isolation.projectRoot}/node_modules/.bin:/usr/local/bin:/usr/bin:/bin`,
+    "--setenv", "HOME", "/nonexistent",
+    "--setenv", "TMPDIR", "/tmp",
+    "--setenv", "LANG", "C.UTF-8",
+    "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+    "--setenv", "PYTHONUNBUFFERED", "1",
+    "--setenv", "PYTHONUTF8", "1",
+    "--setenv", "NO_COLOR", "1",
+    "--setenv", "PWD", cwd,
+    ...command,
+  );
+  return args;
 }
 
 export class PolyglotExecutor {
@@ -280,7 +369,39 @@ export class PolyglotExecutor {
   }
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
-    const { language, code, timeout, background = false, cwd: cwdOverride } = opts;
+    const { language, code, timeout, background = false, cwd: cwdOverride, isolation } = opts;
+
+    if (isolation) {
+      if (background) throw new Error("CTX_EXEC_BACKGROUND_FORBIDDEN");
+      const scriptContent = this.#prepareScriptContent(code, language, true);
+      const scriptPath = join("/tmp", buildScriptFilename(
+        language,
+        process.platform,
+        language === "shell" ? this.#runtimes.shell : null,
+      ));
+      const jsRuntimeName = this.#runtimes.javascript
+        ?.split(/[\\/]/)
+        .pop()
+        ?.toLowerCase();
+      const cmd = language === "typescript"
+        && this.#runtimes.javascript
+        && /^(node|nodejs)(\.exe)?$/.test(jsRuntimeName ?? "")
+        ? [this.#runtimes.javascript, "--experimental-strip-types", scriptPath]
+        : buildCommand(this.#runtimes, language, scriptPath);
+      if (cmd[0] === "__rust_compile_run__") {
+        throw new Error("CTX_EXEC_LANGUAGE_UNSUPPORTED");
+      }
+      const cwd = cwdOverride ?? isolation.projectRoot;
+      return this.#spawn(
+        cmd,
+        cwd,
+        "",
+        timeout,
+        false,
+        { isolation, scriptPath, scriptContent },
+      );
+    }
+
     const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-mode-"));
 
     try {
@@ -326,10 +447,20 @@ export class PolyglotExecutor {
       language,
       code,
     );
-    return this.execute({ language, code: wrappedCode, timeout });
+    return this.execute({
+      language,
+      code: wrappedCode,
+      timeout,
+      cwd: opts.cwd,
+      isolation: opts.isolation,
+    });
   }
 
-  #writeScript(tmpDir: string, code: string, language: Language): string {
+  #prepareScriptContent(
+    code: string,
+    language: Language,
+    restricted = false,
+  ): string {
     // Go needs a main package wrapper if not present
     if (language === "go" && !code.includes("package ")) {
       code = `package main\n\nimport "fmt"\n\nfunc main() {\n${code}\n}\n`;
@@ -346,14 +477,6 @@ export class PolyglotExecutor {
       code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
-    const fp = join(
-      tmpDir,
-      buildScriptFilename(
-        language,
-        process.platform,
-        language === "shell" ? this.#runtimes.shell : null,
-      ),
-    );
     if (language === "shell") {
       const shellPath = this.#runtimes.shell;
       // #782 — on Windows Git Bash, rewrite bare `mvn` → `mvn.cmd` so Maven
@@ -363,14 +486,27 @@ export class PolyglotExecutor {
       const shellCode = isWin && isPowerShell(shellPath)
         ? buildPowerShellScriptContent(rewritten)
         : rewritten;
-      writeFileSync(
-        fp,
-        buildShellScriptContent(shellCode, process.env.PATH, process.platform),
-        { encoding: "utf-8", mode: 0o700 },
-      );
-    } else {
-      writeFileSync(fp, code, "utf-8");
+      const inheritedPath = restricted
+        ? `${this.#projectRoot}/node_modules/.bin:/usr/local/bin:/usr/bin:/bin`
+        : process.env.PATH;
+      return buildShellScriptContent(shellCode, inheritedPath, process.platform);
     }
+    return code;
+  }
+
+  #writeScript(tmpDir: string, code: string, language: Language): string {
+    const fp = join(
+      tmpDir,
+      buildScriptFilename(
+        language,
+        process.platform,
+        language === "shell" ? this.#runtimes.shell : null,
+      ),
+    );
+    writeFileSync(fp, this.#prepareScriptContent(code, language), {
+      encoding: "utf-8",
+      mode: 0o700,
+    });
     return fp;
   }
 
@@ -412,6 +548,7 @@ export class PolyglotExecutor {
     sandboxTmpDir: string,
     timeout: number | undefined,
     background = false,
+    restricted?: RestrictedSpawnOptions,
   ): Promise<ExecResult> {
     return new Promise((res) => {
       // Only .cmd/.bat shims need shell on Windows; real executables don't.
@@ -436,11 +573,21 @@ export class PolyglotExecutor {
           : cmd.slice(1);
       }
 
+      if (restricted) {
+        spawnCmd = restricted.isolation.executable;
+        spawnArgs = buildBubblewrapArgs(restricted, cwd, cmd);
+      }
+
       // Common options shared by both spawn variants below.
+      const stdio: ["ignore" | "pipe", "pipe", "pipe"] = restricted
+        ? ["pipe", "pipe", "pipe"]
+        : ["ignore", "pipe", "pipe"];
       const commonOpts = {
         cwd,
-        stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
-        env: this.#buildSafeEnv(sandboxTmpDir),
+        stdio,
+        env: restricted
+          ? { PATH: process.env.PATH ?? "/usr/bin:/bin" }
+          : this.#buildSafeEnv(sandboxTmpDir),
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
         // Hide the spawned-process console window on Windows. Without this,
@@ -464,6 +611,7 @@ export class PolyglotExecutor {
       } else {
         proc = spawn(spawnCmd, spawnArgs, { ...commonOpts, shell: false });
       }
+      if (restricted) proc.stdin?.end(restricted.scriptContent);
 
       let timedOut = false;
       let resolved = false;

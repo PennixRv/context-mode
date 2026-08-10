@@ -42,3 +42,23 @@ after all of these conditions hold:
 
 The component session does not modify or restore the external allowlist and
 must not treat component unit tests as integration acceptance.
+
+## Implemented Boundary
+
+- `CONTEXT_MODE_EXECUTION_MODE=restricted` fixes one policy for all three
+  execution handlers; MCP input has no mode or read-only authority field.
+- `CONTEXT_MODE_RESTRICTED_PROJECT_ROOT` is mandatory and is the only project
+  authority in restricted mode. The compatibility resolver's transcript,
+  `PWD`, and `cwd` fallbacks are never used as the boundary.
+- Linux uses a verified `bubblewrap` profile with a read-only project, isolated
+  network and PID namespaces, dropped capabilities, read-only temporary paths,
+  bounded environment, and process-group teardown. merged-`/usr` symlinks are
+  recreated instead of incorrectly bind-mounted.
+- Shell, JavaScript, TypeScript, Python, and their child processes use the same
+  launcher. macOS, Windows, a missing backend, or a failed capability probe
+  return a stable fail-closed result.
+- Restricted execution bypasses ContentStore, FTS5, session/statistics/event
+  writes, readiness/preload files, and raw-launcher self-heal mutations.
+  Restricted batch search uses request-local memory only.
+- Compatibility mode remains the default and keeps its existing writable,
+  network-enabled, persistent behavior with non-read-only tool metadata.

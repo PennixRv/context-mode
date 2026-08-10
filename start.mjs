@@ -8,6 +8,12 @@ import { homedir } from "node:os";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
 const isCodexPluginRuntime = process.env.CONTEXT_MODE_PLATFORM === "codex";
+const configuredExecutionMode = process.env.CONTEXT_MODE_EXECUTION_MODE?.trim().toLowerCase() ?? "";
+// Keep the raw launcher aligned with server.ts: absent/empty means ordinary
+// compatibility; restricted and invalid values both disable every startup
+// mutation so a fail-closed server cannot write before its policy is resolved.
+const restrictedExecutionServer = configuredExecutionMode !== ""
+  && configuredExecutionMode !== "compatibility";
 process.chdir(__dirname);
 
 // Resolve the Claude Code config dir, honoring $CLAUDE_CONFIG_DIR (incl. leading ~).
@@ -142,7 +148,7 @@ const cacheMatch = __dirname.match(
   /^(.*[\/\\]plugins[\/\\]cache[\/\\][^\/\\]+[\/\\][^\/\\]+[\/\\])([^\/\\]+)$/,
 );
 if (!isCodexPluginRuntime && cacheMatch) {
-  try {
+  if (!restrictedExecutionServer) try {
     const cacheParent = cacheMatch[1];
     const myVersion = cacheMatch[2];
     const claudeConfigDir = resolveClaudeConfigDir();
@@ -239,54 +245,56 @@ if (!isCodexPluginRuntime && cacheMatch) {
 // truth) so users who fix themselves via `npm install -g context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
 if (!isCodexPluginRuntime) try {
-  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, sweepStaleMcpJson } =
-    await import("./scripts/heal-installed-plugins.mjs");
-  const pluginKey = "context-mode@context-mode";
-  const claudeConfigDir = resolveClaudeConfigDir();
-  const registryPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
-  const pluginCacheRoot = resolve(claudeConfigDir, "plugins", "cache");
-  const settingsPath = resolve(claudeConfigDir, "settings.json");
-  try { healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey }); }
-  catch { /* best effort */ }
-  // v1.0.116: Claude Code's plugin loader reads settings.json.enabledPlugins
-  // (NOT installed_plugins.json) — heal that one too so /ctx-upgrade-induced
-  // disable state is repaired before next /reload-plugins.
-  try { healSettingsEnabledPlugins({ settingsPath, pluginKey }); }
-  catch { /* best effort */ }
-  // v1.0.119 — Layer 5b (Issue #523): heal .claude-plugin/plugin.json's
-  // mcpServers["context-mode"].args[0] when /ctx-upgrade left a tmpdir-prefixed
-  // path baked in. Iterates EVERY installed cache entry's installPath so
-  // multi-version installs all self-recover. Each call is independently wrapped
-  // because one poisoned entry must not block heals on the others. Best effort.
-  try {
-    if (existsSync(registryPath)) {
-      const ip = JSON.parse(readFileSync(registryPath, "utf-8"));
-      const entries = (ip && ip.plugins && ip.plugins[pluginKey]) || [];
-      if (Array.isArray(entries)) {
-        for (const entry of entries) {
-          const installPath = entry && entry.installPath;
-          if (typeof installPath !== "string" || !installPath) continue;
-          try {
-            healPluginJsonMcpServers({
-              pluginRoot: installPath,
-              pluginCacheRoot,
-              pluginKey,
-            });
-          } catch { /* best effort — per-entry */ }
+  if (!restrictedExecutionServer) {
+    const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, sweepStaleMcpJson } =
+      await import("./scripts/heal-installed-plugins.mjs");
+    const pluginKey = "context-mode@context-mode";
+    const claudeConfigDir = resolveClaudeConfigDir();
+    const registryPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
+    const pluginCacheRoot = resolve(claudeConfigDir, "plugins", "cache");
+    const settingsPath = resolve(claudeConfigDir, "settings.json");
+    try { healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey }); }
+    catch { /* best effort */ }
+    // v1.0.116: Claude Code's plugin loader reads settings.json.enabledPlugins
+    // (NOT installed_plugins.json) — heal that one too so /ctx-upgrade-induced
+    // disable state is repaired before next /reload-plugins.
+    try { healSettingsEnabledPlugins({ settingsPath, pluginKey }); }
+    catch { /* best effort */ }
+    // v1.0.119 — Layer 5b (Issue #523): heal .claude-plugin/plugin.json's
+    // mcpServers["context-mode"].args[0] when /ctx-upgrade left a tmpdir-prefixed
+    // path baked in. Iterates EVERY installed cache entry's installPath so
+    // multi-version installs all self-recover. Each call is independently wrapped
+    // because one poisoned entry must not block heals on the others. Best effort.
+    try {
+      if (existsSync(registryPath)) {
+        const ip = JSON.parse(readFileSync(registryPath, "utf-8"));
+        const entries = (ip && ip.plugins && ip.plugins[pluginKey]) || [];
+        if (Array.isArray(entries)) {
+          for (const entry of entries) {
+            const installPath = entry && entry.installPath;
+            if (typeof installPath !== "string" || !installPath) continue;
+            try {
+              healPluginJsonMcpServers({
+                pluginRoot: installPath,
+                pluginCacheRoot,
+                pluginKey,
+              });
+            } catch { /* best effort — per-entry */ }
+          }
         }
       }
-    }
-  } catch { /* best effort */ }
-  // Issue #609 — Layer 5c (replaces v1.0.122 healMcpJsonArgs per-entry loop):
-  // sweep stale `.mcp.json` files from every per-version cache dir. cli.ts
-  // no longer writes `.mcp.json` (PR fix for #609), so the only `.mcp.json`
-  // files in the cache are stale carry-forwards from earlier installs or
-  // Claude Code's plugin manager copying them between version dirs. Removing
-  // them blocks the previous-version-carry replay vector at MCP boot.
-  // One sweep per boot — bounded, idempotent, best-effort.
-  try {
-    sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
-  } catch { /* best effort */ }
+    } catch { /* best effort */ }
+    // Issue #609 — Layer 5c (replaces v1.0.122 healMcpJsonArgs per-entry loop):
+    // sweep stale `.mcp.json` files from every per-version cache dir. cli.ts
+    // no longer writes `.mcp.json` (PR fix for #609), so the only `.mcp.json`
+    // files in the cache are stale carry-forwards from earlier installs or
+    // Claude Code's plugin manager copying them between version dirs. Removing
+    // them blocks the previous-version-carry replay vector at MCP boot.
+    // One sweep per boot — bounded, idempotent, best-effort.
+    try {
+      sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
+    } catch { /* best effort */ }
+  }
 } catch { /* best effort — never block MCP boot */ }
 
 // ── Self-heal Layer 4: Deploy global SessionStart hook + register in settings.json ──
@@ -302,7 +310,7 @@ if (!isCodexPluginRuntime) try {
 //   - On Windows there is no shebang; we fall back to "<execPath>" "<scriptPath>".
 //   - On every boot we self-heal stale "/opt/homebrew/Cellar/node/<ver>/..." paths
 //     left behind by older versions of this code.
-if (!isCodexPluginRuntime) try {
+if (!isCodexPluginRuntime && !restrictedExecutionServer) try {
   const { buildHookCommand, selfHealCacheHealHook, ensureShebangAndExecBit } =
     await import("./hooks/cache-heal-utils.mjs");
 
@@ -440,7 +448,7 @@ try{
 // and a mutated .claude-plugin/plugin.json poisons sibling tests that read
 // the file (cli.test.ts). VITEST is inherited by spawned subprocesses.
 if (!isCodexPluginRuntime && !process.env.VITEST) {
-  try {
+  if (!restrictedExecutionServer) try {
     const { normalizeHooksOnStartup } = await import("./hooks/normalize-hooks.mjs");
     // #738: probe for Bun ≥1.0 and pass the resolved path so the static
     // hooks/hooks.json rewrite swaps `node` → `bun` (~40-60ms cold-start win
@@ -461,9 +469,12 @@ if (!isCodexPluginRuntime && !process.env.VITEST) {
   } catch { /* best effort — never block server startup */ }
 }
 
-// Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs)
-// ensure-deps handles better-sqlite3 install + ABI cache/rebuild automatically (#148, #203)
-import "./hooks/ensure-deps.mjs";
+// Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs).
+// Restricted execution never repairs or installs dependencies at server boot;
+// the release must already be complete or the later integrity/import gate fails.
+if (!restrictedExecutionServer) {
+  await import("./hooks/ensure-deps.mjs");
+}
 // Pure-JS runtime deps used only by non-Codex `ctx_fetch_and_index` hosts (HTML → Markdown
 // pipeline runs in a sandboxed subprocess that `require.resolve()`s these at
 // call time). Plugin distributions that bypass `npm install` — most notably
@@ -485,61 +496,63 @@ import "./hooks/ensure-deps.mjs";
 // failure surfaces a typed error to the caller — same posture as any
 // other missing-runtime-dep situation in that code path.
 if (!isCodexPluginRuntime) {
-  const NPM_INSTALL_BG_PKGS = ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"];
-  const IS_WIN32 = process.platform === "win32";
-  const NPM_BIN = IS_WIN32 ? "npm.cmd" : "npm";
-  const NPM_FLAGS = ["--no-package-lock", "--no-save", "--silent", "--no-audit", "--no-fund"];
-  // #861: on Windows the npm shim is `npm.cmd`, which needs `shell: true` to
-  // run — but Node DROPS the `cwd` option when `shell: true`, so the spawned
-  // cmd.exe inherits an arbitrary working dir (C:\Windows under Claude Code).
-  // `npm install` then tries to create `C:\Windows\node_modules` → EPERM on
-  // every boot, and a cmd.exe window flashes each time. Prefer running npm's
-  // own CLI through node directly (no `.cmd` shim, no shell): `shell: false`
-  // honors `cwd` and `windowsHide` suppresses the console window. Fall back to
-  // the shim only when npm-cli.js can't be located, so a working host (e.g. a
-  // POSIX layout where npm-cli.js isn't beside node) can never regress.
-  const NPM_CLI_JS = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-  const useNodeCli = existsSync(NPM_CLI_JS);
-  for (const pkg of NPM_INSTALL_BG_PKGS) {
-    if (existsSync(resolve(__dirname, "node_modules", pkg))) continue;
-    try {
-      const child = useNodeCli
-        ? spawn(process.execPath, [NPM_CLI_JS, "install", pkg, ...NPM_FLAGS], {
-            cwd: __dirname,
-            stdio: "ignore",
-            detached: true,
-            shell: false,
-            windowsHide: true,
-          })
-        : spawn(NPM_BIN, ["install", pkg, ...NPM_FLAGS], {
-            cwd: __dirname,
-            stdio: "ignore",
-            detached: true,
-            // npm on Windows ships as a `.cmd` shim — must go through cmd.exe.
-            shell: IS_WIN32,
-            windowsHide: true,
-          });
-      // #861: this EPERM was invisible for months behind stdio:"ignore" + an
-      // empty error handler. Surface both spawn failures and non-zero exits.
-      child.on("error", (err) => {
-        process.stderr.write(
-          `[context-mode] background install of ${pkg} failed to spawn: ${err?.message ?? err}\n`,
-        );
-      });
-      child.on("exit", (code) => {
-        if (code) {
+  if (!restrictedExecutionServer) {
+    const NPM_INSTALL_BG_PKGS = ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"];
+    const IS_WIN32 = process.platform === "win32";
+    const NPM_BIN = IS_WIN32 ? "npm.cmd" : "npm";
+    const NPM_FLAGS = ["--no-package-lock", "--no-save", "--silent", "--no-audit", "--no-fund"];
+    // #861: on Windows the npm shim is `npm.cmd`, which needs `shell: true` to
+    // run — but Node DROPS the `cwd` option when `shell: true`, so the spawned
+    // cmd.exe inherits an arbitrary working dir (C:\Windows under Claude Code).
+    // `npm install` then tries to create `C:\Windows\node_modules` → EPERM on
+    // every boot, and a cmd.exe window flashes each time. Prefer running npm's
+    // own CLI through node directly (no `.cmd` shim, no shell): `shell: false`
+    // honors `cwd` and `windowsHide` suppresses the console window. Fall back to
+    // the shim only when npm-cli.js can't be located, so a working host (e.g. a
+    // POSIX layout where npm-cli.js isn't beside node) can never regress.
+    const NPM_CLI_JS = resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+    const useNodeCli = existsSync(NPM_CLI_JS);
+    for (const pkg of NPM_INSTALL_BG_PKGS) {
+      if (existsSync(resolve(__dirname, "node_modules", pkg))) continue;
+      try {
+        const child = useNodeCli
+          ? spawn(process.execPath, [NPM_CLI_JS, "install", pkg, ...NPM_FLAGS], {
+              cwd: __dirname,
+              stdio: "ignore",
+              detached: true,
+              shell: false,
+              windowsHide: true,
+            })
+          : spawn(NPM_BIN, ["install", pkg, ...NPM_FLAGS], {
+              cwd: __dirname,
+              stdio: "ignore",
+              detached: true,
+              // npm on Windows ships as a `.cmd` shim — must go through cmd.exe.
+              shell: IS_WIN32,
+              windowsHide: true,
+            });
+        // #861: this EPERM was invisible for months behind stdio:"ignore" + an
+        // empty error handler. Surface both spawn failures and non-zero exits.
+        child.on("error", (err) => {
           process.stderr.write(
-            `[context-mode] background install of ${pkg} exited with code ${code}\n`,
+            `[context-mode] background install of ${pkg} failed to spawn: ${err?.message ?? err}\n`,
           );
-        }
-      });
-      child.unref();
-    } catch { /* best effort — never block MCP boot */ }
+        });
+        child.on("exit", (code) => {
+          if (code) {
+            process.stderr.write(
+              `[context-mode] background install of ${pkg} exited with code ${code}\n`,
+            );
+          }
+        });
+        child.unref();
+      } catch { /* best effort — never block MCP boot */ }
+    }
   }
 }
 
 // Self-heal: create CLI shim if cli.bundle.mjs is missing (marketplace installs)
-if (!existsSync(resolve(__dirname, "cli.bundle.mjs")) && existsSync(resolve(__dirname, "build", "cli.js"))) {
+if (!restrictedExecutionServer && !existsSync(resolve(__dirname, "cli.bundle.mjs")) && existsSync(resolve(__dirname, "build", "cli.js"))) {
   const shimPath = resolve(__dirname, "cli.bundle.mjs");
   writeFileSync(shimPath, '#!/usr/bin/env node\nawait import("./build/cli.js");\n');
   if (process.platform !== "win32") chmodSync(shimPath, 0o755);
@@ -551,7 +564,7 @@ if (!existsSync(resolve(__dirname, "cli.bundle.mjs")) && existsSync(resolve(__di
 // the integrity check below remains the authoritative gate that decides
 // whether boot proceeds. See hooks/heal-partial-install.mjs for the
 // failure-mode description and module contract.
-if (!process.env.VITEST) {
+if (!restrictedExecutionServer && !process.env.VITEST) {
   try {
     const { healPartialInstallFromMarketplace } = await import(
       "./hooks/heal-partial-install.mjs"
@@ -601,6 +614,11 @@ if (!process.env.VITEST) {
 // Bundle exists (CI-built) — start instantly
 if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {
   await import("./server.bundle.mjs");
+} else if (restrictedExecutionServer) {
+  process.stderr.write(
+    "Restricted execution denied [CTX_EXEC_ISOLATION_UNAVAILABLE]: the prebuilt server bundle is unavailable.\n",
+  );
+  process.exit(2);
 } else {
   // Dev or npm install — full build
   if (!existsSync(resolve(__dirname, "node_modules"))) {

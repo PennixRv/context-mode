@@ -10,6 +10,25 @@ import { request as httpsRequest } from "node:https";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
+import {
+  formatExecutionPolicyError,
+  readExecutionMode,
+  RESTRICTED_PROJECT_ROOT_ENV,
+  resolveExecutionPolicy,
+  validateRestrictedInvocation,
+  type BubblewrapIsolation,
+  type ExecutionPolicyDecision,
+  type ExecutionPolicyErrorCode,
+} from "./execution-policy.js";
+import {
+  boundedText,
+  renderBoundedTitle,
+  renderCommandSource,
+  renderExecutionSource,
+  renderSearchableTerms,
+  resolvePresentationPolicy,
+} from "./presentation-policy.js";
+import { formatEphemeralSearch } from "./ephemeral-search.js";
 import { runPool, type PoolJob } from "./runPool.js";
 import {
   ContentStore,
@@ -435,6 +454,9 @@ const executor = new PolyglotExecutor({
   runtimes,
   projectRoot: () => getProjectDir(),
 });
+const SERVER_EXECUTION_MODE = readExecutionMode();
+const RESTRICTED_EXECUTION_SERVER = SERVER_EXECUTION_MODE.mode !== "compatibility";
+const PRESENTATION_POLICY = resolvePresentationPolicy();
 
 // ─────────────────────────────────────────────────────────
 // FS read tracking preload for ctx_batch_execute
@@ -443,15 +465,21 @@ const executor = new PolyglotExecutor({
 // Instead, we inject it as an inline shell env prefix in each batch command.
 // This temp file is loaded via --require when batch commands spawn Node processes.
 const CM_FS_PRELOAD = join(tmpdir(), `cm-fs-preload-${process.pid}.js`);
-writeFileSync(
-  CM_FS_PRELOAD,
-  `(function(){var __cm_fs=0;process.on('exit',function(){if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch(e){}});try{var f=require('fs');var ors=f.readFileSync;f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};}catch(e){}})();\n`,
-);
+if (!RESTRICTED_EXECUTION_SERVER) {
+  writeFileSync(
+    CM_FS_PRELOAD,
+    `(function(){var __cm_fs=0;process.on('exit',function(){if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch(e){}});try{var f=require('fs');var ors=f.readFileSync;f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};}catch(e){}})();\n`,
+  );
+}
 // In the stdio MCP path, main() also removes this file during graceful
 // shutdown. Plugin-native OpenCode/Kilo imports skip main() (#574), so
 // register a top-level best-effort cleanup too to avoid leaking preload
 // snippets under /tmp when the host process exits.
-process.on("exit", () => { try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ } });
+process.on("exit", () => {
+  if (!RESTRICTED_EXECUTION_SERVER) {
+    try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
+  }
+});
 
 // Lazy singleton — no DB overhead unless index/search is used
 let _store: ContentStore | null = null;
@@ -704,6 +732,21 @@ export function getProjectDir(): string {
     strictPlatform,
     codexHome,
   });
+}
+
+let executionPolicyCache: { projectRoot: string; decision: ExecutionPolicyDecision } | null = null;
+
+function currentExecutionPolicy(): ExecutionPolicyDecision {
+  // Restricted authority must never come from getProjectDir() because that
+  // compatibility resolver deliberately falls back through transcripts, PWD,
+  // and cwd. Only this server-start fixed root can define a security boundary.
+  const projectRoot = RESTRICTED_EXECUTION_SERVER
+    ? (process.env[RESTRICTED_PROJECT_ROOT_ENV]?.trim() ?? "")
+    : getProjectDir();
+  if (executionPolicyCache?.projectRoot === projectRoot) return executionPolicyCache.decision;
+  const decision = resolveExecutionPolicy({ projectRoot });
+  executionPolicyCache = { projectRoot, decision };
+  return decision;
 }
 
 /**
@@ -1016,6 +1059,45 @@ function trackIndexed(bytes: number, source: string = "unknown"): void {
   }
 }
 
+function finalizeExecutionResponse(
+  decision: ExecutionPolicyDecision,
+  toolName: "ctx_execute" | "ctx_execute_file" | "ctx_batch_execute",
+  response: ToolResult,
+): ToolResult {
+  if (decision.mode === "compatibility") return trackResponse(toolName, response);
+  // Restricted calls deliberately bypass all stats, SessionDB, event, and
+  // ContentStore write paths. Keep only the in-memory lifecycle clock alive.
+  noteMcpActivity();
+  return response;
+}
+
+function executionPolicyErrorResult(
+  decision: ExecutionPolicyDecision,
+  toolName: "ctx_execute" | "ctx_execute_file" | "ctx_batch_execute",
+  errorCode: ExecutionPolicyErrorCode,
+): ToolResult {
+  return finalizeExecutionResponse(decision, toolName, {
+    content: [{ type: "text", text: formatExecutionPolicyError(errorCode) }],
+    isError: true,
+  });
+}
+
+function restrictedOutput(
+  output: string,
+  source: string,
+  intent?: string,
+): string {
+  if (Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
+    return formatEphemeralSearch(
+      output,
+      intent?.trim() ? [intent.trim()] : [],
+      source,
+      PRESENTATION_POLICY,
+    );
+  }
+  return `Persisted: no (request-only).\n\n${output}`;
+}
+
 // ─────────────────────────────────────────────────────────
 // Stats persistence — written after every tool call so
 // external readers (status line scripts, dashboards, hooks)
@@ -1167,13 +1249,13 @@ function checkDenyPolicy(
     const policies = readBashPolicies(process.env.CLAUDE_PROJECT_DIR);
     const result = evaluateCommandDenyOnly(command, policies);
     if (result.decision === "deny") {
-      return trackResponse(toolName, {
+      return {
         content: [{
           type: "text" as const,
           text: `Command blocked by security policy: matches deny pattern ${result.matchedPattern}`,
         }],
         isError: true,
-      });
+      };
     }
   } catch {
     // Security check failed — allow through (fail-open for server,
@@ -1197,13 +1279,13 @@ function checkNonShellDenyPolicy(
     for (const cmd of commands) {
       const result = evaluateCommandDenyOnly(cmd, policies);
       if (result.decision === "deny") {
-        return trackResponse(toolName, {
+        return {
           content: [{
             type: "text" as const,
             text: `Command blocked by security policy: embedded shell command "${cmd}" matches deny pattern ${result.matchedPattern}`,
           }],
           isError: true,
-        });
+        };
       }
     }
   } catch {
@@ -1241,7 +1323,7 @@ function checkProjectBoundary(
     const allowGlobs = readToolPermissionPatterns("Read", "allow", projectDir);
     const verdict = evaluateProjectContainment(filePath, projectDir, allowGlobs);
     if (verdict.allowed) return null;
-    return trackResponse(toolName, {
+    return {
       content: [{
         type: "text" as const,
         text:
@@ -1252,7 +1334,7 @@ function checkProjectBoundary(
           `e.g. "permissions": { "allow": ["Read(${filePath})"] } in your settings.`,
       }],
       isError: true,
-    });
+    };
   } catch {
     // Fail-open — resolver failure must not block legitimate in-project work.
   }
@@ -1277,13 +1359,13 @@ function checkFilePathDenyPolicy(
       projectDir,
     );
     if (result.denied) {
-      return trackResponse(toolName, {
+      return {
         content: [{
           type: "text" as const,
           text: `File access blocked by security policy: path matches Read deny pattern ${result.matchedPattern}`,
         }],
         isError: true,
-      });
+      };
     }
   } catch {
     // Fail-open
@@ -1437,17 +1519,23 @@ export function formatBatchQueryResults(
 
   for (const query of queries) {
     if (outputSize > maxOutput) {
-      sections.push(`## ${query}\n(output cap reached — use ctx_search(queries: ["${query}"]) for details)\n`);
+      const title = renderBoundedTitle(query, PRESENTATION_POLICY);
+      sections.push(`## ${title}\n(output cap reached — use ctx_search for details)\n`);
       continue;
     }
 
     const results = store.searchWithFallback(query, 3, searchSource, undefined, "exact");
-    sections.push(`## ${query}`);
+    sections.push(`## ${renderBoundedTitle(query, PRESENTATION_POLICY)}`);
     sections.push("");
     if (results.length > 0) {
       for (const result of results) {
-        const snippet = extractSnippet(result.content, query, 3000, result.highlighted);
-        sections.push(`### ${result.title}`);
+        const snippet = extractSnippet(
+          result.content,
+          query,
+          PRESENTATION_POLICY.resultPreviewChars,
+          result.highlighted,
+        );
+        sections.push(`### ${renderBoundedTitle(result.title, PRESENTATION_POLICY)}`);
         sections.push(snippet);
         sections.push("");
         outputSize += snippet.length + result.title.length;
@@ -1489,11 +1577,18 @@ export interface BatchRunOptions {
   concurrency: number;
   nodeOptsPrefix: string;
   cwd?: string;
+  isolation?: BubblewrapIsolation;
   onFsBytes?: (bytes: number) => void;
 }
 
 interface BatchExecutor {
-  execute(input: { language: "shell"; code: string; timeout: number | undefined; cwd?: string }): Promise<{ stdout: string; timedOut?: boolean }>;
+  execute(input: {
+    language: "shell";
+    code: string;
+    timeout: number | undefined;
+    cwd?: string;
+    isolation?: BubblewrapIsolation;
+  }): Promise<{ stdout: string; timedOut?: boolean }>;
 }
 
 function quotePosixSingle(value: string): string {
@@ -1521,19 +1616,6 @@ export function buildBatchNodeOptionsPrefix(shellPath: string, preloadPath: stri
 }
 
 /**
- * Per-section budget for the echoed `$ <command>` line so a 50KB heredoc
- * payload cannot dominate the response body. The full command always reaches
- * the executor — only the echo is clipped (Issues #717 + #736).
- */
-const COMMAND_ECHO_MAX = 500;
-
-function truncateCommandForEcho(command: string): string {
-  const cleaned = command.replace(/\s+/g, " ").trim();
-  if (cleaned.length <= COMMAND_ECHO_MAX) return cleaned;
-  return cleaned.slice(0, COMMAND_ECHO_MAX) + "…";
-}
-
-/**
  * Default execution timeout (ms) applied ONLY under Antigravity CLI (`agy`).
  * agy does not enforce an MCP RPC timeout, so a ctx_execute with a runaway or
  * blocking script hangs forever — the host never kills it and the user must
@@ -1553,28 +1635,12 @@ export function resolveExecTimeout(timeout: number | undefined): number | undefi
 }
 
 /**
- * Per-call budget for the source-code echo prepended by `ctx_execute` and
- * `ctx_execute_file` (Issues #717 + #736). The full code always reaches the
- * sandbox — only the echo is clipped so massive payloads don't dominate
- * the response. Multi-line preserved (unlike command echo) so the user
- * sees the actual program shape.
- */
-const CODE_ECHO_MAX = 2000;
-
-function truncateCodeForEcho(code: string): string {
-  if (code.length <= CODE_ECHO_MAX) return code;
-  return code.slice(0, CODE_ECHO_MAX) + "\n… (truncated)";
-}
-
-/**
  * Build the source-code preamble surfaced before tool stdout. Provenance
- * survives in indexed chunks (FTS5 sees the fenced block) so later
- * ctx_search hits remember what ran.
+ * remains directly visible for the #717/#736 audit contract while one typed
+ * policy bounds every response branch.
  */
 function buildExecuteEcho(language: string, code: string, path?: string): string {
-  const header = path ? `path=${path}\n` : "";
-  const fenced = `\`\`\`${language}\n${truncateCodeForEcho(code)}\n\`\`\``;
-  return `${header}${fenced}\n\n`;
+  return renderExecutionSource(language, code, PRESENTATION_POLICY, path);
 }
 
 function formatCommandOutput(label: string, command: string, raw: string, onFsBytes?: (bytes: number) => void): string {
@@ -1589,7 +1655,7 @@ function formatCommandOutput(label: string, command: string, raw: string, onFsBy
   // Echo the executed command below the section heading so per-chunk
   // indexed content retains provenance for later ctx_search hits
   // (Issues #717 + #736).
-  const echoed = truncateCommandForEcho(command);
+  const echoed = renderCommandSource(command, PRESENTATION_POLICY);
   return `# ${label}\n\n$ ${echoed}\n\n${output}\n`;
 }
 
@@ -1613,7 +1679,7 @@ export async function runBatchCommands(
   opts: BatchRunOptions,
   executor: BatchExecutor,
 ): Promise<BatchRunResult> {
-  const { timeout, concurrency, nodeOptsPrefix, cwd, onFsBytes } = opts;
+  const { timeout, concurrency, nodeOptsPrefix, cwd, isolation, onFsBytes } = opts;
 
   if (concurrency <= 1) {
     // Serial path — shared timeout budget, cascading skip on timeout.
@@ -1640,6 +1706,7 @@ export async function runBatchCommands(
         code: `${nodeOptsPrefix}${cmd.command}`,
         timeout: perCmdTimeout,
         cwd,
+        isolation,
       });
       outputs.push(formatCommandOutput(cmd.label, cmd.command, combineExecOutput(result), onFsBytes));
       if (result.timedOut) {
@@ -1663,6 +1730,7 @@ export async function runBatchCommands(
         code: `${nodeOptsPrefix}${cmd.command}`,
         timeout,
         cwd,
+        isolation,
       });
       // Always route partial output through formatCommandOutput so __CM_FS__
       // markers are stripped + counted, even when the command timed out.
@@ -1700,15 +1768,24 @@ server.registerTool(
   {
     // #852: surface code execution in the host approval prompt's title (the
     // only server-controlled field the MCP permission UI renders besides args).
-    title: "Run code in a sandbox (executes the supplied code)",
+    title: RESTRICTED_EXECUTION_SERVER
+      ? "Restricted project read-only code execution"
+      : "Run code in a sandbox (executes the supplied code)",
     // #846: runs arbitrary code in a sandbox with full network access.
-    annotations: {
+    annotations: RESTRICTED_EXECUTION_SERVER ? {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } : {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
-    description: `Run code in a sandboxed subprocess.${bunNote} Languages: ${langList}.
+    description: `${RESTRICTED_EXECUTION_SERVER ? `Server policy: project-contained read-only execution, no network, no persistence, and no background processes. Restricted languages: shell, javascript, typescript, python.
+
+` : ""}Run code in a sandboxed subprocess.${bunNote} Languages: ${langList}.
 
 Think-in-Code — the core philosophy: the bytes your code processes never enter your conversation memory; only what you console.log() does. Reading a 700 KB log directly means 700 KB of your remaining reasoning capacity gets spent on raw bytes. Running code over that same log in this sandbox and printing a 3 KB summary leaves you with 697 KB of capacity for the actual work.
 
@@ -1775,7 +1852,9 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
         .preprocess(coerceBoolean, z.boolean())
         .optional()
         .default(false)
-        .describe("Keep process running after timeout (for servers/daemons). Returns partial output without killing the process. IMPORTANT: Do NOT add setTimeout/self-close timers in background scripts — the process must stay alive until the timeout detaches it. For server+fetch patterns, prefer putting both server and fetch in ONE ctx_execute call instead of using background."),
+        .describe(RESTRICTED_EXECUTION_SERVER
+          ? "Restricted server policy forbids background execution; true is rejected before launch."
+          : "Keep process running after timeout (for servers/daemons). Returns partial output without killing the process. IMPORTANT: Do NOT add setTimeout/self-close timers in background scripts — the process must stay alive until the timeout detaches it. For server+fetch patterns, prefer putting both server and fetch in ONE ctx_execute call instead of using background."),
       cwd: z
         .string()
         .optional()
@@ -1783,28 +1862,40 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
       intent: z
         .string()
         .optional()
-        .describe(
-          "What you're looking for in the output. When provided and output is large (>5KB), " +
-          "indexes output into knowledge base and returns section titles + previews — not full content. " +
-          "Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
-          "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.",
-        ),
+        .describe(RESTRICTED_EXECUTION_SERVER
+          ? "What to match in large output. Restricted mode searches only request memory, returns bounded matches, and does not make the result available to ctx_search."
+          : "What you're looking for in the output. When provided and output is large (>5KB), " +
+            "indexes output into knowledge base and returns section titles + previews — not full content. " +
+            "Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
+            "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary."),
     }),
   },
   async ({ language, code, timeout, background, cwd, intent }) => {
+    const decision = currentExecutionPolicy();
+    const invocation = validateRestrictedInvocation(decision, { language, background, cwd });
+    if (!invocation.ok) {
+      return executionPolicyErrorResult(
+        decision,
+        "ctx_execute",
+        invocation.errorCode ?? "CTX_EXEC_POLICY_INVALID",
+      );
+    }
+    const effectiveCwd = invocation.cwd ?? cwd;
+
     // Security: deny-only firewall
     if (language === "shell") {
       const denied = checkDenyPolicy(code, "execute");
-      if (denied) return denied;
+      if (denied) return finalizeExecutionResponse(decision, "ctx_execute", denied);
     } else {
       const denied = checkNonShellDenyPolicy(code, language, "execute");
-      if (denied) return denied;
+      if (denied) return finalizeExecutionResponse(decision, "ctx_execute", denied);
     }
 
+    const echo = buildExecuteEcho(language, code);
     try {
       // For JS/TS: wrap in async IIFE with fetch + http/https interceptors to track network bytes
       let instrumentedCode = code;
-      if (language === "javascript" || language === "typescript") {
+      if (decision.mode === "compatibility" && (language === "javascript" || language === "typescript")) {
         // Wrap user code in a closure that shadows CJS require with http/https interceptor.
         // globalThis.require does NOT work because CJS require is module-scoped, not global.
         // The closure approach (function(__cm_req){ var require=...; })(require) correctly
@@ -1870,53 +1961,59 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 })(typeof require!=='undefined'?require:null);`;
       }
       const effTimeout = resolveExecTimeout(timeout);
-      const result = await executor.execute({ language, code: instrumentedCode, timeout: effTimeout, background, cwd });
+      const result = await executor.execute({
+        language,
+        code: instrumentedCode,
+        timeout: effTimeout,
+        background,
+        cwd: effectiveCwd,
+        isolation: decision.isolation ?? undefined,
+      });
 
       // Echo the executed source code before stdout so users can audit
       // and tooling can block command patterns (Issues #717 + #736).
       // Built from the user-supplied `code`, NOT the instrumented variant.
-      const echo = buildExecuteEcho(language, code);
-
-      // Parse sandbox network metrics from stderr
-      const netMatch = result.stderr?.match(/__CM_NET__:(\d+)/);
-      if (netMatch) {
-        sessionStats.bytesSandboxed += parseInt(netMatch[1]);
-        // Clean the metric line from stderr
-        result.stderr = result.stderr.replace(/\n?__CM_NET__:\d+\n?/g, "");
-      }
-
-      // Parse sandbox FS read metrics from stderr
-      const fsMatch = result.stderr?.match(/__CM_FS__:(\d+)/);
-      if (fsMatch) {
-        sessionStats.bytesSandboxed += parseInt(fsMatch[1]);
-        result.stderr = result.stderr.replace(/\n?__CM_FS__:\d+\n?/g, "");
+      if (decision.mode === "compatibility") {
+        // These counters and their cleanup are compatibility telemetry only.
+        // Restricted execution must not accept caller-controlled marker lines
+        // as a route into persistent session accounting.
+        const netMatch = result.stderr?.match(/__CM_NET__:(\d+)/);
+        if (netMatch) {
+          sessionStats.bytesSandboxed += parseInt(netMatch[1]);
+          result.stderr = result.stderr.replace(/\n?__CM_NET__:\d+\n?/g, "");
+        }
+        const fsMatch = result.stderr?.match(/__CM_FS__:(\d+)/);
+        if (fsMatch) {
+          sessionStats.bytesSandboxed += parseInt(fsMatch[1]);
+          result.stderr = result.stderr.replace(/\n?__CM_FS__:\d+\n?/g, "");
+        }
       }
 
       if (result.timedOut) {
         const partialOutput = result.stdout?.trim();
         if (result.backgrounded && partialOutput) {
           // Background mode: process is still running, return partial output as success
-          return trackResponse("ctx_execute", {
+          return finalizeExecutionResponse(decision, "ctx_execute", {
             content: [
               {
                 type: "text" as const,
-                text: `${echo}${partialOutput}\n\n_(process backgrounded after ${effTimeout}ms — still running)_`,
+                text: `${echo}${decision.mode === "restricted" ? restrictedOutput(partialOutput, `execute:${language}`, intent) : partialOutput}\n\n_(process backgrounded after ${effTimeout}ms — still running)_`,
               },
             ],
           });
         }
         if (partialOutput) {
           // Timeout with partial output — return as success with note
-          return trackResponse("ctx_execute", {
+          return finalizeExecutionResponse(decision, "ctx_execute", {
             content: [
               {
                 type: "text" as const,
-                text: `${echo}${partialOutput}\n\n_(timed out after ${effTimeout}ms — partial output shown above)_`,
+                text: `${echo}${decision.mode === "restricted" ? restrictedOutput(partialOutput, `execute:${language}`, intent) : partialOutput}\n\n_(timed out after ${effTimeout}ms — partial output shown above)_`,
               },
             ],
           });
         }
-        return trackResponse("ctx_execute", {
+        return finalizeExecutionResponse(decision, "ctx_execute", {
           content: [
             {
               type: "text" as const,
@@ -1931,9 +2028,15 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
         const { isError, output } = classifyNonZeroExit({
           language, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr,
         });
+        if (decision.mode === "restricted") {
+          return finalizeExecutionResponse(decision, "ctx_execute", {
+            content: [{ type: "text" as const, text: `${echo}${restrictedOutput(output, `execute:${language}:error`, intent)}` }],
+            isError,
+          });
+        }
         if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
           trackIndexed(Buffer.byteLength(output));
-          return trackResponse("ctx_execute", {
+          return finalizeExecutionResponse(decision, "ctx_execute", {
             content: [
               { type: "text" as const, text: `${echo}${intentSearch(output, intent, isError ? `execute:${language}:error` : `execute:${language}`)}` },
             ],
@@ -1943,14 +2046,14 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
         // Auto-index large error output into FTS5 — no data loss
         if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
           trackIndexed(Buffer.byteLength(output));
-          return trackResponse("ctx_execute", {
+          return finalizeExecutionResponse(decision, "ctx_execute", {
             content: [
               { type: "text" as const, text: `${echo}${intentSearch(output, "errors failures exceptions", isError ? `execute:${language}:error` : `execute:${language}`)}` },
             ],
             isError,
           });
         }
-        return trackResponse("ctx_execute", {
+        return finalizeExecutionResponse(decision, "ctx_execute", {
           content: [
             { type: "text" as const, text: `${echo}${output}` },
           ],
@@ -1960,10 +2063,16 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 
       const stdout = result.stdout || "(no output)";
 
+      if (decision.mode === "restricted") {
+        return finalizeExecutionResponse(decision, "ctx_execute", {
+          content: [{ type: "text" as const, text: `${echo}${restrictedOutput(stdout, `execute:${language}`, intent)}` }],
+        });
+      }
+
       // Intent-driven search: if intent provided and output is large enough
       if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
         trackIndexed(Buffer.byteLength(stdout));
-        return trackResponse("ctx_execute", {
+        return finalizeExecutionResponse(decision, "ctx_execute", {
           content: [
             { type: "text" as const, text: `${echo}${intentSearch(stdout, intent, `execute:${language}`)}` },
           ],
@@ -1982,19 +2091,19 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
               : c,
           ),
         };
-        return trackResponse("ctx_execute", echoed);
+        return finalizeExecutionResponse(decision, "ctx_execute", echoed);
       }
 
-      return trackResponse("ctx_execute", {
+      return finalizeExecutionResponse(decision, "ctx_execute", {
         content: [
           { type: "text" as const, text: `${echo}${stdout}` },
         ],
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      return trackResponse("ctx_execute", {
+      return finalizeExecutionResponse(decision, "ctx_execute", {
         content: [
-          { type: "text" as const, text: `Runtime error: ${message}` },
+          { type: "text" as const, text: `${echo}Runtime error: ${message}` },
         ],
         isError: true,
       });
@@ -2047,16 +2156,20 @@ function intentSearch(
   let results = persistent.searchWithFallback(intent, maxResults, source);
 
   // Extract distinctive terms as vocabulary hints for the LLM
-  const distinctiveTerms = persistent.getDistinctiveTerms(indexed.sourceId);
+  const distinctiveTerms = persistent.getDistinctiveTerms(
+    indexed.sourceId,
+    PRESENTATION_POLICY.searchableTerms + 1,
+  );
 
   if (results.length === 0) {
     const lines = [
       `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
       `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).`,
     ];
-    if (distinctiveTerms.length > 0) {
+    const termLine = renderSearchableTerms(distinctiveTerms, PRESENTATION_POLICY);
+    if (termLine) {
       lines.push("");
-      lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
+      lines.push(termLine);
     }
     lines.push("");
     lines.push("Use ctx_search(queries: [...]) to explore the indexed content.");
@@ -2071,13 +2184,14 @@ function intentSearch(
   ];
 
   for (const r of results) {
-    const preview = r.content.split("\n")[0].slice(0, 120);
-    lines.push(`  - ${r.title}: ${preview}`);
+    const preview = boundedText(r.content.split("\n")[0], PRESENTATION_POLICY.resultPreviewChars);
+    lines.push(`  - ${renderBoundedTitle(r.title, PRESENTATION_POLICY)}: ${preview}`);
   }
 
-  if (distinctiveTerms.length > 0) {
+  const termLine = renderSearchableTerms(distinctiveTerms, PRESENTATION_POLICY);
+  if (termLine) {
     lines.push("");
-    lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
+    lines.push(termLine);
   }
 
   lines.push("");
@@ -2096,15 +2210,24 @@ server.registerTool(
     // #852: the host's MCP approval prompt renders only the tool name/title +
     // raw args — the title is the one server-controlled signal, so make it
     // unambiguously announce code execution + file read for the reviewer.
-    title: "Run code over a file (executes code, reads the given path)",
+    title: RESTRICTED_EXECUTION_SERVER
+      ? "Restricted read-only code execution over a project file"
+      : "Run code over a file (executes code, reads the given path)",
     // #846: runs arbitrary code over a file in a sandbox with full network access.
-    annotations: {
+    annotations: RESTRICTED_EXECUTION_SERVER ? {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } : {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
-    description: `Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation — the file bytes stay in the sandbox.
+    description: `${RESTRICTED_EXECUTION_SERVER ? `Server policy: project-contained read-only execution, no network, no persistence, and no background processes. Restricted languages: shell, javascript, typescript, python.
+
+` : ""}Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation — the file bytes stay in the sandbox.
 
 Think-in-Code applied to file-level analysis: Reading the whole file means every byte enters your conversation memory and costs reasoning capacity for the rest of the session. Running code over it here lets you keep the raw bytes out and only the derived answer in. Same principle as ctx_execute, scoped to one named file via the FILE_CONTENT variable.
 
@@ -2156,47 +2279,57 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
       intent: z
         .string()
         .optional()
-        .describe(
-          "What you're looking for in the output. When provided and output is large (>5KB), " +
-          "returns only matching sections via BM25 search instead of truncated output.",
-        ),
+        .describe(RESTRICTED_EXECUTION_SERVER
+          ? "What to match in large output. Restricted mode searches only request memory and never writes the file or result to FTS5."
+          : "What you're looking for in the output. When provided and output is large (>5KB), " +
+            "returns only matching sections via BM25 search instead of truncated output."),
     }),
   },
   async ({ path, language, code, timeout, intent }) => {
+    const decision = currentExecutionPolicy();
+    const invocation = validateRestrictedInvocation(decision, { language, filePath: path });
+    if (!invocation.ok) {
+      return executionPolicyErrorResult(
+        decision,
+        "ctx_execute_file",
+        invocation.errorCode ?? "CTX_EXEC_POLICY_INVALID",
+      );
+    }
+
     // Security (#852): confine the processed file to the project root so
     // ctx_execute_file cannot be used to escape the host's sandbox/permission
     // controls. Runs before the deny-glob check — boundary first, then policy.
     const boundaryDenied = checkProjectBoundary(path, "ctx_execute_file");
-    if (boundaryDenied) return boundaryDenied;
+    if (boundaryDenied) return finalizeExecutionResponse(decision, "ctx_execute_file", boundaryDenied);
 
     // Security: check file path against Read deny patterns
     const pathDenied = checkFilePathDenyPolicy(path, "ctx_execute_file");
-    if (pathDenied) return pathDenied;
+    if (pathDenied) return finalizeExecutionResponse(decision, "ctx_execute_file", pathDenied);
 
     // Security: check code parameter against Bash deny patterns
     if (language === "shell") {
       const codeDenied = checkDenyPolicy(code, "execute_file");
-      if (codeDenied) return codeDenied;
+      if (codeDenied) return finalizeExecutionResponse(decision, "ctx_execute_file", codeDenied);
     } else {
       const codeDenied = checkNonShellDenyPolicy(code, language, "execute_file");
-      if (codeDenied) return codeDenied;
+      if (codeDenied) return finalizeExecutionResponse(decision, "ctx_execute_file", codeDenied);
     }
 
+    const echo = buildExecuteEcho(language, code, path);
     try {
       const effTimeout = resolveExecTimeout(timeout);
       const result = await executor.executeFile({
-        path,
+        path: invocation.filePath ?? path,
         language,
         code,
         timeout: effTimeout,
+        isolation: decision.isolation ?? undefined,
       });
 
       // Echo path + executed source code before stdout for audit/debug
       // (Issues #717 + #736).
-      const echo = buildExecuteEcho(language, code, path);
-
       if (result.timedOut) {
-        return trackResponse("ctx_execute_file", {
+        return finalizeExecutionResponse(decision, "ctx_execute_file", {
           content: [
             {
               type: "text" as const,
@@ -2211,9 +2344,15 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
         const { isError, output } = classifyNonZeroExit({
           language, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr,
         });
+        if (decision.mode === "restricted") {
+          return finalizeExecutionResponse(decision, "ctx_execute_file", {
+            content: [{ type: "text" as const, text: `${echo}${restrictedOutput(output, `file:${path}:error`, intent)}` }],
+            isError,
+          });
+        }
         if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
           trackIndexed(Buffer.byteLength(output));
-          return trackResponse("ctx_execute_file", {
+          return finalizeExecutionResponse(decision, "ctx_execute_file", {
             content: [
               { type: "text" as const, text: `${echo}${intentSearch(output, intent, isError ? `file:${path}:error` : `file:${path}`)}` },
             ],
@@ -2223,14 +2362,14 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
         // Auto-index large error output into FTS5 — no data loss
         if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
           trackIndexed(Buffer.byteLength(output));
-          return trackResponse("ctx_execute_file", {
+          return finalizeExecutionResponse(decision, "ctx_execute_file", {
             content: [
               { type: "text" as const, text: `${echo}${intentSearch(output, "errors failures exceptions", isError ? `file:${path}:error` : `file:${path}`)}` },
             ],
             isError,
           });
         }
-        return trackResponse("ctx_execute_file", {
+        return finalizeExecutionResponse(decision, "ctx_execute_file", {
           content: [
             { type: "text" as const, text: `${echo}${output}` },
           ],
@@ -2240,9 +2379,15 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
 
       const stdout = result.stdout || "(no output)";
 
+      if (decision.mode === "restricted") {
+        return finalizeExecutionResponse(decision, "ctx_execute_file", {
+          content: [{ type: "text" as const, text: `${echo}${restrictedOutput(stdout, `file:${path}`, intent)}` }],
+        });
+      }
+
       if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
         trackIndexed(Buffer.byteLength(stdout));
-        return trackResponse("ctx_execute_file", {
+        return finalizeExecutionResponse(decision, "ctx_execute_file", {
           content: [
             { type: "text" as const, text: `${echo}${intentSearch(stdout, intent, `file:${path}`)}` },
           ],
@@ -2260,19 +2405,19 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
               : c,
           ),
         };
-        return trackResponse("ctx_execute_file", echoed);
+        return finalizeExecutionResponse(decision, "ctx_execute_file", echoed);
       }
 
-      return trackResponse("ctx_execute_file", {
+      return finalizeExecutionResponse(decision, "ctx_execute_file", {
         content: [
           { type: "text" as const, text: `${echo}${stdout}` },
         ],
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      return trackResponse("ctx_execute_file", {
+      return finalizeExecutionResponse(decision, "ctx_execute_file", {
         content: [
-          { type: "text" as const, text: `Runtime error: ${message}` },
+          { type: "text" as const, text: `${echo}Runtime error: ${message}` },
         ],
         isError: true,
       });
@@ -2767,8 +2912,9 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
 
       try {
       for (const q of queryList) {
+        const queryTitle = renderBoundedTitle(q, PRESENTATION_POLICY);
         if (totalSize > MAX_TOTAL) {
-          sections.push(`## ${q}\n(output cap reached)\n`);
+          sections.push(`## ${queryTitle}\n(output cap reached)\n`);
           continue;
         }
 
@@ -2799,7 +2945,7 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
         }
 
         if (results.length === 0) {
-          sections.push(`## ${q}\nNo results found.`);
+          sections.push(`## ${queryTitle}\nNo results found.`);
           continue;
         }
 
@@ -2808,13 +2954,18 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
             const origin = (r as any).origin || "current-session";
             const ts = (r as any).timestamp ? (r as any).timestamp.slice(0, 16).replace("T", " ") : "";
             const header = `--- [${origin}${ts ? " | " + ts : ""} | ${r.source}] ---`;
-            const heading = `### ${r.title}`;
-            const snippet = extractSnippet(r.content, q, 1500, r.highlighted);
+            const heading = `### ${renderBoundedTitle(r.title, PRESENTATION_POLICY)}`;
+            const snippet = extractSnippet(
+              r.content,
+              q,
+              PRESENTATION_POLICY.resultPreviewChars,
+              r.highlighted,
+            );
             return `${header}\n${heading}\n\n${snippet}`;
           })
           .join("\n\n");
 
-        sections.push(`## ${q}\n\n${formatted}`);
+        sections.push(`## ${queryTitle}\n\n${formatted}`);
         totalSize += formatted.length;
       }
       } finally {
@@ -3458,30 +3609,39 @@ EXAMPLE: ctx_fetch_and_index(
 server.registerTool(
   "ctx_batch_execute",
   {
-    title: "Batch Execute & Search",
+    title: RESTRICTED_EXECUTION_SERVER
+      ? "Restricted project read-only batch execution"
+      : "Batch Execute & Search",
     // #846: runs arbitrary shell commands (with network) and indexes output.
-    annotations: {
+    annotations: RESTRICTED_EXECUTION_SERVER ? {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } : {
       readOnlyHint: false,
       destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
-    description: `Run multiple commands in ONE call. Every command's output is auto-indexed into the knowledge base; if you also pass \`queries\`, the matching sections come back in the same round trip so a follow-up search call is not needed.
+    description: `${RESTRICTED_EXECUTION_SERVER ? `Server policy: project-contained read-only shell execution, no network, no persistent index, and request-local query results only.
+
+` : ""}Run multiple commands in ONE call. Every command's output is ${RESTRICTED_EXECUTION_SERVER ? "queried only in request memory" : "auto-indexed into the knowledge base"}; if you also pass \`queries\`, the matching sections come back in the same round trip so a follow-up search call is not needed.
 
 Concurrency parallelizes the FETCH phase (run-the-commands). The DERIVATION phase — turning raw output into an answer — still belongs in code: add a processing command that consumes the indexed output and prints only the answer, so the raw bytes never enter your conversation (Think-in-Code, same principle as the sandbox tool).
 
 WHEN:
   - You have 3+ related commands you would otherwise run sequentially (multi-issue lookups, git log + git diff + git blame, multi-file reads, multi-region cloud queries)
   - You want to gather AND query in one round trip — pass \`queries\` so the matching sections come back inline
-  - You want to parallelize I/O-bound work — pass \`concurrency\` 2-8 (network calls, gh CLI, cloud APIs, multi-repo git reads)
-  - The combined output is large enough that piping it through ctx_search later would itself be expensive — let auto-index + inline queries do both in one shot
+  - ${RESTRICTED_EXECUTION_SERVER ? "You want to parallelize independent reads inside the trusted project — pass `concurrency` 2-8" : "You want to parallelize I/O-bound work — pass `concurrency` 2-8 (network calls, gh CLI, cloud APIs, multi-repo git reads)"}
+  - ${RESTRICTED_EXECUTION_SERVER ? "You need bounded request-local matches without retaining output for later search" : "The combined output is large enough that piping it through ctx_search later would itself be expensive — let auto-index + inline queries do both in one shot"}
 
 WHEN NOT:
   - Single command with no follow-up query — run it in the sandbox tool directly
   - CPU-bound or stateful commands — keep concurrency at 1 (npm test, build, lint, port-binding servers, lock-file holders, anything that races on the same resource)
 
 RETURNS:
-  Auto-indexed section list per command label, plus top matches per query (when \`queries\` is passed). Raw output is NOT echoed in full — only the matched windows. Concurrency>1 switches each command to its own per-command timeout (no shared budget); concurrency=1 preserves the legacy shared-budget cascading-skip-on-timeout path. Use 4-8 for I/O-bound batches; keep at 1 for CPU work or shared-state commands; lower the value when target hosts enforce per-IP rate limits.
+  ${RESTRICTED_EXECUTION_SERVER ? "Request-local section list plus bounded matches per query; persisted=no and later ctx_search cannot recall the output." : "Auto-indexed section list per command label, plus top matches per query (when `queries` is passed)."} Raw output is NOT echoed in full — only the matched windows. Concurrency>1 switches each command to its own per-command timeout (no shared budget); concurrency=1 preserves the legacy shared-budget cascading-skip-on-timeout path.
 
 EXAMPLE: ctx_batch_execute(
   commands: [
@@ -3514,11 +3674,11 @@ EXAMPLE: ctx_batch_execute(
       queries: z.preprocess(coerceJsonArray, z
         .array(z.string())
         .min(1)
-        .describe(
-          "Search queries to extract information from indexed output. Use 5-8 comprehensive queries. " +
-          "Each returns top 5 matching sections with full content. " +
-          "This is your ONLY chance — put ALL your questions here. No follow-up calls needed.",
-        )),
+        .describe(RESTRICTED_EXECUTION_SERVER
+          ? "Search queries over this request's output only. Results are bounded and discarded after the response."
+          : "Search queries to extract information from indexed output. Use 5-8 comprehensive queries. " +
+            "Each returns top 5 matching sections with full content. " +
+            "This is your ONLY chance — put ALL your questions here. No follow-up calls needed.")),
       timeout: z
         .coerce.number()
         .optional()
@@ -3532,10 +3692,10 @@ EXAMPLE: ctx_batch_execute(
         .default(1)
         .describe(
           "Max commands to run in parallel (1-8, default: 1). " +
-          "Use 4-8 for I/O-bound batches (network, gh, curl, multi-repo git reads). " +
-          "Keep at 1 for CPU-bound (npm test, build, lint) or stateful commands (ports, locks). " +
-          ">1 switches to per-command timeouts (no shared budget) and " +
-          "individual `(timed out)` blocks instead of cascading skip.",
+          (RESTRICTED_EXECUTION_SERVER
+            ? "Use parallelism only for independent project reads; network and writable shared state are unavailable. "
+            : "Use 4-8 for I/O-bound batches (network, gh, curl, multi-repo git reads). Keep at 1 for CPU-bound or stateful commands. ") +
+          ">1 switches to per-command timeouts (no shared budget) and individual `(timed out)` blocks instead of cascading skip.",
         ),
       cwd: z
         .string()
@@ -3545,28 +3705,47 @@ EXAMPLE: ctx_batch_execute(
         .enum(["batch", "global"])
         .optional()
         .default("batch")
-        .describe(
-          "Scope for `queries` (default: `batch`). " +
-          "`batch` searches ONLY the chunks produced by this batch's commands " +
-          "— useful when you want answers about the just-fetched output. " +
-          "`global` searches the entire persistent index (same scope as ctx_search) " +
-          "— useful when you want the batch commands to enrich context and " +
-          "the queries to also surface related prior knowledge in one round trip.",
-        ),
+        .describe(RESTRICTED_EXECUTION_SERVER
+          ? "Restricted mode accepts only `batch`, which searches request-local output. `global` is rejected because persistent index access is outside the execution contract."
+          : "Scope for `queries` (default: `batch`). `batch` searches ONLY the chunks produced by this batch's commands. " +
+            "`global` searches the entire persistent index (same scope as ctx_search)."),
     }),
   },
   async ({ commands, queries, timeout, concurrency, cwd, query_scope }) => {
+    const decision = currentExecutionPolicy();
+    const invocation = validateRestrictedInvocation(decision, {
+      language: "shell",
+      cwd,
+      queryScope: query_scope,
+    });
+    if (!invocation.ok) {
+      return executionPolicyErrorResult(
+        decision,
+        "ctx_batch_execute",
+        invocation.errorCode ?? "CTX_EXEC_POLICY_INVALID",
+      );
+    }
+
     // Security: check each command against deny patterns
     for (const cmd of commands) {
       const denied = checkDenyPolicy(cmd.command, "batch_execute");
-      if (denied) return denied;
+      if (denied) return finalizeExecutionResponse(decision, "ctx_batch_execute", denied);
+    }
+
+    const commandsInventory: string[] = ["## Commands", ""];
+    for (const command of commands) {
+      commandsInventory.push(
+        `- ${renderBoundedTitle(command.label, PRESENTATION_POLICY)}: ${renderCommandSource(command.command, PRESENTATION_POLICY)}`,
+      );
     }
 
     try {
       // Inject NODE_OPTIONS for FS read tracking in spawned Node processes.
       // The executor denies NODE_OPTIONS in its env (security), so we set it
       // as an inline shell prefix. This only affects child `node` invocations.
-      const nodeOptsPrefix = buildBatchNodeOptionsPrefix(runtimes.shell, CM_FS_PRELOAD);
+      const nodeOptsPrefix = decision.mode === "compatibility"
+        ? buildBatchNodeOptionsPrefix(runtimes.shell, CM_FS_PRELOAD)
+        : "";
 
       // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
       // Concurrency>1 switches to a worker pool with per-command timeouts.
@@ -3577,8 +3756,11 @@ EXAMPLE: ctx_batch_execute(
           timeout: effTimeout,
           concurrency,
           nodeOptsPrefix,
-          cwd,
-          onFsBytes: (bytes) => { sessionStats.bytesSandboxed += bytes; },
+          cwd: invocation.cwd ?? cwd,
+          isolation: decision.isolation ?? undefined,
+          onFsBytes: decision.mode === "compatibility"
+            ? (bytes) => { sessionStats.bytesSandboxed += bytes; }
+            : undefined,
         },
         executor,
       );
@@ -3588,7 +3770,7 @@ EXAMPLE: ctx_batch_execute(
       const totalLines = stdout.split("\n").length;
 
       if (timedOut && perCommandOutputs.length === 0) {
-        return trackResponse("ctx_batch_execute", {
+        return finalizeExecutionResponse(decision, "ctx_batch_execute", {
           content: [
             {
               type: "text" as const,
@@ -3599,25 +3781,30 @@ EXAMPLE: ctx_batch_execute(
         });
       }
 
+      const source = `batch:${commands
+        .map((command) => command.label)
+        .join(",")
+        .slice(0, 80)}`;
+
+      if (decision.mode === "restricted") {
+        const output = [
+          `Executed ${commands.length} commands (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). Persisted: no.`,
+          "",
+          ...commandsInventory,
+          "",
+          formatEphemeralSearch(stdout, queries, source, PRESENTATION_POLICY),
+        ].join("\n");
+        return finalizeExecutionResponse(decision, "ctx_batch_execute", {
+          content: [{ type: "text" as const, text: output }],
+        });
+      }
+
       // Track indexed bytes (raw data that stays in sandbox)
       trackIndexed(totalBytes);
 
       // Index into knowledge base — markdown heading chunking splits by # labels
       const store = getStore();
-      const source = `batch:${commands
-        .map((c) => c.label)
-        .join(",")
-        .slice(0, 80)}`;
       const indexed = store.index({ content: stdout, source, attribution: currentAttribution() });
-
-      // Commands inventory — list what the agent actually ran so the
-      // response itself documents intent, not just per-section echoes.
-      // Placed before "## Indexed Sections" so it scans top-down with
-      // the human asking "what just happened" (Issues #717 + #736).
-      const commandsInventory: string[] = ["## Commands", ""];
-      for (const c of commands) {
-        commandsInventory.push(`- ${c.label}: \`${truncateCommandForEcho(c.command)}\``);
-      }
 
       // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
       const allSections = store.getChunksBySource(indexed.sourceId);
@@ -3625,7 +3812,7 @@ EXAMPLE: ctx_batch_execute(
       const sectionTitles: string[] = [];
       for (const s of allSections) {
         const bytes = Buffer.byteLength(s.content);
-        inventory.push(`- ${s.title} (${(bytes / 1024).toFixed(1)}KB)`);
+        inventory.push(`- ${renderBoundedTitle(s.title, PRESENTATION_POLICY)} (${(bytes / 1024).toFixed(1)}KB)`);
         sectionTitles.push(s.title);
       }
 
@@ -3637,8 +3824,9 @@ EXAMPLE: ctx_batch_execute(
 
       // Get searchable terms for edge cases where follow-up is needed
       const distinctiveTerms = store.getDistinctiveTerms
-        ? store.getDistinctiveTerms(indexed.sourceId)
+        ? store.getDistinctiveTerms(indexed.sourceId, PRESENTATION_POLICY.searchableTerms + 1)
         : [];
+      const searchableTerms = renderSearchableTerms(distinctiveTerms, PRESENTATION_POLICY);
 
       const output = [
         `Executed ${commands.length} commands (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). ` +
@@ -3649,21 +3837,19 @@ EXAMPLE: ctx_batch_execute(
         ...inventory,
         "",
         ...queryResults,
-        distinctiveTerms.length > 0
-          ? `\nSearchable terms for follow-up: ${distinctiveTerms.join(", ")}`
-          : "",
+        searchableTerms ? `\n${searchableTerms}` : "",
       ].join("\n");
 
-      return trackResponse("ctx_batch_execute", {
+      return finalizeExecutionResponse(decision, "ctx_batch_execute", {
         content: [{ type: "text" as const, text: output }],
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      return trackResponse("ctx_batch_execute", {
+      return finalizeExecutionResponse(decision, "ctx_batch_execute", {
         content: [
           {
             type: "text" as const,
-            text: `Batch execution error: ${message}`,
+            text: [...commandsInventory, "", `Batch execution error: ${message}`].join("\n"),
           },
         ],
         isError: true,
@@ -4860,7 +5046,7 @@ server.registerTool(
 
 async function main() {
   // Clean up stale DB files from previous sessions
-  const cleaned = cleanupStaleDBs();
+  const cleaned = RESTRICTED_EXECUTION_SERVER ? 0 : cleanupStaleDBs();
   if (cleaned > 0) {
     console.error(`Cleaned up ${cleaned} stale DB file(s) from previous sessions`);
   }
@@ -4877,9 +5063,13 @@ async function main() {
   const shutdown = () => {
     executor.cleanupBackgrounded();
     if (_store) _store.close(); // persist DB for --continue sessions
-    try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
-    // Remove MCP readiness sentinel (#230)
-    try { unlinkSync(mcpSentinel); } catch { /* best effort */ }
+    if (!RESTRICTED_EXECUTION_SERVER) {
+      try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
+    }
+    // Remove only a sentinel this execution mode was allowed to create.
+    if (!RESTRICTED_EXECUTION_SERVER) {
+      try { unlinkSync(mcpSentinel); } catch { /* best effort */ }
+    }
     // #844: stop refreshing the sentinel mtime on shutdown.
     if (sentinelRefresh) clearInterval(sentinelRefresh);
   };
@@ -4888,10 +5078,12 @@ async function main() {
     // bytes_indexed / bytes_returned aren't silently lost on SIGTERM/SIGINT
     // (PR #401 grill-me review B1: persistStats early-returns inside throttle
     // window; gracefulShutdown previously did NOT bypass).
-    try {
-      _lastStatsPersist = 0;
-      persistStats();
-    } catch { /* best effort — never block shutdown */ }
+    if (!RESTRICTED_EXECUTION_SERVER) {
+      try {
+        _lastStatsPersist = 0;
+        persistStats();
+      } catch { /* best effort — never block shutdown */ }
+    }
     shutdown();
     process.exit(0);
   };
@@ -4913,17 +5105,21 @@ async function main() {
   );
 
   // Write MCP readiness sentinel (#230)
-  try { writeFileSync(mcpSentinel, String(process.pid)); } catch { /* best effort */ }
+  if (!RESTRICTED_EXECUTION_SERVER) {
+    try { writeFileSync(mcpSentinel, String(process.pid)); } catch { /* best effort */ }
+  }
 
   // #844: refresh the sentinel mtime while the server is alive so readiness
   // probes from a foreign PID namespace (shared /tmp) can trust a recent
   // sentinel even when process.kill(pid, 0) cannot see this PID. The reader's
   // freshness window is 90s (hooks/core/mcp-ready.mjs); refresh at 30s (3x).
   // unref() so this timer never keeps the event loop alive on its own.
-  sentinelRefresh = setInterval(() => {
-    try { writeFileSync(mcpSentinel, String(process.pid)); } catch { /* best effort */ }
-  }, 30_000);
-  sentinelRefresh.unref();
+  if (!RESTRICTED_EXECUTION_SERVER) {
+    sentinelRefresh = setInterval(() => {
+      try { writeFileSync(mcpSentinel, String(process.pid)); } catch { /* best effort */ }
+    }, 30_000);
+    sentinelRefresh.unref();
+  }
 
   // Detect platform adapter — stored for platform-aware session paths
   try {
@@ -4941,32 +5137,36 @@ async function main() {
   // the sidecar JSON the statusline reads. Otherwise `/ctx-upgrade` flashes
   // `0 calls / $0.00` until the user makes another MCP tool call. Wrapped
   // in try/catch — a stats-restore failure must never block server startup.
-  try {
-    const restored = restoreSessionStats(getSessionDbPath());
-    if (restored) {
-      for (const [tool, count] of Object.entries(restored.calls)) {
-        sessionStats.calls[tool] = count;
+  if (!RESTRICTED_EXECUTION_SERVER) {
+    try {
+      const restored = restoreSessionStats(getSessionDbPath());
+      if (restored) {
+        for (const [tool, count] of Object.entries(restored.calls)) {
+          sessionStats.calls[tool] = count;
+        }
+        for (const [tool, bytes] of Object.entries(restored.bytesReturned)) {
+          sessionStats.bytesReturned[tool] = bytes;
+        }
+        // Anchor uptime_ms to the original session start so `/ctx-upgrade`
+        // doesn't reset the "session age" the statusline shows.
+        if (restored.sessionStart > 0) {
+          sessionStats.sessionStart = restored.sessionStart;
+        }
       }
-      for (const [tool, bytes] of Object.entries(restored.bytesReturned)) {
-        sessionStats.bytesReturned[tool] = bytes;
-      }
-      // Anchor uptime_ms to the original session start so `/ctx-upgrade`
-      // doesn't reset the "session age" the statusline shows.
-      if (restored.sessionStart > 0) {
-        sessionStats.sessionStart = restored.sessionStart;
-      }
-    }
-  } catch { /* best effort — never block startup on a stats restore failure */ }
+    } catch { /* best effort — never block startup on a stats restore failure */ }
+  }
 
   // Non-blocking version check — result stored for trackResponse warnings.
   // First fetch at startup, then refresh every hour so long-running sessions
   // (some users keep the MCP server alive 24h+) catch new releases without a
   // restart. `.unref()` lets the process exit normally on SIGTERM regardless
   // of pending intervals.
-  fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
-  setInterval(() => {
+  if (!RESTRICTED_EXECUTION_SERVER) {
     fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
-  }, 60 * 60 * 1000).unref();
+    setInterval(() => {
+      fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
+    }, 60 * 60 * 1000).unref();
+  }
 
   // Stats heartbeat — keep the statusline truthful while the user works in
   // tools other than MCP (Bash/Read/Edit during long sessions or post-/compact
@@ -4974,7 +5174,9 @@ async function main() {
   // so bin/statusline.mjs falsely flips to "stale — restart to resume saving"
   // even though the server is alive. Heartbeat refreshes updated_at every 60s;
   // statusline staleness threshold is 30min (cliff is 30 missed ticks away).
-  setInterval(() => persistStats(), 60_000).unref();
+  if (!RESTRICTED_EXECUTION_SERVER) {
+    setInterval(() => persistStats(), 60_000).unref();
+  }
 
   if (process.stdin.isTTY) {
     console.error(`Context Mode MCP server v${VERSION} running on stdio`);

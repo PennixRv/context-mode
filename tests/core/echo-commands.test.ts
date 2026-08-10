@@ -9,9 +9,9 @@
  * Coverage by behaviour (vertical slices):
  *   1. runBatchCommands per-command section echoes `$ <command>` after `# <label>`
  *   2. ctx_batch_execute summary carries a "## Commands" inventory before
- *      "## Indexed Sections", listing each `- <label>: \`<command>\``
- *   3. Long commands (>500 chars) are truncated with `…` so heredoc payloads
- *      cannot dominate the response body
+ *      "## Indexed Sections", listing each bounded command plus audit metadata
+ *   3. Long commands are truncated with explicit source/preview/omitted counts
+ *      and a digest so heredoc payloads cannot dominate the response body
  *   4. ctx_execute prepends a fenced `${language}` block carrying the source
  *      code before stdout
  *   5. ctx_execute_file prepends a header naming the path + a fenced
@@ -98,7 +98,7 @@ describe("issue #736 — ctx_batch_execute echoes the ran command per section", 
 // Behaviour 3 — Long commands are truncated with `…`
 // ════════════════════════════════════════════════════════════════════════════
 describe("issue #736 — pathological heredoc commands truncate cleanly", () => {
-  test("commands longer than 500 chars are clipped with an ellipsis marker", async () => {
+  test("long commands are clipped with visible truncation metadata", async () => {
     const payload = "x".repeat(2000);
     const heredoc = `node - <<'NODE'\n${payload}\nNODE`;
     const exec = mkMockExecutor(() => ({ stdout: "ok\n" }));
@@ -108,11 +108,14 @@ describe("issue #736 — pathological heredoc commands truncate cleanly", () => 
       exec,
     );
     const section = outputs[0];
-    // Must still echo a `$ ` line but bounded in length and end with …
+    // Must still echo a `$ ` line, but with one bounded preview and metadata.
     const dollarLine = section.split("\n").find((l) => l.startsWith("$ "))!;
     expect(dollarLine).toBeDefined();
-    expect(dollarLine.length).toBeLessThan(600); // 500 budget + `$ ` + ellipsis
-    expect(dollarLine.endsWith("…")).toBe(true);
+    expect(dollarLine.length).toBeLessThan(500);
+    expect(dollarLine).toContain("...");
+    expect(dollarLine).toContain("preview=160 chars");
+    expect(dollarLine).toContain("truncated=yes");
+    expect(dollarLine).toMatch(/sha256=[a-f0-9]{64}/);
     // Sanity: full 2000-char payload is NOT inlined verbatim
     expect(section).not.toContain(payload);
   });
@@ -251,7 +254,7 @@ describe("issue #736 — ctx_batch_execute summary includes a Commands inventory
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("response carries `## Commands` listing each `- <label>: \\`<command>\\`` before `## Indexed Sections`", async () => {
+  test("response carries `## Commands` with bounded command audit metadata before `## Indexed Sections`", async () => {
     const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir });
     try {
       await initServer(proc);
@@ -274,9 +277,9 @@ describe("issue #736 — ctx_batch_execute summary includes a Commands inventory
 
       // Commands inventory present
       expect(text).toContain("## Commands");
-      expect(text).toMatch(/- alpha: `echo alpha-output`/);
-      expect(text).toMatch(/- bravo: `echo bravo-output`/);
-      expect(text).toMatch(/- charlie: `echo charlie-output`/);
+      expect(text).toMatch(/- alpha: echo alpha-output \[source=17 chars, preview=17 chars, omitted=0 chars, truncated=no, sha256=[a-f0-9]{64}\]/);
+      expect(text).toMatch(/- bravo: echo bravo-output \[source=17 chars, preview=17 chars, omitted=0 chars, truncated=no, sha256=[a-f0-9]{64}\]/);
+      expect(text).toMatch(/- charlie: echo charlie-output \[source=19 chars, preview=19 chars, omitted=0 chars, truncated=no, sha256=[a-f0-9]{64}\]/);
       // Ordering: Commands BEFORE Indexed Sections
       const cmdIdx = text.indexOf("## Commands");
       const secIdx = text.indexOf("## Indexed Sections");
