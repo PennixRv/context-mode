@@ -39,14 +39,14 @@ Fix the three locally reproduced MCP follow-up defects left after the execution-
 
 ## Acceptance Criteria
 
-- [ ] Invalid RecoveryBrief payloads are rejected with stable, bounded field/rule diagnostics and no submitted semantic content in direct runtime and MCP-facing tests.
-- [ ] The MCP tools/list schema exposes the complete strict RecoveryBrief v1 shape and correct priority literal for every slot.
-- [ ] Update, status, and persisted-file `briefBytes` values are equal; canonical digest and CAS behavior remain stable.
-- [ ] The shared-handler indexing suite passes when invoked through `ctx_execute` with `.ctx-mode-*` as `TMPDIR`, while hidden-path and Issue #186 regression tests remain green.
-- [ ] Targeted tests cover validation, byte semantics, schema projection, source secrecy, hidden-path exclusion, and host-temp resolution.
-- [ ] Full tests, typecheck, build, generated-bundle drift, release asset verification, version lockstep, and `git diff --check` pass.
-- [ ] Linux restricted-execution probes and cross-platform static/unit coverage remain green; platform-specific limitations are documented rather than inferred away.
-- [ ] The final implementation is committed on the task branch and the worktree is clean.
+- [x] Invalid RecoveryBrief payloads are rejected with stable, bounded field/rule diagnostics and no submitted semantic content in direct runtime and MCP-facing tests.
+- [x] The MCP tools/list schema exposes the complete strict RecoveryBrief v1 shape and correct priority literal for every slot.
+- [x] Update, status, and persisted-file `briefBytes` values are equal; canonical digest and CAS behavior remain stable.
+- [x] The shared-handler indexing suite passes when invoked through `ctx_execute` with `.ctx-mode-*` as `TMPDIR`, while hidden-path and Issue #186 regression tests remain green.
+- [x] Targeted tests cover validation, byte semantics, schema projection, source secrecy, hidden-path exclusion, and host-temp resolution.
+- [x] Full tests, typecheck, build, generated-bundle drift, release asset verification, version lockstep, and `git diff --check` pass.
+- [x] Linux restricted-execution probes and cross-platform static/unit coverage remain green; platform-specific limitations are documented rather than inferred away.
+- [x] The final implementation is committed on the task branch and the worktree is clean.
 - [ ] When external release execution is approved, `v1.0.183` passes the disposable provider-authorized native preflight, immutable attestation verifier, annotated-tag ancestry gate, and GitHub Release workflow before publication is reported as successful.
 - [ ] Final reporting distinguishes local implementation/validation, remote integration, GitHub Release publication, and the intentionally absent npm registry publication.
 

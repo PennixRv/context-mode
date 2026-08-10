@@ -2,7 +2,7 @@
 
 Date: 2026-08-10
 
-## Pre-Integration Result
+## Final Source Result
 
 - `trellis-check`: completed in the inline main session; no subagent or Trellis
   channel was used.
@@ -16,6 +16,15 @@ Date: 2026-08-10
 - Real installed `ctx_execute` probe: sandbox basename `.ctx-mode-VSLkXB`; 2
   files passed; 4 tests passed. No caller `TMPDIR` override was used.
 - Repository lint script: not present, so no independent lint command exists.
+- Integration: merged `origin/devel@6057a8d8` with merge commit
+  `e4a6921c`; the remote-only change was `stats.json` and had no path overlap.
+- Versioned archive checks: npm pack `context-mode-1.0.183.tgz` reported version
+  `1.0.183`; Codex marketplace archive verification installed the offline
+  plugin and completed an MCP initialize probe with 124 manifest entries.
+- Deterministic bundle hashes matched across consecutive builds:
+  `server.bundle.mjs` `ed1fe26686b74917402625d77098fd4259839e2e0fb687fe9dd898e38e09e660`;
+  `cli.bundle.mjs` `4850b743106cc3d3a886d752543d1cf51dda80bd3dcc1199558ec40f7158fdf8`;
+  `hooks/checkpoint.bundle.mjs` `a993bf5d00cf5a9e6914cd7104ada9aa969e4696609eb2e708d0a56705afbdaa`.
 
 ## Findings Resolved During Check
 
@@ -29,11 +38,9 @@ Date: 2026-08-10
    host temp and could misclassify a concurrent test's live directory as a
    leak. It now captures the exact child `TMPDIR` and checks only that path.
 
-## Pending Gates
+## Release Gates
 
-- Merge the refreshed `origin/devel` release line and rerun the focused/full
-  checks.
-- Synchronize version `1.0.183`, regenerate deterministic release bundles, and
-  verify npm/Codex marketplace archives.
-- Run the authorized native release preflight and immutable attestation/tag
-  gates before any publication.
+- Source commit and worktree-clean checkpoint are pending the archive commit.
+- The disposable native release preflight, evidence-only child commit,
+  annotated tag, remote push, and GitHub Release workflow remain external
+  actions. npm registry publication is intentionally excluded.
