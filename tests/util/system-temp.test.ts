@@ -32,6 +32,12 @@ describe("host temp directory resolution", () => {
   test("exports the resolved directory for host-side fixtures", () => {
     expect(HOST_TEMP_DIRECTORY).toBeTruthy();
     expect(HOST_TEMP_DIRECTORY).not.toBe(process.cwd());
-    expect(realpathSync(HOST_TEMP_DIRECTORY)).toBe(HOST_TEMP_DIRECTORY);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "canonicalizes POSIX system temp aliases",
+    () => {
+      expect(realpathSync(HOST_TEMP_DIRECTORY)).toBe(HOST_TEMP_DIRECTORY);
+    },
+  );
 });

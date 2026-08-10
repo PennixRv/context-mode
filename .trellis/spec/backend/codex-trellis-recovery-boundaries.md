@@ -183,12 +183,13 @@ interface RecoveryBriefProviderUpdateResult {
 - Capability records contain no task prose, Brief body, tool I/O, credentials,
   or provider configuration. They are consumed atomically and removed after
   one use.
-- Host-side capability fixtures use `HOST_TEMP_DIRECTORY`, which resolves the
-  trusted operating-system temp root to its existing canonical path before a
-  fixture is created. This handles macOS system aliases such as
-  `/var -> /private/var` without weakening the rule that caller-supplied
-  capability storage and every existing descendant ancestor must be free of
-  symbolic links.
+- Host-side capability fixtures use `HOST_TEMP_DIRECTORY`, which resolves a
+  trusted POSIX temp root to its existing canonical path before a fixture is
+  created. This handles macOS system aliases such as `/var -> /private/var`
+  without weakening the rule that caller-supplied capability storage and every
+  existing descendant ancestor must be free of symbolic links. Windows keeps
+  its native `TEMP`/`TMP` spelling; do not convert it to a `\\?\` namespace
+  path that downstream `path.resolve()` callers do not accept as equivalent.
 - `ctx_recovery_brief_update.brief` uses a strict, fully shaped Zod object with
   slot-specific priority literals, source-kind values, list bounds, timestamp
   and digest shapes. The runtime validator independently enforces exact UTF-8
@@ -246,10 +247,11 @@ interface RecoveryBriefProviderUpdateResult {
   `statSync(...).size`, prove formatting-only digest stability and CAS behavior,
   and use sentinels to prove invalid diagnostics never echo semantic content.
 - Capability security suites must create host fixtures below
-  `HOST_TEMP_DIRECTORY`, assert that it equals its `realpathSync()` result, and
-  retain separate explicit symlink-directory and symlink-ancestor rejection
-  cases. The three RecoveryBrief/MCP capability suites must pass on macOS,
-  Linux, and their existing bounded Windows coverage.
+  `HOST_TEMP_DIRECTORY`, assert on POSIX that it equals its `realpathSync()`
+  result, and retain separate explicit symlink-directory and symlink-ancestor
+  rejection cases. Windows tests must retain the native temp spelling. The
+  three RecoveryBrief/MCP capability suites must pass on macOS, Linux, and
+  their existing bounded Windows coverage.
 - Release smoke must use a disposable profile for manual/automatic compact and
   a normal-profile fresh session for the explicit bridge. Record only status,
   provider, task, health, and error code; never retain raw tool input/output.

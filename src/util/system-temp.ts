@@ -18,7 +18,7 @@ function canonicalizeTempDirectory(directory: string): string {
  */
 export function resolveHostTempDirectory(): string {
   if (process.platform === "win32") {
-    return canonicalizeTempDirectory(process.env.TEMP ?? process.env.TMP ?? tmpdir());
+    return process.env.TEMP ?? process.env.TMP ?? tmpdir();
   }
 
   const environment = { ...process.env };

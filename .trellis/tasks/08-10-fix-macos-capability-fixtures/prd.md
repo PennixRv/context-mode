@@ -26,8 +26,9 @@ Canonicalize the trusted OS temp root in capability security fixtures so macOS s
 
 ## Acceptance Criteria
 
-- [ ] All three affected suites derive fixture paths below
-  `realpathSync(tmpdir())` or an equivalent trusted canonical root.
+- [ ] All three affected suites derive fixture paths below the shared trusted
+  host temp root; POSIX roots are canonical and Windows retains its native
+  `TEMP`/`TMP` spelling.
 - [ ] The explicit symlink-directory and symlink-ancestor rejection tests
   continue to pass without production source changes.
 - [ ] Focused tests pass repeatedly and the full local test suite, typecheck,
