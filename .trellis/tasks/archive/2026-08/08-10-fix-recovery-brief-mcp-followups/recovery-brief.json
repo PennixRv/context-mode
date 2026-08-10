@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-10T08:35:44.000Z",
+  "objective": {
+    "value": "Publish verified context-mode v1.0.183 from the fork devel release line after completing all three MCP follow-up fixes.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+    "valid_at": "2026-08-10T08:35:44.000Z"
+  },
+  "hard_constraints": [
+    {
+      "value": "Preserve restricted execution, hidden-path indexing, canonical project, RecoveryBrief secrecy, and evidence-only release boundaries.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Do not modify parent repositories, /home/penn/.codex, Governance Plugin, sibling components, Gitlinks, or npm registry state.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Implementation and checking remain inline in the current main session without subagents or Trellis channel workers.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    }
+  ],
+  "decisions": [
+    {
+      "value": "RecoveryBrief uses a strict typed MCP schema plus independent authoritative runtime validation with content-free diagnostics.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "briefBytes reports persisted file bytes while canonical compact JSON remains digest and CAS identity.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Indexable fixtures use the host temp resolver; .ctx-mode-* and hidden-path exclusions remain unchanged.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "v1.0.183 uses the fork devel attested GitHub Release workflow and intentionally excludes npm publication.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    }
+  ],
+  "completed_work": [
+    {
+      "value": "Implemented and committed all RecoveryBrief schema, diagnostic, byte-semantic, host-temp, test, documentation, and spec changes.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Merged origin/devel@6057a8d8 without overlap and preserved existing task commit identities.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Final versioned source passed focused tests, 232-file full tests, typecheck, deterministic build, archive verification, and real ctx_execute probe.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Synchronized all manifests to 1.0.183 and recorded source/release evidence in the task result.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    }
+  ],
+  "open_work": [
+    {
+      "value": "Archive the completed Trellis task and record the session journal to establish the clean source commit.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Run provider-authorized native preflight, commit only the attestation, create and validate the annotated v1.0.183 tag.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    },
+    {
+      "value": "Push devel and v1.0.183, monitor the GitHub Release, and confirm npm latest remains unchanged.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+      "valid_at": "2026-08-10T08:35:44.000Z"
+    }
+  ],
+  "latest_blocker": null,
+  "next_action": {
+    "value": "Archive this task, then run the disposable provider-authorized native release preflight from the exact clean source commit.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+    "valid_at": "2026-08-10T08:35:44.000Z"
+  },
+  "project_state": {
+    "value": "fix/issue-025-execution-boundary at release preparation commit 0764c4b9 with all local source gates passing.",
+    "priority": "important",
+    "source_kind": "trellis_task",
+    "source_sha256": "435ea2100738a00b28ffc5232a6945fb16a6ce2267abcf0d3f5499d3fa09cca9",
+    "valid_at": "2026-08-10T08:35:44.000Z"
+  }
+}
