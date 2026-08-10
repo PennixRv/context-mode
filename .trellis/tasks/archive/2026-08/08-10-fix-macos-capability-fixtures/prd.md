@@ -39,9 +39,9 @@ Canonicalize the trusted OS temp root in capability security fixtures so macOS s
   build, and bundle drift checks pass.
 - [x] GitHub CI passes on `ubuntu-latest`, `macos-latest`, and
   `windows-latest` for the follow-up commit.
-- [ ] `v1.0.184` passes the existing native provider-authenticated attestation,
+- [x] `v1.0.184` passes the existing native provider-authenticated attestation,
   annotated-tag, release-asset, and remote ancestry gates.
-- [ ] The GitHub Release assets are downloadable and match their declared
+- [x] The GitHub Release assets are downloadable and match their declared
   SHA-256 digests; npm registry `latest` remains unchanged.
 
 ## Notes

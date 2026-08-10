@@ -9,7 +9,10 @@ Date: 2026-08-10
 - Release version: `v1.0.184`
 - Implementation commits: `330d9ffd`, `376cb127`, and `74e251eb`
 - Version commit: `5f988654`
-- Pre-release source candidate: `74e251eb2614232d34b6208817ee988960e1c894`
+- Release source commit: `e59110e5f944b564b8d2e403bc79fff4b0fe8551`
+- Native attestation evidence commit: `b4bfe49b7152c10ee246b0877dad4389462c2412`
+- Annotated tag object: `c47aade93b7d1504c6c0bb23445579b866604b84`
+- Release workflow: `31381633323`
 - Published `v1.0.183` remains immutable; this task prepares a follow-up release
   instead of replacing its tag, assets, or audit record.
 
@@ -134,14 +137,52 @@ global `pnpm` or Corepack command, so validation used the package-pinned
   probe. macOS and Windows continue to fail closed for restricted execution;
   compatibility mode remains available.
 
-## Release Gate
+## Release Result
 
-The archived task commit establishes the final source identity. The existing
-release workflow must still create a provider-authenticated native compact
-attestation as its direct child, build and verify the deterministic marketplace
-asset, validate the annotated tag against remote `devel`, publish the GitHub
-Release, redownload all assets, and confirm npm `latest` is unchanged. Those
-external results are recorded after publication rather than predicted here.
+The project-native release flow completed without rewriting `v1.0.183`:
+
+```text
+Provider-authenticated native compact preflight
+  PASS; manual and automatic lifecycles both reached
+  pending -> confirmed -> claimed
+  Node 26.6.0; Codex CLI 0.146.0; provider tuple openai-custom
+
+Native attestation
+  path: docs/releases/attestations/v1.0.184.json
+  raw SHA-256: c39bdbf8cd6f33f612fc53a0bbcbf010fc72e4856456cbdc7da7c8eb90fbc06f
+  attestation SHA-256: eec989308c86ab4253f053c6d2859482efb097cf9eba6e96f06692cc2482a97c
+
+node scripts/verify-codex-native-release-attestation.mjs ...
+  PASS; source e59110e5 is the direct parent of evidence b4bfe49b, whose
+  only change is the tracked v1.0.184 attestation
+
+node scripts/validate-fork-release-tag.mjs v1.0.184
+  PASS; tag target is reachable from origin/devel
+
+GitHub Release workflow 31381633323
+  PASS; 17 steps, including typecheck, build, bundle drift, full test,
+  release-asset verification, immutable attestation verification, and publish
+
+Downloaded GitHub Release assets
+  CONTENT-MANIFEST.json:
+    b4494c9c9f44bceb194abcc35e8c535594eae13e685703970bbdd6ae195a0fd7
+  context-mode-1.0.184.tgz:
+    83bf0ad97f3a52880a704de72e69c9cf9bc6018a03c639429f4cf8247220ad0c
+  context-mode-codex-marketplace-v1.0.184.tar.gz:
+    2f6ae994c76f98805093c67033623bfc271005ea6f9ba271e38fa828fdd2d0e2
+  context-mode-codex-marketplace-v1.0.184.tar.gz.sha256:
+    547a8ec8763461d6373b46c7be77a8540fe2fdd819af972d1befa39570e91bbf
+
+Downloaded marketplace verification
+  PASS; checksum sidecar, CONTENT-MANIFEST, 124 entries, offline install,
+  and MCP initialize
+
+npm view context-mode version dist-tags.latest --json
+  unchanged at 1.0.169; no npm publication
+```
+
+Release URL:
+`https://github.com/PennixRv/context-mode/releases/tag/v1.0.184`
 
 ## Residual Risks
 
