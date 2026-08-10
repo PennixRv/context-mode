@@ -120,19 +120,19 @@ to npm unless a separate user instruction explicitly expands scope.
 
 ## Acceptance Criteria
 
-- [ ] Source `.codex-plugin/mcp.json` retains fixed
+- [x] Source `.codex-plugin/mcp.json` retains fixed
   `CONTEXT_MODE_PLATFORM=codex` and declares exactly the five approved
   `env_vars`, with no budget values or credentials in `env`.
-- [ ] Source, built marketplace payload, installed plugin manifest, and
+- [x] Source, built marketplace payload, installed plugin manifest, and
   `codex mcp list --json` normalize to the same five-item list.
-- [ ] With no parent values, a real stdio MCP process uses defaults
+- [x] With no parent values, a real stdio MCP process uses defaults
   `240/160/96/20/1200` and a 365-character source reports `preview=240`.
-- [ ] With parent values `64/64/16/0/160`, a real stdio MCP process reads those
+- [x] With parent values `64/64/16/0/160`, a real stdio MCP process reads those
   values and the same source reports `preview=64` with correct original,
   omitted, truncation, language, and digest audit fields.
-- [ ] Focused manifest, marketplace, stdio, presentation, `#717/#736`, and
+- [x] Focused manifest, marketplace, stdio, presentation, `#717/#736`, and
   restricted-boundary tests pass.
-- [ ] Full typecheck, build, test, all bundle/asymmetric drift checks,
+- [x] Full typecheck, build, test, all bundle/asymmetric drift checks,
   marketplace build/verify, and two consecutive deterministic builds pass.
 - [ ] The final source commit is on remote `devel`; the native attestation is
   its only-change direct child; the annotated tag is unoccupied, valid, and

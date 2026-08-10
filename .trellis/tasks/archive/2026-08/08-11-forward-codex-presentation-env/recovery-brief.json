@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-10T17:50:30.000Z",
+  "objective": {
+    "value": "Publish context-mode v1.0.185 with exact Codex presentation environment forwarding and native-attested release evidence.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+    "valid_at": "2026-08-10T17:50:30.000Z"
+  },
+  "hard_constraints": [
+    {
+      "value": "Modify only the context-mode repository; do not modify the parent repository, Gitlink, installed Codex state, Governance Plugin, sibling components, or credentials.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Codex env_vars contains exactly the five non-sensitive presentation names with no values or broad inheritance, and fixed CONTEXT_MODE_PLATFORM remains codex.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Presentation defaults, restricted execution policy, other platform manifests, ROOT-ISSUE-053, and the Codex host-owned Called display remain unchanged.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "The release source commit must be clean, the attestation-only evidence commit must be its direct child, and v1.0.185 must be an immutable annotated tag with no force operations.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    }
+  ],
+  "decisions": [
+    {
+      "value": "Source, generated marketplace, content manifest, installed payload, normalized Codex transport, and real stdio behavior are one exact delivery contract.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Upstream #717/#736 keep source and command auditing visible; zero disables Searchable terms only, while source and command previews retain tested minimums.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "The existing repository version-sync lifecycle and native Codex release preflight are the authorized release mechanisms.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    }
+  ],
+  "completed_work": [
+    {
+      "value": "Implementation commit d1918cc9 forwards the exact allowlist and adds source, asset, offline install, normalized transport, stdio runtime, audit, and boundary regression coverage.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Version commit 51ea11f8 synchronized all eleven release manifests to 1.0.185.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "At 1.0.185, typecheck, build, nine bundle assertions, asymmetric drift, focused tests, version tests, and the full 233-file suite passed.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Two marketplace builds were byte-identical at 2,744,548 bytes with archive SHA 43e5753c and content-manifest SHA 7728c44d; offline install and MCP initialize passed.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Task check and result records contain default 481-character/7-line and configured 289-character/7-line MCP return measurements plus separate ROOT-ISSUE conclusions.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    }
+  ],
+  "open_work": [
+    {
+      "value": "Finish and archive the Trellis task, commit the archived task as the exact release source, fast-forward devel, and push the clean source.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Run the provider-authorized native preflight and commit only the v1.0.185 attestation as the direct-child evidence commit.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Create, validate, and push the annotated v1.0.185 tag, then wait for CI and GitHub Release completion.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    },
+    {
+      "value": "Download every release asset, verify all hashes and offline installation, record final task evidence, push it, and leave the repository clean.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+      "valid_at": "2026-08-10T17:50:30.000Z"
+    }
+  ],
+  "latest_blocker": null,
+  "next_action": {
+    "value": "Finish and archive task 08-11-forward-codex-presentation-env, then commit the archive as the release source.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+    "valid_at": "2026-08-10T17:50:30.000Z"
+  },
+  "project_state": {
+    "value": "Branch fix/issue-054-codex-plugin-env-forwarding is clean at version commit 51ea11f8 except for validated final task result updates awaiting archive.",
+    "priority": "important",
+    "source_kind": "trellis_task",
+    "source_sha256": "a09b67424254e96617284e3fe471153261e619286501834015e8e7da40a4ba1d",
+    "valid_at": "2026-08-10T17:50:30.000Z"
+  }
+}

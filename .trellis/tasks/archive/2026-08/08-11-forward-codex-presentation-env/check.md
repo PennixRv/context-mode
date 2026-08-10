@@ -38,7 +38,16 @@ node scripts/verify-codex-release-asset.mjs <fresh-archive>
 
 Consecutive marketplace builds
   PASS; both 2,744,548 bytes with SHA-256
-  a2806d9396d6fe86574763e3845307356219efc9b55b96de93a5396d29374b12
+  43e5753cef82077f51bf422dd9d7061c3da498d1b00207468ed1e85099b9a675
+  CONTENT-MANIFEST SHA-256:
+  7728c44d1ef0b0aeb9a135274e7181d6a3448c0379fd9ca8c9dc84a60f30a0c9
+
+Consecutive generated bundles
+  PASS
+  server.bundle.mjs:
+  a7c4c284b57865c7383ed02275b1ccc6d8a2ff93eb672c97efe99d4ca71be4a4
+  cli.bundle.mjs:
+  a249c13c6541cd9b882b2136f24f97e8d9e9b970482866fe54e287f2f2c0a8c6
 
 git diff --check
   PASS
@@ -67,7 +76,8 @@ source audit preview required by upstream Issues #717 and #736.
 ## Remaining Gates
 
 - Synchronize version `1.0.185`, archive the task into the exact release source
-  commit, and run the clean-source native preflight.
+  commit, and run the clean-source native preflight. Version synchronization is
+  complete in `51ea11f8`; archive and preflight remain.
 - Create the direct-child attestation-only evidence commit and immutable
   annotated `v1.0.185` tag.
 - Wait for CI and Release completion, download every asset, verify all hashes
