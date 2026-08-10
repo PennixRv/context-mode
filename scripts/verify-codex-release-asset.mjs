@@ -12,7 +12,17 @@ import {
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const presentationEnvVars = [
+  "CONTEXT_MODE_CODE_ECHO_MAX",
+  "CONTEXT_MODE_COMMAND_ECHO_MAX",
+  "CONTEXT_MODE_TITLE_PREVIEW_MAX",
+  "CONTEXT_MODE_SEARCHABLE_TERMS_MAX",
+  "CONTEXT_MODE_RESULT_PREVIEW_MAX",
+];
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -27,6 +37,25 @@ function run(command, args, options) {
     throw new Error(`${command} ${args.join(" ")} failed:\n${result.stdout}\n${result.stderr}`);
   }
   return result.stdout;
+}
+
+function readContextModeMcpEntry(path) {
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  const entry = manifest.mcpServers?.["context-mode"];
+  if (!entry) throw new Error(`context-mode MCP entry is missing: ${path}`);
+  return entry;
+}
+
+function assertPresentationEnvironment(entry, description) {
+  if (JSON.stringify(entry.env_vars) !== JSON.stringify(presentationEnvVars)) {
+    throw new Error(`${description} does not declare the exact presentation env_vars allowlist`);
+  }
+  if (
+    JSON.stringify(entry.env) !==
+    JSON.stringify({ CONTEXT_MODE_PLATFORM: "codex" })
+  ) {
+    throw new Error(`${description} does not retain the fixed Codex platform environment`);
+  }
 }
 
 function parseArchivePath(argv) {
@@ -76,6 +105,15 @@ function main() {
       throw new Error("offline marketplace wrapper does not use the required local plugin source");
     }
 
+    const sourceMcpEntry = readContextModeMcpEntry(
+      join(repositoryRoot, ".codex-plugin", "mcp.json"),
+    );
+    const payloadMcpEntry = readContextModeMcpEntry(
+      join(extractionRoot, "plugins", "context-mode", ".codex-plugin", "mcp.json"),
+    );
+    assertPresentationEnvironment(sourceMcpEntry, "source Codex MCP manifest");
+    assertPresentationEnvironment(payloadMcpEntry, "marketplace Codex MCP manifest");
+
     run("codex", ["plugin", "marketplace", "add", extractionRoot], {
       cwd: projectRoot,
       env: { ...process.env, CODEX_HOME: codexHome },
@@ -100,6 +138,29 @@ function main() {
       "context-mode",
       manifest.version,
     );
+    const installedMcpEntry = readContextModeMcpEntry(
+      join(pluginRoot, ".codex-plugin", "mcp.json"),
+    );
+    assertPresentationEnvironment(installedMcpEntry, "installed Codex MCP manifest");
+
+    const normalizedServers = JSON.parse(run("codex", ["mcp", "list", "--json"], {
+      cwd: projectRoot,
+      env: { ...process.env, CODEX_HOME: codexHome },
+    }));
+    const normalizedServer = normalizedServers.find((server) => server.name === "context-mode");
+    if (!normalizedServer || normalizedServer.transport?.type !== "stdio") {
+      throw new Error("Codex did not normalize the installed context-mode stdio MCP server");
+    }
+    assertPresentationEnvironment(
+      normalizedServer.transport,
+      "normalized Codex MCP transport",
+    );
+
+    const forwardedEnvironment = Object.fromEntries(
+      installedMcpEntry.env_vars
+        .filter((name) => process.env[name] !== undefined)
+        .map((name) => [name, process.env[name]]),
+    );
     const mcpProbe = spawnSync(process.execPath, ["./start.mjs"], {
       cwd: pluginRoot,
       input: JSON.stringify({
@@ -116,8 +177,9 @@ function main() {
       timeout: 15_000,
       env: {
         ...process.env,
+        ...forwardedEnvironment,
+        ...installedMcpEntry.env,
         CODEX_HOME: codexHome,
-        CONTEXT_MODE_PLATFORM: "codex",
         CONTEXT_MODE_DIR: join(temporaryRoot, "context-mode-state"),
       },
     });
@@ -133,6 +195,7 @@ function main() {
       archiveSha256: sha256(archivePath),
       installed: "context-mode@context-mode-offline",
       mcpInitialized: true,
+      envVars: presentationEnvVars,
       manifestEntries: manifest.entries.length,
     }, null, 2));
   } finally {

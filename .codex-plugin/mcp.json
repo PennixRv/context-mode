@@ -7,6 +7,13 @@
       "env": {
         "CONTEXT_MODE_PLATFORM": "codex"
       },
+      "env_vars": [
+        "CONTEXT_MODE_CODE_ECHO_MAX",
+        "CONTEXT_MODE_COMMAND_ECHO_MAX",
+        "CONTEXT_MODE_TITLE_PREVIEW_MAX",
+        "CONTEXT_MODE_SEARCHABLE_TERMS_MAX",
+        "CONTEXT_MODE_RESULT_PREVIEW_MAX"
+      ],
       "default_tools_approval_mode": "approve"
     }
   }

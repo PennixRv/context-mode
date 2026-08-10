@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/restricted-execution-and-presentation.md","reason":"Defines the exact Codex presentation env allowlist, default behavior, audit metadata, execution boundary, and required tests."}
+{"file":".trellis/spec/guides/repository-maintenance-thinking-guide.md","reason":"Defines repository, release, tag, generated-asset, and remote-boundary checks for the authorized patch release."}

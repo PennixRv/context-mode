@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -8,6 +9,13 @@ import { gunzipSync } from "node:zlib";
 const repositoryRoot = resolve(__dirname, "..", "..");
 const builderPath = resolve(repositoryRoot, "scripts", "build-codex-marketplace-bundle.mjs");
 const verifierPath = resolve(repositoryRoot, "scripts", "verify-codex-release-asset.mjs");
+const presentationEnvVars = [
+  "CONTEXT_MODE_CODE_ECHO_MAX",
+  "CONTEXT_MODE_COMMAND_ECHO_MAX",
+  "CONTEXT_MODE_TITLE_PREVIEW_MAX",
+  "CONTEXT_MODE_SEARCHABLE_TERMS_MAX",
+  "CONTEXT_MODE_RESULT_PREVIEW_MAX",
+];
 
 function buildArchive(
   outputDirectory: string,
@@ -133,6 +141,29 @@ describe("Codex offline marketplace release asset", () => {
       expect(existsSync(join(payloadRoot, "fetch-worker.bundle.cjs"))).toBe(true);
       expect(existsSync(join(payloadRoot, "hooks", "checkpoint-diagnostics.mjs"))).toBe(true);
       expect(existsSync(join(payloadRoot, "hooks", "recovery-brief-capability.bundle.mjs"))).toBe(true);
+
+      const sourceMcpPath = join(repositoryRoot, ".codex-plugin", "mcp.json");
+      const payloadMcpPath = join(payloadRoot, ".codex-plugin", "mcp.json");
+      const sourceMcp = readFileSync(sourceMcpPath, "utf8");
+      const payloadMcp = readFileSync(payloadMcpPath, "utf8");
+      const payloadEntry = JSON.parse(payloadMcp).mcpServers["context-mode"];
+      expect(payloadMcp).toBe(sourceMcp);
+      expect(payloadEntry.env_vars).toEqual(presentationEnvVars);
+      expect(payloadEntry.env).toEqual({ CONTEXT_MODE_PLATFORM: "codex" });
+
+      const contentManifest = JSON.parse(
+        readFileSync(join(extractionDirectory, "CONTENT-MANIFEST.json"), "utf8"),
+      );
+      const relativeMcpPath = "plugins/context-mode/.codex-plugin/mcp.json";
+      const mcpManifestEntry = contentManifest.entries.find(
+        (entry: { path: string }) => entry.path === relativeMcpPath,
+      );
+      expect(mcpManifestEntry).toEqual({
+        path: relativeMcpPath,
+        sha256: createHash("sha256").update(payloadMcp).digest("hex"),
+        size: Buffer.byteLength(payloadMcp),
+      });
+
       for (const forbidden of [".git", ".github", ".claude", "configs", "node_modules", "src", "tests", "build"]) {
         expect(existsSync(join(payloadRoot, forbidden)), forbidden).toBe(false);
       }

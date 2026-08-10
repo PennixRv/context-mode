@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/restricted-execution-and-presentation.md","reason":"Check source/build/install/runtime manifest parity, unchanged defaults, #717/#736 audit behavior, and restricted execution regressions."}
+{"file":".trellis/spec/guides/repository-maintenance-thinking-guide.md","reason":"Check branch ancestry, release source/evidence topology, immutable tag availability, deterministic assets, and final remote state."}

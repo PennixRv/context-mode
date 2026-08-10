@@ -1604,6 +1604,13 @@ Execution source remains directly visible for the audit and inspection contracts
 
 Values are read at server startup. Small or excessive integers clamp to the stated range; absent, empty, negative, fractional, unsafe, or otherwise invalid values use the default. A zero code or command preview is intentionally not supported because it would bypass the direct source visibility required by #717/#736.
 
+The Codex Plugin manifest forwards only these five variable names from the
+parent Codex process through its stdio MCP `env_vars` allowlist. It does not
+embed their values, forward credentials, or inherit a broader environment;
+`CONTEXT_MODE_PLATFORM=codex` remains a fixed manifest value. When a parent
+variable is unset, the MCP process receives no override and uses the defaults
+above.
+
 These settings control only context-mode MCP result content. Codex renders the tool input in its host-owned `Called` block before the server returns a result; context-mode cannot shorten, suppress, or claim to have fixed that display.
 
 ### Network fetch hardening

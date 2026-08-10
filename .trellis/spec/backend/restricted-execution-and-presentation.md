@@ -4,7 +4,8 @@
 
 Apply this contract whenever changing `ctx_execute`, `ctx_execute_file`,
 `ctx_batch_execute`, `PolyglotExecutor`, execution startup, execution-result
-storage, or MCP source/index-summary formatting.
+storage, MCP source/index-summary formatting, or a platform manifest that
+controls which presentation environment values reach the stdio MCP process.
 
 These tools share one security decision. A working directory, deny-pattern
 scan, tool annotation, or caller-provided field is not an execution boundary.
@@ -53,6 +54,15 @@ Server environment:
 | `CONTEXT_MODE_TITLE_PREVIEW_MAX` | Default 96, minimum 16, maximum 240; `0` means 16. |
 | `CONTEXT_MODE_SEARCHABLE_TERMS_MAX` | Default 20, range 0-80; `0` disables optional terms. |
 | `CONTEXT_MODE_RESULT_PREVIEW_MAX` | Default 1,200, minimum 160, maximum 3,000; `0` means 160. |
+
+The Codex Plugin stdio MCP manifest keeps
+`env.CONTEXT_MODE_PLATFORM=codex` fixed and forwards exactly the five
+presentation keys above through `env_vars`. The allowlist contains names only:
+it must not contain budget values, credentials, prefixes, wildcards, or another
+environment key. Codex copies a named value only when the parent process has
+set it; absence therefore continues to select the server defaults. Source,
+offline marketplace, installed plugin, and normalized `codex mcp list --json`
+representations must keep the same ordered list.
 
 The MCP input schemas do not expose `mode`, `readOnly`, an isolation backend,
 or another authority-elevation field. Unknown caller fields cannot replace the
@@ -140,6 +150,7 @@ server decision.
 | Presentation value is absent, empty, negative, non-numeric, or unsafe integer | Use the documented default |
 | Positive presentation value is below/above range | Clamp to the documented minimum/maximum |
 | Source or command is truncated | Keep preview plus original/preview/omitted/truncated/digest metadata |
+| Codex source, built, installed, or normalized manifest omits, reorders, or adds an `env_vars` name | Fail the manifest or release-asset verification; do not publish the asset |
 
 Errors must be stable, bounded, and must not include the rejected sensitive
 path or source body.
@@ -151,11 +162,15 @@ path or source body.
   host listener, use request-only result matching, and return bounded source
   provenance.
 - Base: no execution mode is configured. Existing writable, networked,
-  persistent behavior remains available and its tool metadata says so.
+  persistent behavior remains available and its tool metadata says so. If no
+  presentation value is set in the Codex parent, the MCP uses the documented
+  defaults rather than receiving a value from the manifest.
 - Bad: a handler trusts `cwd`, `readOnly: true`, a deny string scan, or a recent
   transcript as authority; mounts a writable temporary directory; writes
   restricted output to FTS5; silently falls back when isolation fails; or makes
-  hidden paths indexable solely to accommodate a test fixture.
+  hidden paths indexable solely to accommodate a test fixture. A Codex manifest
+  that hard-codes budgets, forwards a credential, or uses a prefix/wildcard is
+  also invalid.
 
 ## 6. Tests Required
 
@@ -168,7 +183,10 @@ TMPDIR=/tmp pnpm exec vitest run \
   tests/executor/restricted-boundary.test.ts \
   tests/core/restricted-execution-server.test.ts \
   tests/core/echo-commands.test.ts \
-  tests/security/project-boundary-852.test.ts
+  tests/security/project-boundary-852.test.ts \
+  tests/plugins/codex-manifest.test.ts \
+  tests/plugins/codex-presentation-env-forwarding.test.ts \
+  tests/scripts/codex-release-asset.test.ts
 pnpm run typecheck
 pnpm test
 pnpm run build
@@ -180,6 +198,10 @@ project reads, absolute/traversal/prefix/symlink/indirect paths, command-interna
 children, network, concurrency, timeout cleanup, background survival, later
 `ctx_search` non-recall, missing isolation, compatibility metadata, invalid and
 zero presentation values, Unicode, digest stability, and generated bundles.
+Codex delivery tests must compare the exact ordered five-name allowlist across
+the source manifest, built payload, installed payload, and normalized MCP
+transport. A real stdio process must prove both absent-variable defaults and a
+configured `64/64/16/0/160` parent environment without using secret values.
 
 Run the shared indexing fixture through the real `ctx_execute` MCP without
 overriding its hidden `TMPDIR`; assert the `.ctx-mode-*` basename and passing

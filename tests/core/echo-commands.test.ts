@@ -31,13 +31,35 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
-import {
-  runBatchCommands,
-  type BatchCommand,
-} from "../../src/server.js";
+import type { BatchCommand } from "../../src/server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const mcpEntry = resolve(__dirname, "..", "..", "start.mjs");
+
+const PRESENTATION_ENV_VARS = [
+  "CONTEXT_MODE_CODE_ECHO_MAX",
+  "CONTEXT_MODE_COMMAND_ECHO_MAX",
+  "CONTEXT_MODE_TITLE_PREVIEW_MAX",
+  "CONTEXT_MODE_SEARCHABLE_TERMS_MAX",
+  "CONTEXT_MODE_RESULT_PREVIEW_MAX",
+] as const;
+const originalPresentationEnv = new Map(
+  PRESENTATION_ENV_VARS.map((name) => [name, process.env[name]]),
+);
+let runBatchCommands: typeof import("../../src/server.js").runBatchCommands;
+
+beforeAll(async () => {
+  for (const name of PRESENTATION_ENV_VARS) delete process.env[name];
+  ({ runBatchCommands } = await import("../../src/server.js"));
+});
+
+afterAll(() => {
+  for (const name of PRESENTATION_ENV_VARS) {
+    const original = originalPresentationEnv.get(name);
+    if (original === undefined) delete process.env[name];
+    else process.env[name] = original;
+  }
+});
 
 interface MockResult { stdout: string; stderr?: string; timedOut?: boolean; }
 

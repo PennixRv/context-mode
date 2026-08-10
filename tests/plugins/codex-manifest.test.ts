@@ -30,6 +30,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "..", "..");
+const PRESENTATION_ENV_VARS = [
+  "CONTEXT_MODE_CODE_ECHO_MAX",
+  "CONTEXT_MODE_COMMAND_ECHO_MAX",
+  "CONTEXT_MODE_TITLE_PREVIEW_MAX",
+  "CONTEXT_MODE_SEARCHABLE_TERMS_MAX",
+  "CONTEXT_MODE_RESULT_PREVIEW_MAX",
+] as const;
 
 function readJson(relPath: string): Record<string, unknown> {
   const raw = readFileSync(resolve(REPO_ROOT, relPath), "utf8");
@@ -73,6 +80,18 @@ describe(".codex-plugin/mcp.json", () => {
     const servers = mcp.mcpServers as Record<string, { env?: Record<string, string> }>;
     const entry = servers["context-mode"];
     expect(entry.env?.CONTEXT_MODE_PLATFORM).toBe("codex");
+  });
+
+  it("forwards exactly the five non-sensitive presentation variables", () => {
+    const servers = mcp.mcpServers as Record<string, {
+      env?: Record<string, string>;
+      env_vars?: string[];
+    }>;
+    const entry = servers["context-mode"];
+
+    expect(entry.env_vars).toEqual(PRESENTATION_ENV_VARS);
+    expect(entry.env).toEqual({ CONTEXT_MODE_PLATFORM: "codex" });
+    expect(JSON.stringify(entry.env_vars)).not.toMatch(/API_KEY|TOKEN|SECRET|PASSWORD|WINDSURF/i);
   });
 
   it("does NOT use `${CODEX_PLUGIN_ROOT}` placeholders (no var expansion happens)", () => {
