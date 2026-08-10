@@ -183,6 +183,12 @@ interface RecoveryBriefProviderUpdateResult {
 - Capability records contain no task prose, Brief body, tool I/O, credentials,
   or provider configuration. They are consumed atomically and removed after
   one use.
+- Host-side capability fixtures use `HOST_TEMP_DIRECTORY`, which resolves the
+  trusted operating-system temp root to its existing canonical path before a
+  fixture is created. This handles macOS system aliases such as
+  `/var -> /private/var` without weakening the rule that caller-supplied
+  capability storage and every existing descendant ancestor must be free of
+  symbolic links.
 - `ctx_recovery_brief_update.brief` uses a strict, fully shaped Zod object with
   slot-specific priority literals, source-kind values, list bounds, timestamp
   and digest shapes. The runtime validator independently enforces exact UTF-8
@@ -207,6 +213,7 @@ interface RecoveryBriefProviderUpdateResult {
 | Missing, malformed, expired, replayed, cross-project, or wrong-session capability | Content-free `SESSION_UNAVAILABLE`; no provider/task mutation |
 | External or similar-name MCP | No context-mode bridge invocation or argument rewrite |
 | Hook/server capability storage differs in an isolated profile | Mark the probe invalid; do not interpret it as provider or Trellis failure |
+| Trusted OS temp root is exposed through a platform alias | Canonicalize the trusted root through `HOST_TEMP_DIRECTORY` before creating the fixture; retain fail-closed checks for explicit descendant links |
 | Submitted Brief violates a runtime structural/byte rule | `INVALID_RECOVERY_BRIEF` plus one bounded content-free `validationIssue`; no write |
 | Existing Brief is absent, malformed, unsafe, or source-drifted | `briefBytes: null`; do not report canonical JSON length as file size |
 | Successful update followed by immediate status | Update bytes, status bytes, and persisted file size are equal |
@@ -221,7 +228,9 @@ interface RecoveryBriefProviderUpdateResult {
   `SESSION_UNAVAILABLE` without creating a local provider.
 - Bad: infer a task from the latest SessionDB event, add a project fallback,
   claim bridge success from hook completion alone, expose an untyped
-  `brief: z.unknown()`, or echo a rejected fact value in diagnostics.
+  `brief: z.unknown()`, echo a rejected fact value in diagnostics, construct a
+  capability fixture directly below raw `tmpdir()` on macOS, or relax storage
+  ancestry validation to make that fixture pass.
 
 ### 6. Tests Required
 
@@ -236,6 +245,11 @@ interface RecoveryBriefProviderUpdateResult {
 - Provider tests must compare successful update/status `briefBytes` with
   `statSync(...).size`, prove formatting-only digest stability and CAS behavior,
   and use sentinels to prove invalid diagnostics never echo semantic content.
+- Capability security suites must create host fixtures below
+  `HOST_TEMP_DIRECTORY`, assert that it equals its `realpathSync()` result, and
+  retain separate explicit symlink-directory and symlink-ancestor rejection
+  cases. The three RecoveryBrief/MCP capability suites must pass on macOS,
+  Linux, and their existing bounded Windows coverage.
 - Release smoke must use a disposable profile for manual/automatic compact and
   a normal-profile fresh session for the explicit bridge. Record only status,
   provider, task, health, and error code; never retain raw tool input/output.
@@ -263,6 +277,17 @@ start Codex -> activate the same session's Trellis task -> call status once
 
 The bridge transports identity only; task activation and RecoveryBrief meaning
 remain under Trellis workflow control.
+
+For host-side capability fixtures, preserve the trust-boundary distinction:
+
+```typescript
+// Wrong: macOS may spell this through the system /var symbolic-link alias.
+const root = mkdtempSync(join(tmpdir(), "ctx-recovery-capability-"));
+
+// Correct: canonicalize only the trusted host temp source, then keep all
+// production checks for caller-created descendants unchanged.
+const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-recovery-capability-"));
+```
 
 For update validation, the corresponding implementation pattern is:
 

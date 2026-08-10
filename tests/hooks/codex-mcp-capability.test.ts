@@ -9,7 +9,6 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -21,6 +20,7 @@ import {
   isCodexCtxExecuteToolName,
   recordCodexMcpCapability,
 } from "../../hooks/codex/mcp-capability.mjs";
+import { HOST_TEMP_DIRECTORY } from "../../src/util/system-temp.js";
 
 const REPOSITORY_ROOT = resolve(__dirname, "..", "..");
 const PRETOOLUSE_PATH = join(REPOSITORY_ROOT, "hooks", "codex", "pretooluse.mjs");
@@ -88,7 +88,7 @@ describe("Codex MCP capability proof", () => {
   });
 
   test("is opaque, content-free, session-bound, and short-lived", () => {
-    const storageDir = mkdtempSync(join(tmpdir(), "ctx-codex-capability-"));
+    const storageDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
     cleanup.push(storageDir);
     const sessionId = "codex-session-a";
     const now = 1_000_000;
@@ -112,7 +112,7 @@ describe("Codex MCP capability proof", () => {
   });
 
   test("fails open when the exact session marker is malformed", () => {
-    const storageDir = mkdtempSync(join(tmpdir(), "ctx-codex-capability-"));
+    const storageDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
     cleanup.push(storageDir);
     const sessionId = "codex-session-malformed";
     const markerPath = getCodexMcpCapabilityMarkerPath(sessionId, { storageDir });
@@ -124,7 +124,7 @@ describe("Codex MCP capability proof", () => {
   });
 
   test("fails open for non-private capability storage without changing it", () => {
-    const storageDir = mkdtempSync(join(tmpdir(), "ctx-codex-capability-"));
+    const storageDir = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
     cleanup.push(storageDir);
     const sessionId = "codex-session-non-private";
     chmodSync(storageDir, 0o755);
@@ -137,7 +137,7 @@ describe("Codex MCP capability proof", () => {
   test.runIf(process.platform !== "win32")(
     "fails open when capability storage traverses a symbolic link",
     () => {
-      const root = mkdtempSync(join(tmpdir(), "ctx-codex-capability-"));
+      const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-"));
       cleanup.push(root);
       const storageTarget = join(root, "storage-target");
       const storageLink = join(root, "storage-link");
@@ -153,7 +153,7 @@ describe("Codex MCP capability proof", () => {
 
 describe("Codex PreToolUse capability routing", () => {
   test("requires a bare ctx_execute proof even when an MCP-ready sentinel is live", () => {
-    const root = mkdtempSync(join(tmpdir(), "ctx-codex-capability-hook-"));
+    const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-capability-hook-"));
     cleanup.push(root);
     const env = makeHookEnvironment(root);
     const baseInput = { session_id: "codex-session-a", cwd: root };

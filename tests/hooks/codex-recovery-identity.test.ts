@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -11,6 +10,7 @@ import {
   initializeProjectRecoveryBriefProvider,
   updateRecoveryBriefProvider,
 } from "../../src/checkpoint/runtime.js";
+import { HOST_TEMP_DIRECTORY } from "../../src/util/system-temp.js";
 
 const REPOSITORY_ROOT = resolve(__dirname, "..", "..");
 const PRETOOLUSE_PATH = join(REPOSITORY_ROOT, "hooks", "codex", "pretooluse.mjs");
@@ -49,7 +49,7 @@ afterEach(() => {
 
 describeCodexIdentity("Codex RecoveryBrief identity hook", () => {
   test("rewrites only the two exact owned MCP calls and preserves external/native inputs", () => {
-    const root = mkdtempSync(join(tmpdir(), "ctx-codex-recovery-hook-"));
+    const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-recovery-hook-"));
     cleanup.push(root);
     const codexHome = join(root, "codex-home");
     const project = makeProject(root, "hook-session");
@@ -102,7 +102,7 @@ describeCodexIdentity("Codex RecoveryBrief identity hook", () => {
   });
 
   test("requires the explicit authoritative Codex cwd and session_id", () => {
-    const root = mkdtempSync(join(tmpdir(), "ctx-codex-recovery-hook-missing-"));
+    const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-recovery-hook-missing-"));
     cleanup.push(root);
     const codexHome = join(root, "codex-home");
     mkdirSync(codexHome, { recursive: true });
@@ -137,7 +137,7 @@ describeCodexIdentity("Codex RecoveryBrief identity server binding", () => {
   };
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "ctx-codex-recovery-server-"));
+    root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-codex-recovery-server-"));
     cleanup.push(root);
     storage = join(root, "storage");
     project = makeProject(root, "server-session-a");

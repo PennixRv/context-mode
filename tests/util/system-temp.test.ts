@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 
 import { describe, expect, test } from "vitest";
@@ -31,5 +32,6 @@ describe("host temp directory resolution", () => {
   test("exports the resolved directory for host-side fixtures", () => {
     expect(HOST_TEMP_DIRECTORY).toBeTruthy();
     expect(HOST_TEMP_DIRECTORY).not.toBe(process.cwd());
+    expect(realpathSync(HOST_TEMP_DIRECTORY)).toBe(HOST_TEMP_DIRECTORY);
   });
 });

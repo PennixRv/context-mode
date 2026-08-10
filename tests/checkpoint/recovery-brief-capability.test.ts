@@ -1,6 +1,5 @@
 import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -12,6 +11,7 @@ import {
   consumeRecoveryBriefCapability,
   issueRecoveryBriefCapability,
 } from "../../src/checkpoint/recovery-brief-capability.js";
+import { HOST_TEMP_DIRECTORY } from "../../src/util/system-temp.js";
 
 const cleanup: string[] = [];
 const describePrivateCapability = process.platform === "win32" ? describe.skip : describe;
@@ -19,7 +19,7 @@ const REPOSITORY_ROOT = resolve(__dirname, "..", "..");
 const CAPABILITY_LOADER_PATH = join(REPOSITORY_ROOT, "hooks", "recovery-brief-capability.mjs");
 
 function fixture(): { root: string; project: string; storage: string } {
-  const root = mkdtempSync(join(tmpdir(), "ctx-recovery-capability-"));
+  const root = mkdtempSync(join(HOST_TEMP_DIRECTORY, "ctx-recovery-capability-"));
   const project = join(root, "project");
   const storage = join(root, "storage");
   mkdirSync(project, { recursive: true });

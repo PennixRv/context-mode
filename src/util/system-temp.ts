@@ -1,6 +1,15 @@
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+
+function canonicalizeTempDirectory(directory: string): string {
+  try {
+    return realpathSync(directory);
+  } catch {
+    return resolve(directory);
+  }
+}
 
 /**
  * Resolve the host OS temp directory without trusting a caller-supplied
@@ -9,7 +18,7 @@ import { resolve } from "node:path";
  */
 export function resolveHostTempDirectory(): string {
   if (process.platform === "win32") {
-    return process.env.TEMP ?? process.env.TMP ?? tmpdir();
+    return canonicalizeTempDirectory(process.env.TEMP ?? process.env.TMP ?? tmpdir());
   }
 
   const environment = { ...process.env };
@@ -22,12 +31,12 @@ export function resolveHostTempDirectory(): string {
       { env: environment, encoding: "utf-8" },
     ).trim();
     const directory = process.platform === "darwin" ? result : resolve(result, "..");
-    if (directory && directory !== process.cwd()) return directory;
+    if (directory && directory !== process.cwd()) return canonicalizeTempDirectory(directory);
   } catch {
     // Fall through to the conventional POSIX temp directory.
   }
 
-  return "/tmp";
+  return canonicalizeTempDirectory("/tmp");
 }
 
 export const HOST_TEMP_DIRECTORY = resolveHostTempDirectory();
