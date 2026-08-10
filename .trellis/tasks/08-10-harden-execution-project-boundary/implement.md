@@ -1,6 +1,6 @@
 # Implementation Plan: Execution Boundary Hardening
 
-Correlation ID: `ROOT-ISSUE-025`
+Correlation IDs: `ROOT-ISSUE-025`, `ROOT-ISSUE-041`
 
 ## 1. Reconfirm The Baseline
 
@@ -10,6 +10,9 @@ Correlation ID: `ROOT-ISSUE-025`
       existing changes.
 - [ ] Map all three handlers, `PolyglotExecutor`, `ContentStore`, platform
       adapters, and bundle-generation paths.
+- [ ] Read upstream Issues #717 and #736, map `CODE_ECHO_MAX`,
+      `buildExecuteEcho()`, indexed-summary formatting, and their regression
+      tests before changing response presentation.
 - [ ] Run the existing #852, security-routing, executor, and batch tests before
       implementation and record the baseline result.
 
@@ -53,7 +56,20 @@ Correlation ID: `ROOT-ISSUE-025`
       missing targets, and unavailable isolation backends.
 - [ ] Check tool lists, adapters, source, and bundled output for consistency.
 
-## 6. Validate And Deliver
+## 6. Compact And Test MCP Responses
+
+- [ ] Define one bounded presentation policy for execution-source previews,
+      indexed title previews, and searchable-term counts.
+- [ ] Add documented configuration with a compact default, stable validation,
+      Unicode-safe truncation, original size, omitted size, and digest metadata.
+- [ ] Preserve the verified #717/#736 audit contract; support a zero preview only
+      when tests prove it does not bypass required inspection.
+- [ ] Keep restricted execution non-persistent and explicitly document that the
+      Codex `Called` argument block is host-owned and unchanged.
+- [ ] Add unit and MCP integration tests that assert both semantic output and
+      measured response limits for default and configured cases.
+
+## 7. Validate And Deliver
 
 ```bash
 pnpm exec vitest run tests/security/project-boundary-852.test.ts <new-targeted-tests>
@@ -71,7 +87,8 @@ git status --short
 - [ ] Commit source, tests, documentation, and task assets. Do not push,
       publish, or update the parent Gitlink.
 - [ ] Leave the worktree clean and report branch, base, commits, changed files,
-      validation, platform support, and residual risks.
+      validation, platform support, response-size measurements, both root issue
+      IDs, host-owned limitations, and residual risks.
 
 ## Stop Conditions
 

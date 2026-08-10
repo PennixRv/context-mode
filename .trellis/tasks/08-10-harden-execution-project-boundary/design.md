@@ -1,6 +1,6 @@
 # Design: Unified Restricted Execution Boundary
 
-Correlation ID: `ROOT-ISSUE-025`
+Correlation IDs: `ROOT-ISSUE-025`, `ROOT-ISSUE-041`
 
 ## Current Data Flow
 
@@ -82,6 +82,34 @@ If the design adds a restricted tool name, its description, annotations, and
 response must state the non-persistent contract. If it reuses a handler, a
 server-fixed policy must prevent the caller from selecting ordinary storage.
 
+### 5. Response Presentation
+
+Add a shared response-presentation policy after execution and before MCP content
+is returned. It owns bounded source previews, title preview length, searchable
+term count, truncation markers, and audit metadata. Tool handlers consume that
+policy instead of embedding independent limits.
+
+The source-preview result should have a compact shape such as:
+
+```text
+Executed shell | source=1427 chars | preview=240 chars | sha256=<digest>
+<bounded preview>
+... 1187 chars omitted
+```
+
+The exact syntax may follow existing project conventions, but limits and
+metadata must be deterministic. Truncation must not split Unicode code points or
+make a complete-looking command from an incomplete preview.
+
+Before selecting whether preview length zero is supported, inspect upstream
+Issues #717 and #736 and the tests they introduced. Preserve any required
+security scanner visibility with an explicit minimum or another tested channel.
+Do not use FTS5 persistence as that channel for restricted execution.
+
+This layer controls only MCP result content. Codex constructs its `Called` block
+from tool input before this layer runs, so host input rendering remains an
+explicitly reported limitation rather than a component deliverable.
+
 ## Compatibility
 
 - Keep the existing ordinary entrance as the default, or provide explicit
@@ -89,6 +117,9 @@ server-fixed policy must prevent the caller from selecting ordinary storage.
 - Restricted execution fails closed and never degrades to ordinary execution.
 - Preserve or strengthen the existing `ctx_execute_file` rejection; unification
   must not reopen issue #852.
+- Keep compact-response configuration backward compatible and bounded. An
+  absent or invalid value must have deterministic behavior and must not restore
+  an unbounded response.
 - Keep tool lists, platform adapters, bundled server output, and source aligned.
   The existing asymmetric-drift checks must pass after build.
 
@@ -103,11 +134,17 @@ server-fixed policy must prevent the caller from selecting ordinary storage.
 | Side effect | read, project write, external write, temporary write, network, background child |
 | Storage | ordinary persistent index, restricted current-request query, no later recall |
 | Scheduling | single, serial batch, concurrent batch, timeout, cancellation |
+| Presentation | default, configured, invalid, zero-policy, Unicode, short, long, indexed |
 
 Dynamic tests use temporary project and external directories plus a local test
 port. They do not read real user files or access the public network. Supported
 platforms require real subprocess probes; source-structure assertions are not a
 substitute for behavior tests.
+
+Response tests additionally measure returned content for short, long, Unicode,
+indexed, non-indexed, default, configured, invalid, minimum, maximum, and
+security-compatible zero-policy cases. They separately document the unchanged
+Codex `Called` rendering so component acceptance is not overstated.
 
 ## Rollback
 

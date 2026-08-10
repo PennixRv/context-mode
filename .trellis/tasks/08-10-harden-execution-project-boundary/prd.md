@@ -1,6 +1,6 @@
 # Harden Execution MCP Project Boundary
 
-Correlation ID: `ROOT-ISSUE-025`
+Correlation IDs: `ROOT-ISSUE-025`, `ROOT-ISSUE-041`
 
 ## Goal
 
@@ -11,6 +11,11 @@ elevate. The restricted capability is intended for externally governed
 read-only investigation sessions. Compatibility execution for normal main
 sessions must remain distinguishable and must not be represented as a
 project-read-only sandbox.
+
+Reduce context-mode-controlled MCP response verbosity without claiming control
+over the Codex host's `Called` argument rendering. Preserve the audit and safety
+properties that motivated source echoing while giving repeated tool responses a
+small, documented, testable presentation budget.
 
 ## Confirmed Facts
 
@@ -36,6 +41,15 @@ project-read-only sandbox.
 - The integration workflow denies all three execution tools to read-only work
   nodes until this component fix and separate live acceptance are complete.
   A component commit does not change that allowlist.
+- `src/server.ts` hard-codes `CODE_ECHO_MAX = 2000` and uses
+  `buildExecuteEcho()` to prepend a fenced source copy to `ctx_execute` and
+  `ctx_execute_file` results.
+- The source comment associates that echo with upstream Issues #717 and #736;
+  the implementation session must read those issues and their regression tests
+  before changing the contract.
+- Codex renders MCP call arguments in its host-owned `Called` block before the
+  server result exists. A context-mode response change can remove duplicate
+  result verbosity but cannot promise to shorten that host-owned block.
 
 ## Requirements
 
@@ -110,6 +124,30 @@ project-read-only sandbox.
 - Run targeted Vitest, full `pnpm test`, `pnpm run typecheck`, and
   `pnpm run build`.
 
+### R7. Compact, Auditable MCP Responses
+
+- Introduce one typed presentation policy for context-mode-controlled execution
+  source previews and large-result summaries. Do not scatter unrelated magic
+  numbers through individual tool handlers.
+- Replace the fixed 2,000-character execution-source echo with a documented,
+  bounded configuration such as `CONTEXT_MODE_CODE_ECHO_MAX`. Use a compact
+  default; validate invalid, negative, excessive, and Unicode input safely.
+- A truncated or suppressed body must retain useful audit metadata: language,
+  original character or byte count, an unambiguous truncation marker, and a
+  stable digest suitable for correlating logs and reports.
+- Treat a zero-length preview as conditional on the #717/#736 security and audit
+  contract. If zero would bypass required inspection, enforce a tested minimum
+  instead of silently weakening the guard.
+- Bound other context-mode-controlled summary expansion, including result title
+  previews and the `Searchable terms` list. Defaults must keep ordinary repeated
+  calls compact while explicit retrieval through `ctx_search` remains available.
+- Keep hidden full-source persistence separate from presentation. In particular,
+  the restricted mode required by R4 must not write full source or output to FTS5
+  merely to preserve provenance.
+- Document that Codex host rendering of MCP input arguments is outside this
+  component's response contract. Do not present response compaction as a fix for
+  the host-owned `Called` block.
+
 ## Acceptance Criteria
 
 - [ ] All three entrances consume one execution policy and isolation decision.
@@ -128,13 +166,24 @@ project-read-only sandbox.
       and missing-backend tests pass.
 - [ ] Full tests, type-check, and build pass without unexpected source/bundle
       drift.
+- [ ] Execution responses obey one configurable preview budget and report
+      language, original size, truncation state, and a stable digest without
+      duplicating up to 2,000 source characters by default.
+- [ ] Indexed-result summaries have bounded title previews and searchable-term
+      counts, with focused content still retrievable through `ctx_search`.
+- [ ] Tests pin valid, invalid, minimum, maximum, zero-policy, Unicode, short,
+      long, indexed, and non-indexed response cases and preserve the verified
+      #717/#736 audit contract.
 - [ ] The component result is committed, the worktree is clean, and the final
-      report includes `ROOT-ISSUE-025`, commits, checks, and residual risks.
+      report includes both root issue IDs, commits, checks, measured response
+      sizes, host-owned limitations, and residual risks.
 
 ## Out Of Scope
 
 - Changing the external Governance work-node allowlist or claiming that the
   integration workflow has passed live acceptance.
+- Modifying Codex UI rendering or claiming that context-mode can truncate the
+  host-owned `Called` argument block.
 - Modifying the parent repository, global Codex configuration, Trellis,
   OpenViking, or another component.
 - Refactoring context-mode modules unrelated to execution security, persistence

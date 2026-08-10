@@ -1,11 +1,11 @@
 {
   "id": "harden-execution-project-boundary",
   "name": "harden-execution-project-boundary",
-  "title": "Harden execution MCP project boundary",
-  "description": "Unify project containment and server-enforced restricted execution across ctx_execute, ctx_execute_file, and ctx_batch_execute for ROOT-ISSUE-025.",
+  "title": "Harden execution boundary and compact MCP responses",
+  "description": "Unify restricted execution boundaries for ROOT-ISSUE-025 and add compact, auditable MCP response presentation for ROOT-ISSUE-041.",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "context-mode execution tool policy, subprocess isolation, persistence behavior, tests, and component documentation",
+  "scope": "context-mode execution policy, subprocess isolation, persistence behavior, MCP response presentation, tests, and component documentation",
   "package": null,
   "priority": "P0",
   "creator": "penn",
@@ -24,6 +24,10 @@
   "notes": "",
   "meta": {
     "root_issue": "ROOT-ISSUE-025",
+    "root_issues": [
+      "ROOT-ISSUE-025",
+      "ROOT-ISSUE-041"
+    ],
     "delivery": "independent-codex-main-session"
   }
 }
