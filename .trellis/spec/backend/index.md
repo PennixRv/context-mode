@@ -21,6 +21,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
 | [Codex Checkpoint Attestation](./codex-checkpoint-attestation.md) | Installed release and native compact delivery contract | Active |
 | [Codex Trellis Recovery Boundaries](./codex-trellis-recovery-boundaries.md) | Bounded SessionStart orientation and explicit RecoveryBrief identity bridge | Active |
+| [Trellis Task Delivery](./trellis-task-delivery.md) | Tracked cross-session task assets and local-only runtime boundaries | Active |
 
 ---
 

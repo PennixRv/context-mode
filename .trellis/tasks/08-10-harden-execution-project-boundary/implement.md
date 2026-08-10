@@ -1,0 +1,85 @@
+# Implementation Plan: Execution Boundary Hardening
+
+Correlation ID: `ROOT-ISSUE-025`
+
+## 1. Reconfirm The Baseline
+
+- [ ] Run `trellis-start`, bind this task, and use `trellis-before-dev` to read
+      applicable project specifications.
+- [ ] Confirm branch, preparation commit, and clean status. Stop on unexplained
+      existing changes.
+- [ ] Map all three handlers, `PolyglotExecutor`, `ContentStore`, platform
+      adapters, and bundle-generation paths.
+- [ ] Run the existing #852, security-routing, executor, and batch tests before
+      implementation and record the baseline result.
+
+## 2. Define One Policy Contract
+
+- [ ] Define shared authority levels, authority provenance, isolation status,
+      and stable error classes.
+- [ ] Make all three handlers obtain decisions from one policy entrance and
+      remove duplicate or contradictory boundary interpretations.
+- [ ] Prove through tests that ordinary tool input cannot elevate authority.
+- [ ] Define tool names, annotations, descriptions, and compatibility behavior
+      for ordinary and restricted execution.
+
+## 3. Enforce Restricted Execution
+
+- [ ] Implement one subprocess-isolation launch path while preserving existing
+      timeout, output-cap, and process-group cleanup behavior.
+- [ ] On supported platforms, enforce project read-only access, hide external
+      files, disable network, and prevent background process survival.
+- [ ] Add fail-closed behavior and diagnosable errors for unsupported or
+      unverifiable isolation backends.
+- [ ] Connect the explicit `ctx_execute_file` path check to the shared policy
+      without weakening issue #852 behavior.
+
+## 4. Remove Persistent Side Effects
+
+- [ ] Implement request-lifetime indexing or equivalent non-persistent query
+      support for restricted batch aggregation.
+- [ ] Prevent restricted `intent`, batch execution, and telemetry/event paths
+      from writing persistent storage.
+- [ ] Prove that a later `ctx_search` cannot recall restricted output.
+- [ ] Preserve and clearly document ordinary indexed compatibility mode.
+
+## 5. Test The Boundary
+
+- [ ] Complete the entrance, authority, language, path, side-effect, storage,
+      and scheduling matrix from the PRD and design.
+- [ ] Use real subprocess tests for command-internal `cd`, absolute access,
+      child processes, writes, network, and background survival.
+- [ ] Cover concurrency, timeout, cancellation, encoded or indirect paths,
+      missing targets, and unavailable isolation backends.
+- [ ] Check tool lists, adapters, source, and bundled output for consistency.
+
+## 6. Validate And Deliver
+
+```bash
+pnpm exec vitest run tests/security/project-boundary-852.test.ts <new-targeted-tests>
+pnpm run typecheck
+pnpm test
+pnpm run build
+git diff --check
+git status --short
+```
+
+- [ ] Use `trellis-check` for full-scope review. Inline mode must not dispatch a
+      check subagent.
+- [ ] Capture reusable execution-security contracts in the applicable
+      `.trellis/spec/` document; keep one-off logs in task evidence.
+- [ ] Commit source, tests, documentation, and task assets. Do not push,
+      publish, or update the parent Gitlink.
+- [ ] Leave the worktree clean and report branch, base, commits, changed files,
+      validation, platform support, and residual risks.
+
+## Stop Conditions
+
+- The proposal uses fixed `cwd`, string blacklists, or a caller-declared
+  read-only flag as the final security boundary.
+- Restricted execution can still write an index or file, use the network, or
+  leave a child process.
+- Continuing requires modifying the parent repository, global Codex config,
+  Governance Plugin, or another component.
+- Unexplained existing changes, real sensitive paths, a remote push, or a
+  release become necessary.

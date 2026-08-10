@@ -9,12 +9,15 @@ For this fork, keep two managed branches:
 
 - `main` is an exact mirror of the designated `upstream/main`. Do not add
   fork-specific code, Trellis assets, or automation-generated commits there.
-- `devel` carries fork development history and shared Trellis assets. It is the
-  public fork's default branch.
+- `devel` carries fork development history, shared Trellis assets, and approved
+  cross-session task handoffs. It is the public fork's default branch.
 
-Treat raw Trellis task records, personal workspace journals, developer
-identity, and runtime state as local-only. They must stay ignored and never be
-published with `devel`.
+Track a Trellis task only when it is an approved implementation or acceptance
+handoff that must travel with a task branch. Personal workspace journals,
+developer identity, runtime state, generated backups, and ad hoc local tasks
+remain local-only. Follow
+[`../backend/trellis-task-delivery.md`](../backend/trellis-task-delivery.md) for
+the exact path and validation contract.
 
 Fork-specific installations must explicitly select `devel` or a fork release
 tag. Installing from `main` intentionally selects the upstream mirror.
@@ -100,7 +103,7 @@ the entire investigation without its collected evidence.
 - [ ] Only `main` and `devel` are fork-managed local and `origin` branches.
 - [ ] The fork default branch and `origin/HEAD` both point to `devel`.
 - [ ] `main`, `origin/main`, and `upstream/main` resolve to the same commit.
-- [ ] `devel` contains fork history and shared assets, but no local Trellis
-      task, workspace, identity, or runtime paths.
+- [ ] `devel` contains fork history, shared assets, and only explicitly approved
+      task handoffs; it contains no workspace, identity, runtime, or backup paths.
 - [ ] The scheduled automation is active on its intended default branch and
       does not have an active run that can write `main`.
