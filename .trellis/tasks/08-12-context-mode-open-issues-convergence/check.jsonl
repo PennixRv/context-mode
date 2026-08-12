@@ -1,1 +1,3 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/restricted-execution-and-presentation.md", "reason": "Check request-only defaults, verified provenance, failure exclusion, restricted boundaries, and presentation regressions."}
+{"file": ".trellis/spec/guides/repository-maintenance-thinking-guide.md", "reason": "Check branch ancestry, deterministic bundles and marketplace assets, source/evidence topology, and immutable release tag."}
+{"file": ".trellis/tasks/08-12-context-mode-open-issues-convergence/research/baseline-failures.md", "reason": "Compare final passing regressions to the recorded v1.0.186 failures."}

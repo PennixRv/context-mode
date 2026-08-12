@@ -12,7 +12,7 @@
   "assignee": "penn",
   "createdAt": "2026-08-12",
   "completedAt": null,
-  "branch": null,
+  "branch": "fix/context-mode-open-issues-convergence",
   "base_branch": "devel",
   "worktree_path": null,
   "commit": null,

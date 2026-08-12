@@ -1,1 +1,3 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/tasks/08-12-context-mode-open-issues-convergence/research/issue-audit.md", "reason": "Baseline premise audit for all ten root issues."}
+{"file": ".trellis/tasks/08-12-context-mode-open-issues-convergence/research/routing-trust-matrix.md", "reason": "Issue 010/013/018/067 routing and trust evidence mapped to shipped assets."}
+{"file": ".trellis/spec/backend/restricted-execution-and-presentation.md", "reason": "Execution persistence, host file authority, batch truthfulness, presentation, and release regressions."}

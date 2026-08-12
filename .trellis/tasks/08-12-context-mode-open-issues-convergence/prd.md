@@ -148,29 +148,29 @@ reproducible evidence for root-workflow acceptance.
 
 ## Acceptance Criteria
 
-- [ ] AC1: Each issue has a baseline reproduction/audit record and a supported
+- [x] AC1: Each issue has a baseline reproduction/audit record and a supported
   convergence classification; no issue premise is accepted solely because it
   appears in the parent issue file.
-- [ ] AC2: All supported context-mode tool names match exactly one PreToolUse
+- [x] AC2: All supported context-mode tool names match exactly one PreToolUse
   group, and a real dispatch counter records one handler execution.
-- [ ] AC3: Skill, Hook, tool descriptions, and tests share the direct / aggregate
+- [x] AC3: Skill, Hook, tool descriptions, and tests share the direct / aggregate
   / file-then-analyze / forbidden matrix, including CodeGraph, Fast Context,
   Trellis/Governance, unknown MCP, and repeat-call cases.
-- [ ] AC4: Unverified external candidates remain absent from `ctx_search`; after
+- [x] AC4: Unverified external candidates remain absent from `ctx_search`; after
   local verification and explicit persistence they become searchable with
   bounded provenance and can be removed independently.
-- [ ] AC5: CLI doctor, MCP doctor, and Codex marketplace fixture agree on enabled
+- [x] AC5: CLI doctor, MCP doctor, and Codex marketplace fixture agree on enabled
   identity, runtime root, Hook registration, local/newer/equal/remote-newer/
   prerelease version semantics, and channel-specific recovery/update guidance.
-- [ ] AC6: The Issue 053 measurement script replays from active and archived
+- [x] AC6: The Issue 053 measurement script replays from active and archived
   shapes, and failure probes include bounded, credential-free stderr.
-- [ ] AC7: A host-readable external file succeeds through `ctx_execute_file`;
+- [x] AC7: A host-readable external file succeeds through `ctx_execute_file`;
   denied/missing/non-regular/oversized/racing/link-loop cases retain bounded
   fail-closed behavior, with path-semantics consistency coverage.
-- [ ] AC8: Serial and parallel real batch probes preserve compound script
+- [x] AC8: Serial and parallel real batch probes preserve compound script
   semantics and exit statuses, and same-batch queries find actual dynamically
   discovered body content rather than titles or errors.
-- [ ] AC9: Targeted tests for every issue, all affected Hook/Skill/Doctor/MCP/
+- [x] AC9: Targeted tests for every issue, all affected Hook/Skill/Doctor/MCP/
   release-asset tests, full test suite, typecheck, formatting/static checks,
   build, bundle/asymmetric drift, package/manifest checks, and consecutive
   reproducible builds all pass without credentials or generated garbage.
