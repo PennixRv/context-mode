@@ -22,6 +22,7 @@ import {
 } from "./execution-policy.js";
 import {
   boundedText,
+  renderBatchCommandLine,
   renderBoundedTitle,
   renderCommandSource,
   renderExecutionSource,
@@ -853,7 +854,25 @@ const sessionStats = {
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+  structuredContent?: Record<string, unknown>;
 };
+
+export function compactTypedResult<T extends object>(value: T, isError = false): ToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value) }],
+    structuredContent: value as Record<string, unknown>,
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
+export function addResponseNotice(response: ToolResult, notice: string): ToolResult {
+  if (response.structuredContent) {
+    response.content.push({ type: "text", text: notice });
+  } else if (response.content.length > 0) {
+    response.content[0].text = `${notice}\n\n${response.content[0].text}`;
+  }
+  return response;
+}
 
 function storageErrorResult(err: unknown): ToolResult | null {
   if (!(err instanceof StorageDirectoryError)) return null;
@@ -983,12 +1002,11 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   noteMcpActivity();
   // Mid-session cache heal — one-shot, first tool call
   healCacheMidSession();
-  // Prepend version outdated warning if needed
+  // Keep compact typed JSON parseable while preserving the existing update notice.
   if (shouldShowVersionWarning() && response.content.length > 0) {
     const hint = getUpgradeHint();
-    response.content[0].text =
-      `⚠️ context-mode v${VERSION} outdated → v${_latestVersion} available. Upgrade: ${hint}\n\n` +
-      response.content[0].text;
+    const warning = `⚠️ context-mode v${VERSION} outdated → v${_latestVersion} available. Upgrade: ${hint}`;
+    addResponseNotice(response, warning);
   }
 
   const bytes = response.content.reduce(
@@ -1548,12 +1566,6 @@ export function formatBatchQueryResults(
     sections.push("");
   }
 
-  if (scope === "global") {
-    sections.push(`\n> **Scope:** Queries searched the entire persistent index (query_scope: "global").`);
-  } else {
-    sections.push(`\n> **Tip:** Results are scoped to this batch only. To search across all indexed sources, use \`ctx_search(queries: [...])\` or call ctx_batch_execute with \`query_scope: "global"\`.`);
-  }
-
   return sections;
 }
 
@@ -1563,8 +1575,11 @@ export function formatBatchQueryResults(
 
 export interface BatchCommand { label: string; command: string; }
 
+export type BatchCommandStatus = "completed" | "timed_out" | "skipped" | "error";
+
 export interface BatchRunResult {
   outputs: string[];
+  statuses: BatchCommandStatus[];
   timedOut: boolean;
 }
 
@@ -1687,6 +1702,7 @@ export async function runBatchCommands(
     // When `timeout` is undefined, no shared budget is enforced; each
     // command runs to completion (Issue #406).
     const outputs: string[] = [];
+    const statuses: BatchCommandStatus[] = [];
     const startTime = Date.now();
     let timedOut = false;
     for (let i = 0; i < commands.length; i++) {
@@ -1697,6 +1713,7 @@ export async function runBatchCommands(
         const remaining = timeout - elapsed;
         if (remaining <= 0) {
           outputs.push(`# ${cmd.label}\n\n(skipped — batch timeout exceeded)\n`);
+          statuses.push("skipped");
           timedOut = true;
           continue;
         }
@@ -1710,15 +1727,17 @@ export async function runBatchCommands(
         isolation,
       });
       outputs.push(formatCommandOutput(cmd.label, cmd.command, combineExecOutput(result), onFsBytes));
+      statuses.push(result.timedOut ? "timed_out" : "completed");
       if (result.timedOut) {
         timedOut = true;
         for (let j = i + 1; j < commands.length; j++) {
           outputs.push(`# ${commands[j].label}\n\n(skipped — batch timeout exceeded)\n`);
+          statuses.push("skipped");
         }
         break;
       }
     }
-    return { outputs, timedOut };
+    return { outputs, statuses, timedOut };
   }
 
   // Parallel path — delegated to the shared runPool primitive.
@@ -1745,19 +1764,68 @@ export async function runBatchCommands(
 
   const { settled } = await runPool(jobs, { concurrency });
   const outputs: string[] = new Array(commands.length);
+  const statuses: BatchCommandStatus[] = new Array(commands.length);
   let timedOut = false;
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i];
     if (r.status === "fulfilled") {
       outputs[i] = r.value.output;
+      statuses[i] = r.value.timedOut ? "timed_out" : "completed";
       if (r.value.timedOut) timedOut = true;
     } else {
       // Isolated executor throw (spawn EAGAIN, ENOMEM, EMFILE, …) — siblings keep running.
       const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
       outputs[i] = `# ${commands[i].label}\n\n(executor error: ${message})\n`;
+      statuses[i] = "error";
     }
   }
-  return { outputs, timedOut };
+  return { outputs, statuses, timedOut };
+}
+
+function formatBatchSummary(
+  commands: BatchCommand[],
+  statuses: BatchCommandStatus[],
+  totalLines: number,
+  totalBytes: number,
+  options: {
+    persisted: boolean;
+    indexedSections?: number;
+    indexedSource?: string;
+    queries: number;
+    queryScope: BatchQueryScope;
+  },
+): string {
+  const attempted = statuses.filter((status) => status !== "skipped").length;
+  const execution = attempted === commands.length
+    ? `Executed ${commands.length} commands`
+    : `Executed ${attempted}/${commands.length} commands`;
+  const facts = [
+    `${execution} (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB).`,
+    `Persisted: ${options.persisted ? "yes" : "no"}.`,
+  ];
+  if (options.indexedSections !== undefined) {
+    const source = options.indexedSource === undefined
+      ? ""
+      : ` as ${JSON.stringify(options.indexedSource)}`;
+    facts.push(`Indexed ${options.indexedSections} sections${source}.`);
+  }
+  if (options.queries > 0) {
+    const scope = options.persisted && options.queryScope === "global" ? "global" : "request-local";
+    facts.push(`Searched ${options.queries} ${scope} queries.`);
+  }
+  return facts.join(" ");
+}
+
+function formatBatchCommandProof(
+  commands: BatchCommand[],
+  statuses: BatchCommandStatus[],
+  heading = "Commands",
+): string {
+  return renderBatchCommandLine(
+    commands.map((command, index) => ({ ...command, status: statuses[index] })),
+    PRESENTATION_POLICY,
+    heading,
+  );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -2608,7 +2676,9 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
           content: [
             {
               type: "text" as const,
-              text: `Indexed ${dirResult.filesIndexed} file${dirResult.filesIndexed === 1 ? "" : "s"} (${dirResult.totalChunks} sections) from directory: ${dirResult.label}${capNote}${denyNote}${failNote}\nUse ctx_search(queries: ["..."]) to query this content.`,
+              text: `Indexed ${dirResult.filesIndexed} file${dirResult.filesIndexed === 1 ? "" : "s"} ` +
+                `(${dirResult.totalChunks} sections) from directory: ${dirResult.label}${capNote}${denyNote}${failNote}. ` +
+                `Search: ctx_search(queries: ["..."], source: "${dirResult.label}").`,
             },
           ],
         });
@@ -2629,7 +2699,8 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
         content: [
           {
             type: "text" as const,
-            text: `Indexed ${result.totalChunks} sections (${result.codeChunks} with code) from: ${result.label}\nUse ctx_search(queries: ["..."]) to query this content. Use source: "${result.label}" to scope results.`,
+            text: `Indexed ${result.totalChunks} sections (${result.codeChunks} with code) from: ${result.label}. ` +
+              `Search: ctx_search(queries: ["..."], source: "${result.label}").`,
           },
         ],
       });
@@ -2808,13 +2879,9 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
         return trackResponse("ctx_search", {
           content: [{
             type: "text" as const,
-            text: "Knowledge base is empty — no content has been indexed yet.\n\n" +
-              "ctx_search is a follow-up tool that queries previously indexed content. " +
-              "To gather and index content first, use:\n" +
-              "  • ctx_batch_execute(commands, queries) — run commands, auto-index output, and search in one call\n" +
-              "  • ctx_fetch_and_index(url) — fetch a URL, index it, then search with ctx_search\n" +
-              "  • ctx_index(content, source) — manually index text content\n\n" +
-              "After indexing, ctx_search becomes available for follow-up queries.",
+            text: "Knowledge base is empty. Index content first with " +
+              "ctx_batch_execute(commands, queries), ctx_fetch_and_index(url), or " +
+              "ctx_index(content, source), then search again.",
           }],
           isError: true,
         });
@@ -2865,8 +2932,7 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
           content: [{
             type: "text" as const,
             text: `BLOCKED: ${searchCallCount} search calls in ${Math.round((now - flood.windowStart) / 1000)}s. ` +
-              "You're flooding context. STOP making individual search calls. " +
-              "Use ctx_batch_execute(commands, queries) for your next research step.",
+              "Use one ctx_batch_execute(commands, queries) call for the next research step.",
           }],
           isError: true,
         });
@@ -2987,13 +3053,11 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
       const throttleRemaining = Math.max(0, SEARCH_BLOCK_AFTER - searchCallCount);
       const softCapRemaining = Math.max(0, SEARCH_MAX_RESULTS_AFTER - searchCallCount);
       if (searchCallCount >= SEARCH_MAX_RESULTS_AFTER) {
-        output += `\n\n⚠ search call #${searchCallCount}/${SEARCH_BLOCK_AFTER} in this window. ` +
-          `Results limited to ${effectiveLimit}/query. ${throttleRemaining} call(s) remaining before block. ` +
-          `Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`;
+        output += `\n\n⚠ search call #${searchCallCount}/${SEARCH_BLOCK_AFTER}; ` +
+          `${effectiveLimit} result/query; ${throttleRemaining} calls before block. Batch queries in one call.`;
       } else {
-        output += `\n\n> Throttle: call #${searchCallCount}/${SEARCH_BLOCK_AFTER} in this window. ` +
-          `${softCapRemaining} call(s) before soft cap. ` +
-          `Prefer ctx_search(queries: [...]) array form for multi-query workloads — it counts as a single call.`;
+        output += `\n\nThrottle: call #${searchCallCount}/${SEARCH_BLOCK_AFTER}; ` +
+          `${softCapRemaining} calls before soft cap. Batch queries in one call.`;
       }
 
       if (output.trim().length === 0) {
@@ -3507,7 +3571,8 @@ EXAMPLE: ctx_fetch_and_index(
         return trackResponse("ctx_fetch_and_index", {
           content: [{
             type: "text" as const,
-            text: `Cached: **${r.label}** — ${r.chunkCount} sections, indexed ${r.ageStr} (fresh, TTL: ${r.ttlStr}).\nTo refresh: call ctx_fetch_and_index again with \`force: true\`.\n\nYou MUST call ctx_search() to answer questions about this content — this cached response contains no content.\nUse: ctx_search(queries: [...], source: "${r.label}")`,
+            text: `Cached **${r.label}**: ${r.chunkCount} sections; age ${r.ageStr}; TTL ${r.ttlStr}. ` +
+              `Search: ctx_search(queries: [...], source: "${r.label}"); refresh with force: true.`,
           }],
         });
       }
@@ -3515,7 +3580,7 @@ EXAMPLE: ctx_fetch_and_index(
         const totalKB = (r.indexed.totalBytes / 1024).toFixed(1);
         const text = [
           `Fetched and indexed **${r.indexed.totalChunks} sections** (${totalKB}KB) from: ${r.indexed.label}`,
-          `Full content indexed in sandbox — use ctx_search(queries: [...], source: "${r.indexed.label}") for specific lookups.`,
+          `Search: ctx_search(queries: [...], source: "${r.indexed.label}").`,
           "",
           "---",
           "",
@@ -3733,13 +3798,6 @@ EXAMPLE: ctx_batch_execute(
       if (denied) return finalizeExecutionResponse(decision, "ctx_batch_execute", denied);
     }
 
-    const commandsInventory: string[] = ["## Commands", ""];
-    for (const command of commands) {
-      commandsInventory.push(
-        `- ${renderBoundedTitle(command.label, PRESENTATION_POLICY)}: ${renderCommandSource(command.command, PRESENTATION_POLICY)}`,
-      );
-    }
-
     try {
       // Inject NODE_OPTIONS for FS read tracking in spawned Node processes.
       // The executor denies NODE_OPTIONS in its env (security), so we set it
@@ -3751,7 +3809,7 @@ EXAMPLE: ctx_batch_execute(
       // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
       // Concurrency>1 switches to a worker pool with per-command timeouts.
       const effTimeout = resolveExecTimeout(timeout);
-      const { outputs: perCommandOutputs, timedOut } = await runBatchCommands(
+      const { outputs: perCommandOutputs, statuses, timedOut } = await runBatchCommands(
         commands,
         {
           timeout: effTimeout,
@@ -3775,7 +3833,10 @@ EXAMPLE: ctx_batch_execute(
           content: [
             {
               type: "text" as const,
-              text: `Batch timed out after ${effTimeout}ms. No output captured.`,
+              text: [
+                `Batch timed out after ${effTimeout}ms. No output captured.`,
+                formatBatchCommandProof(commands, statuses),
+              ].join("\n"),
             },
           ],
           isError: true,
@@ -3789,11 +3850,14 @@ EXAMPLE: ctx_batch_execute(
 
       if (decision.mode === "restricted") {
         const output = [
-          `Executed ${commands.length} commands (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). Persisted: no.`,
+          formatBatchSummary(commands, statuses, totalLines, totalBytes, {
+            persisted: false,
+            queries: queries.length,
+            queryScope: query_scope,
+          }),
+          formatBatchCommandProof(commands, statuses),
           "",
-          ...commandsInventory,
-          "",
-          formatEphemeralSearch(stdout, queries, source, PRESENTATION_POLICY),
+          formatEphemeralSearch(stdout, queries, source, PRESENTATION_POLICY, { compactWrapper: true }),
         ].join("\n");
         return finalizeExecutionResponse(decision, "ctx_batch_execute", {
           content: [{ type: "text" as const, text: output }],
@@ -3806,16 +3870,6 @@ EXAMPLE: ctx_batch_execute(
       // Index into knowledge base — markdown heading chunking splits by # labels
       const store = getStore();
       const indexed = store.index({ content: stdout, source, attribution: currentAttribution() });
-
-      // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
-      const allSections = store.getChunksBySource(indexed.sourceId);
-      const inventory: string[] = ["## Indexed Sections", ""];
-      const sectionTitles: string[] = [];
-      for (const s of allSections) {
-        const bytes = Buffer.byteLength(s.content);
-        inventory.push(`- ${renderBoundedTitle(s.title, PRESENTATION_POLICY)} (${(bytes / 1024).toFixed(1)}KB)`);
-        sectionTitles.push(s.title);
-      }
 
       // Run all search queries — default scope is batch-local (legacy behavior).
       // When the caller passes query_scope: "global", searches reach the entire
@@ -3830,12 +3884,14 @@ EXAMPLE: ctx_batch_execute(
       const searchableTerms = renderSearchableTerms(distinctiveTerms, PRESENTATION_POLICY);
 
       const output = [
-        `Executed ${commands.length} commands (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). ` +
-          `Indexed ${indexed.totalChunks} sections. Searched ${queries.length} queries.`,
-        "",
-        ...commandsInventory,
-        "",
-        ...inventory,
+        formatBatchSummary(commands, statuses, totalLines, totalBytes, {
+          persisted: true,
+          indexedSections: indexed.totalChunks,
+          indexedSource: source,
+          queries: queries.length,
+          queryScope: query_scope,
+        }),
+        formatBatchCommandProof(commands, statuses),
         "",
         ...queryResults,
         searchableTerms ? `\n${searchableTerms}` : "",
@@ -3850,7 +3906,10 @@ EXAMPLE: ctx_batch_execute(
         content: [
           {
             type: "text" as const,
-            text: [...commandsInventory, "", `Batch execution error: ${message}`].join("\n"),
+            text: [
+              renderBatchCommandLine(commands, PRESENTATION_POLICY, "Submitted commands"),
+              `Batch execution error: ${message}`,
+            ].join("\n"),
           },
         ],
         isError: true,
@@ -4138,9 +4197,7 @@ ctx_checkpoint_report({ "window_days": 7 })`,
       windowDays: window_days,
     });
 
-    return trackResponse("ctx_checkpoint_report", {
-      content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }],
-    });
+    return trackResponse("ctx_checkpoint_report", compactTypedResult(report));
   },
 );
 
@@ -4179,10 +4236,7 @@ ctx_recovery_brief_init({ "storage": "local", "source_paths": ["docs/plan.md"] }
       storage,
       sourcePaths: source_paths,
     });
-    return trackResponse("ctx_recovery_brief_init", {
-      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-      isError: !result.ok,
-    });
+    return trackResponse("ctx_recovery_brief_init", compactTypedResult(result, !result.ok));
   },
 );
 
@@ -4220,10 +4274,10 @@ ctx_recovery_brief_status({})`,
       args[RECOVERY_BRIEF_CAPABILITY_FIELD],
       (projectRoot, sessionId) => getRecoveryBriefProviderStatus(projectRoot, sessionId),
     );
-    return trackResponse("ctx_recovery_brief_status", {
-      content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
-      isError: status.errorCode === "SESSION_UNAVAILABLE",
-    });
+    return trackResponse(
+      "ctx_recovery_brief_status",
+      compactTypedResult(status, status.errorCode === "SESSION_UNAVAILABLE"),
+    );
   },
 );
 
@@ -4292,10 +4346,7 @@ ctx_recovery_brief_update({
         sourcePaths: source_paths,
       }),
     );
-    return trackResponse("ctx_recovery_brief_update", {
-      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-      isError: !result.ok,
-    });
+    return trackResponse("ctx_recovery_brief_update", compactTypedResult(result, !result.ok));
   },
 );
 
@@ -4468,8 +4519,20 @@ server.registerTool(
     // Version
     lines.push(`[OK] Version: v${VERSION}`);
 
+    const successful = lines.filter((line) => line.startsWith("[OK] "));
+    const standaloneSuccess = successful.filter((line) =>
+      line.includes("Codex RecoveryBrief identity bridge"),
+    );
+    const groupedSuccess = successful.filter((line) => !standaloneSuccess.includes(line));
+    const findings = lines.filter((line) => line.startsWith("[WARN] ") || line.startsWith("[FAIL] "));
+    const compact = [
+      "context-mode doctor",
+      `[OK] ${groupedSuccess.length} checks: ${groupedSuccess.map((line) => line.slice(5)).join(" | ")}`,
+      ...standaloneSuccess,
+      ...findings,
+    ];
     return trackResponse("ctx_doctor", {
-      content: [{ type: "text" as const, text: lines.join("\n") }],
+      content: [{ type: "text" as const, text: compact.join("\n") }],
     });
   },
 );
@@ -4615,26 +4678,10 @@ server.registerTool(
     }
 
     const text = [
-      "## ctx-upgrade",
-      "",
-      "Run this command using your shell execution tool:",
-      "",
-      "```",
+      "Run this command, report each upgrade check as success/failure, then restart the session:",
+      "```shell",
       cmd,
       "```",
-      "",
-      "After the command completes, display results as a markdown checklist:",
-      "- `[x]` for success, `[ ]` for failure",
-      "- Example format:",
-      "  ```",
-      "  ## context-mode upgrade",
-      "  - [x] Pulled latest from GitHub",
-      "  - [x] Built and installed v0.9.24",
-      "  - [x] npm global updated",
-      "  - [x] Hooks configured",
-      "  - [x] Doctor: all checks PASS",
-      "  ```",
-      "- Tell the user to restart their session to pick up the new version.",
     ].join("\n");
 
     return trackResponse("ctx_upgrade", {

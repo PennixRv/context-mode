@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/restricted-execution-and-presentation.md","reason":"Review compact presentation against executable source/command visibility, structured parity, request-only restricted behavior, and regression requirements."}
+{"file":".trellis/spec/guides/repository-maintenance-thinking-guide.md","reason":"Review release branch, deterministic bundles, marketplace archive, direct-child evidence commit, annotated tag, and asset verification gates."}

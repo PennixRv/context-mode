@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-12T04:31:27.000Z",
+  "objective": {
+    "value": "Deliver and publish the compact MCP presentation contract across all fifteen context-mode tools without losing execution, retrieval, state, audit, safety, or protocol capability.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+    "valid_at": "2026-08-12T04:31:27.000Z"
+  },
+  "hard_constraints": [
+    {
+      "value": "Actual bounded executable source and every batch command remain visible under #717/#736; zero source or command budgets still map to the auditable minimum.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Presentation stays downstream of security, execution, indexing, ranking, persistence, recovery CAS, errors, and destructive confirmation; no global result truncator is allowed.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Only this repository may change; Codex host-owned Called input, installed caches, parent repositories, Governance Plugin, credentials, and native subagents or Trellis channel remain out of scope.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    }
+  ],
+  "decisions": [
+    {
+      "value": "Use compact tool-family renderers: two-line queried batch proof, conditional hints, and exact indexed source; leave capability-bearing stats, purge, and already-minimal insight output unchanged.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Keep compact typed JSON in content[0], mirror it in structuredContent, and append version notices separately so both parsing and update capability survive.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Do not add a no-query batch protocol: queries has required min(1) since commit 103b41dd; preserve the existing schema and document the planning correction.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    }
+  ],
+  "completed_work": [
+    {
+      "value": "Implemented compact presentation primitives and response wrappers for the affected execution, retrieval, checkpoint, RecoveryBrief, doctor, and upgrade families; generated bundles are synchronized.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Checked all fifteen tool fixtures: aggregate wrapper characters fell 3341 to 2124 and lines 79 to 27; queried batch fell 828 to 303 characters and 10 to 2 lines with actionable output unchanged.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Quality gates passed at 1.0.185: focused 39 tests, expanded 885 passed/5 skipped, full 4988 passed/41 skipped, typecheck, build, bundle assertions, and asymmetric drift.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Verified Skills are not merged into batch execution; Skill PostToolUse is observability only and Codex capability matchers use exact owned tool names.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    }
+  ],
+  "open_work": [
+    {
+      "value": "Update the executable presentation spec, rerun affected checks, and complete deterministic Codex marketplace plus disposable real stdio probes.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    },
+    {
+      "value": "Commit implementation, select the next free patch, rerun release gates, create native Codex attestation evidence, publish the annotated tag, and verify CI, Release, and asset hashes.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+      "valid_at": "2026-08-12T04:31:27.000Z"
+    }
+  ],
+  "latest_blocker": null,
+  "next_action": {
+    "value": "Update restricted-execution-and-presentation.md through trellis-update-spec, then rerun presentation and full release validation.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+    "valid_at": "2026-08-12T04:31:27.000Z"
+  },
+  "project_state": {
+    "value": "Active task 08-12-compact-mcp-presentation-contract on fix/compact-mcp-presentation-contract from c7a098606518a53bfb9a43c0ca11caceb5bd4ed4; release candidate remains 1.0.186 pending remote availability.",
+    "priority": "important",
+    "source_kind": "trellis_task",
+    "source_sha256": "135ef25ed2ce8e0ffb01d1441c01796b60002be930469baac4cfd9e7de389f72",
+    "valid_at": "2026-08-12T04:31:27.000Z"
+  }
+}

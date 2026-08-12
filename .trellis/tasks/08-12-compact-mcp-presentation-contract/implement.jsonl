@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/restricted-execution-and-presentation.md","reason":"Defines the source/command audit contract, presentation budgets, compact wrapper rules, restricted execution boundary, and required tests."}
+{"file":".trellis/spec/guides/repository-maintenance-thinking-guide.md","reason":"Defines branch, generated-asset, release topology, tag, and remote-boundary checks for the authorized patch release."}

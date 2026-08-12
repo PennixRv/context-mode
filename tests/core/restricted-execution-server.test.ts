@@ -239,9 +239,8 @@ describe.runIf(isolationAvailable)("restricted execution MCP server", () => {
     const text = responseText(response);
     expect(response.result?.isError ?? false).toBe(false);
     expect(text).toContain("Executed shell");
-    expect(text).toContain(`source=${Array.from(code).length} chars`);
-    expect(text).toContain("preview=240 chars");
-    expect(text).toContain("truncated=yes");
+    expect(text).toContain(`240/${Array.from(code).length} chars`);
+    expect(text).toContain("(truncated;");
     expect(text).toMatch(/sha256=[a-f0-9]{64}/);
     expect(text).toContain("Persisted: no (request-only).");
     expect(text).toContain("write=blocked");
@@ -302,12 +301,20 @@ describe.runIf(isolationAvailable)("restricted execution MCP server", () => {
     const text = responseText(response);
     expect(response.result?.isError ?? false).toBe(false);
     expect(text).toContain("Persisted: no.");
-    expect(text).toContain("## Commands");
-    expect(text).toContain("## Request-Local Sections");
+    expect(text).toMatch(/Commands \(2\):.*sha256=[a-f0-9]{64}/);
+    expect(text).toContain(`1 alpha section: printf '# Alpha\\n${marker} alpha result\\n'`);
+    expect(text).toContain("2 bravo section: printf '# Bravo\\nbravo result\\n'");
     expect(text).toContain(`## ${marker}`);
     expect(text).toContain(marker);
+    expect(text).toContain("Request-local sections (");
+    expect(text).toContain("Alpha (");
+    expect(text).toContain("Bravo (");
     expect(text).toContain("not available to ctx_search");
     expect(text).not.toContain("## Indexed Sections");
+    const nonEmptyLines = text.split("\n").filter((line) => line.trim() !== "");
+    expect(nonEmptyLines[0]).toMatch(/^Executed 2 commands /);
+    expect(nonEmptyLines[1]).toMatch(/^Commands \(2\):.*sha256=[a-f0-9]{64}$/);
+    expect(nonEmptyLines[2]).toBe(`## ${marker}`);
 
     const global = await callTool(fixture, 17, "ctx_batch_execute", {
       commands: [{ label: "one", command: "echo one" }],
@@ -344,10 +351,10 @@ describe.runIf(isolationAvailable)("configured execution presentation over MCP",
         code,
       });
       const text = responseText(response);
-      const match = /preview=80 chars[^\n]*\n(`{3,})javascript\n([\s\S]*?)\n\1/.exec(text);
+      const match = /80\/\d+ chars \(truncated; \d+ omitted\)[^\n]*\n(`{3,})javascript\n([\s\S]*?)\n\1/.exec(text);
       expect(match).not.toBeNull();
       expect(Array.from(match?.[2] ?? "")).toHaveLength(80);
-      expect(text).toContain("truncated=yes");
+      expect(text).toContain("(truncated;");
       expect(text).not.toContain(code);
     } finally {
       stopFixture(fixture);

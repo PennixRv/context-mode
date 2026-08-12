@@ -69,20 +69,23 @@ export function formatEphemeralSearch(
   queries: string[],
   source: string,
   policy: PresentationPolicy,
+  options: { compactWrapper?: boolean } = {},
 ): string {
   const sections = splitSections(content, source);
   const totalBytes = Buffer.byteLength(content);
   const totalLines = content.split("\n").length;
-  const output: string[] = [
-    `Processed ${sections.length} request-local sections (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). Persisted: no.`,
-    "",
-    "## Request-Local Sections",
-    "",
-  ];
-
-  for (const section of sections) {
-    output.push(`- ${renderBoundedTitle(section.title, policy)} (${Buffer.byteLength(section.content)} bytes)`);
-  }
+  const sectionInventory = sections.map((section) =>
+    `${renderBoundedTitle(section.title, policy)} (${Buffer.byteLength(section.content)} bytes)`,
+  );
+  const output: string[] = options.compactWrapper
+    ? []
+    : [
+        `Processed ${sections.length} request-local sections (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). Persisted: no.`,
+        "",
+        "## Request-Local Sections",
+        "",
+        ...sectionInventory.map((entry) => `- ${entry}`),
+      ];
 
   for (const query of queries) {
     output.push("", `## ${renderBoundedTitle(query, policy)}`, "");
@@ -100,6 +103,10 @@ export function formatEphemeralSearch(
       output.push(boundedText(section.content, policy.resultPreviewChars));
       output.push("");
     }
+  }
+
+  if (options.compactWrapper) {
+    output.push("", `Request-local sections (${sections.length}): ${sectionInventory.join(" | ")}`);
   }
 
   const terms = distinctiveTerms(content, policy.searchableTerms + 1);

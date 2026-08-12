@@ -1,0 +1,31 @@
+{
+  "id": "compact-mcp-presentation-contract",
+  "name": "compact-mcp-presentation-contract",
+  "title": "Compact MCP presentation contract",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "penn",
+  "assignee": "penn",
+  "createdAt": "2026-08-12",
+  "completedAt": null,
+  "branch": "fix/compact-mcp-presentation-contract",
+  "base_branch": "devel",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "description": "Redesign all context-mode MCP response presentation for minimal visible wrappers with no execution, indexing, search, recovery, audit, safety, or protocol regression; validate and publish the next free patch.",
+    "root_issue": "MCP-PRESENTATION-COMPACTION",
+    "baseline_commit": "c7a098606518a53bfb9a43c0ca11caceb5bd4ed4",
+    "release_authorized": "true"
+  }
+}

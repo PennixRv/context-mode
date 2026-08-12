@@ -81,9 +81,9 @@ Restart Claude Code (or run `/reload-plugins`).
 /context-mode:ctx-doctor
 ```
 
-All checks should show `[x]`. The doctor validates runtimes, hooks, FTS5, and plugin registration.
+All checks should show `[OK]`. The doctor validates runtimes, hooks, FTS5, and plugin registration.
 
-**Routing:** Automatic. The SessionStart hook injects routing instructions at runtime — no file is written to your project. The plugin registers all hooks (PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, SessionStart, Stop) and 11 MCP tools — six sandbox tools (`ctx_batch_execute`, `ctx_execute`, `ctx_execute_file`, `ctx_index`, `ctx_search`, `ctx_fetch_and_index`) plus five meta-tools (`ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`, `ctx_insight`).
+**Routing:** Automatic. The SessionStart hook injects routing instructions at runtime — no file is written to your project. The plugin registers all hooks (PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, SessionStart, Stop) and 15 MCP tools — six execution/retrieval tools (`ctx_batch_execute`, `ctx_execute`, `ctx_execute_file`, `ctx_index`, `ctx_search`, `ctx_fetch_and_index`), one checkpoint report, three controlled RecoveryBrief operations, and five meta-tools (`ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`, `ctx_insight`).
 
 | Slash Command | What it does |
 |---|---|
@@ -1167,9 +1167,14 @@ npm install -g context-mode
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
 | `ctx_fetch_and_index` | Fetch URL, chunk and index. Cache reuses content within TTL (default 24h, override per-call with `ttl: <ms>`). `ttl: 0` or `force: true` to bypass. Pass `requests: [{url, source}, ...]` + `concurrency: 1-8` for parallel multi-URL. | 60 KB → 40 B |
 | `ctx_stats` | Show context savings, call counts, and session statistics. | — |
+| `ctx_checkpoint_report` | Report local Codex checkpoint delivery and confirmation reliability. | — |
+| `ctx_recovery_brief_init` | Initialize controlled task recovery state from bounded source evidence. | — |
+| `ctx_recovery_brief_status` | Read controlled RecoveryBrief provider health and state metadata. | — |
+| `ctx_recovery_brief_update` | Compare-and-swap a controlled RecoveryBrief update. | — |
 | `ctx_doctor` | Diagnose installation: runtimes, hooks, FTS5, versions. | — |
 | `ctx_upgrade` | Upgrade to latest version from GitHub, rebuild, reconfigure hooks. | — |
 | `ctx_purge` | Permanently deletes all indexed content from the knowledge base. | — |
+| `ctx_insight` | Open the hosted Insight dashboard. | — |
 
 ## How the Sandbox Works
 
@@ -1592,7 +1597,11 @@ Reviewing the prompt: compatibility titles identify arbitrary code execution and
 
 ### MCP response presentation
 
-Execution source remains directly visible for the audit and inspection contracts established by upstream [Issue #717](https://github.com/mksglu/context-mode/issues/717) and [Issue #736](https://github.com/mksglu/context-mode/issues/736), but one shared policy bounds the duplicate MCP result content. Source responses report language, original characters, preview characters, omitted characters, truncation state, and SHA-256. Command summaries carry the same size, truncation, and digest fields. Truncation counts Unicode code points and chooses a Markdown fence longer than any backtick run in the preview.
+Execution source remains directly visible for the audit and inspection contracts established by upstream [Issue #717](https://github.com/mksglu/context-mode/issues/717) and [Issue #736](https://github.com/mksglu/context-mode/issues/736), but one shared policy bounds duplicate MCP result content. An execution proof shows the language, bounded source, original/shown/omitted character semantics, truncation state, and SHA-256 without repeating a five-field ledger. Truncation counts Unicode code points and chooses a Markdown fence longer than any backtick run in the preview.
+
+Short commands are shown directly. A truncated command adds compact `shown/original chars` accounting and its full digest, so it cannot look complete. `ctx_batch_execute` places its normal queried wrapper in two non-empty lines before matches: an execution/persistence/index/query summary with the exact indexed source, then every bounded command and one canonical digest over the complete ordered label/command sequence. It does not repeat `## Commands`, `## Indexed Sections`, or `[source=..., preview=..., omitted=..., truncated=...]` for every command. Query matches, errors, warnings, security refusals, timeout status, and later retrieval remain complete; the presentation policy is not a global result truncator.
+
+Checkpoint and RecoveryBrief state uses compact JSON text plus an identical MCP `structuredContent` object. The JSON remains the first text item for compatibility; an occasional version-upgrade notice is appended separately so it cannot corrupt JSON parsing. `ctx_stats`, destructive `ctx_purge` outcomes, and already-minimal `ctx_insight` responses retain their capability-bearing content rather than being shortened for a presentation metric.
 
 | Variable | Default | Range and zero behavior |
 |---|---:|---|

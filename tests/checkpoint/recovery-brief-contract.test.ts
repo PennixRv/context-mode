@@ -57,6 +57,12 @@ describe("RecoveryBrief MCP contracts", () => {
     expect(update).toContain('"hard_constraints": []');
     expect(update).toContain(`"source_sha256": "${"a".repeat(64)}"`);
     expect(update).not.toContain("JSON.stringify(brief");
+    expect(init).toContain("compactTypedResult(result, !result.ok)");
+    expect(status).toContain("compactTypedResult(status, status.errorCode");
+    expect(update).toContain("compactTypedResult(result, !result.ok)");
+    expect(init).not.toContain("JSON.stringify(result, null, 2)");
+    expect(status).not.toContain("JSON.stringify(status, null, 2)");
+    expect(update).not.toContain("JSON.stringify(result, null, 2)");
   });
 
   it("disables the upstream clone fallback for Codex marketplace installs", () => {

@@ -28,6 +28,25 @@ export interface SourcePresentation {
   preview: string;
 }
 
+export interface BatchCommandPresentation {
+  label: string;
+  command: string;
+  status?: string;
+}
+
+export interface PresentationMeasurement {
+  utf8Bytes: number;
+  unicodeChars: number;
+  totalLines: number;
+  nonEmptyLines: number;
+}
+
+export interface ResponsePresentationMeasurement {
+  wrapper: PresentationMeasurement;
+  actionable: PresentationMeasurement;
+  total: PresentationMeasurement;
+}
+
 function boundedInteger(
   raw: string | undefined,
   defaults: { value: number; min: number; max: number; zeroMeansMinimum?: boolean },
@@ -76,6 +95,28 @@ export function resolvePresentationPolicy(
   };
 }
 
+export function measurePresentation(text: string): PresentationMeasurement {
+  const lines = text.split("\n");
+  return {
+    utf8Bytes: Buffer.byteLength(text, "utf8"),
+    unicodeChars: Array.from(text).length,
+    totalLines: lines.length,
+    nonEmptyLines: lines.filter((line) => line.trim().length > 0).length,
+  };
+}
+
+export function measureResponsePresentation(
+  wrapper: string,
+  actionable: string,
+): ResponsePresentationMeasurement {
+  const separator = wrapper && actionable ? "\n" : "";
+  return {
+    wrapper: measurePresentation(wrapper),
+    actionable: measurePresentation(actionable),
+    total: measurePresentation(`${wrapper}${separator}${actionable}`),
+  };
+}
+
 function sourcePreview(source: string, maxChars: number): { preview: string; total: number } {
   let preview = "";
   let total = 0;
@@ -118,16 +159,12 @@ export function renderExecutionSource(
 ): string {
   const presented = presentSource(language, source, policy.codePreviewChars);
   const fence = markdownFence(presented.preview);
-  const pathLine = path ? `path=${path}\n` : "";
-  const metadata = [
-    `Executed ${language}`,
-    `source=${presented.originalChars} chars`,
-    `preview=${presented.previewChars} chars`,
-    `omitted=${presented.omittedChars} chars`,
-    `truncated=${presented.truncated ? "yes" : "no"}`,
-    `sha256=${presented.sha256}`,
-  ].join(" | ");
-  return `${pathLine}${metadata}\n${fence}${language}\n${presented.preview}\n${fence}\n\n`;
+  const target = path ? `Executed ${language} | path=${path}` : `Executed ${language}`;
+  const accounting = presented.truncated
+    ? `${presented.previewChars}/${presented.originalChars} chars (truncated; ${presented.omittedChars} omitted)`
+    : `${presented.originalChars} chars`;
+  return `${target} | ${accounting} | sha256=${presented.sha256}\n` +
+    `${fence}${language}\n${presented.preview}\n${fence}\n\n`;
 }
 
 export function renderCommandSource(
@@ -138,10 +175,29 @@ export function renderCommandSource(
   const visiblePreview = presented.preview
     .replaceAll("\r", "\\r")
     .replaceAll("\n", "\\n");
-  const marker = presented.truncated ? "..." : "";
-  return `${visiblePreview}${marker} [source=${presented.originalChars} chars, ` +
-    `preview=${presented.previewChars} chars, omitted=${presented.omittedChars} chars, ` +
-    `truncated=${presented.truncated ? "yes" : "no"}, sha256=${presented.sha256}]`;
+  if (!presented.truncated) return visiblePreview;
+  return `${visiblePreview}... <${presented.previewChars}/${presented.originalChars} chars; ` +
+    `sha256=${presented.sha256}>`;
+}
+
+export function hashBatchCommands(
+  commands: readonly Pick<BatchCommandPresentation, "label" | "command">[],
+): string {
+  const canonical = JSON.stringify(commands.map(({ label, command }) => [label, command]));
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+export function renderBatchCommandLine(
+  commands: readonly BatchCommandPresentation[],
+  policy: PresentationPolicy,
+  heading = "Commands",
+): string {
+  const rendered = commands.map(({ label, command, status }, index) => {
+    const compactLabel = boundedText(label.replaceAll("\r", "\\r").replaceAll("\n", "\\n"), policy.titlePreviewChars);
+    const statusMarker = status && status !== "completed" ? ` [${status}]` : "";
+    return `${index + 1}${statusMarker} ${compactLabel}: ${renderCommandSource(command, policy)}`;
+  });
+  return `${heading} (${commands.length}): ${rendered.join(" || ")} | sha256=${hashBatchCommands(commands)}`;
 }
 
 export function boundedText(text: string, maxChars: number): string {
@@ -162,5 +218,6 @@ export function renderSearchableTerms(
     .slice(0, policy.searchableTerms)
     .map((term) => boundedText(term, policy.titlePreviewChars));
   const truncated = terms.length > visible.length;
-  return `Searchable terms (${visible.length} shown, truncated=${truncated ? "yes" : "no"}): ${visible.join(", ")}`;
+  const count = truncated ? `${visible.length}/${terms.length}` : `${visible.length}`;
+  return `Searchable terms (${count}): ${visible.join(", ")}`;
 }

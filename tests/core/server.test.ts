@@ -1514,7 +1514,7 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
       const searchText = searchResp.result?.content?.[0]?.text ?? "";
       const searchedEmpty =
         searchText.includes("No results found") ||
-        searchText.includes("After indexing");
+        searchText.includes("Knowledge base is empty");
       expect(searchedEmpty).toBe(true);
     } finally {
       killProc(proc);
@@ -3068,8 +3068,9 @@ describe("runBatchCommands serial path (concurrency=1)", () => {
       { label: "C", command: "echo c" },
     ];
     const exec = mkMockExecutor((code) => ({ stdout: code.includes("echo a") ? "a" : code.includes("echo b") ? "b" : "c" }));
-    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    const { outputs, statuses, timedOut } = await runBatchCommands(cmds, { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
     expect(timedOut).toBe(false);
+    expect(statuses).toEqual(["completed", "completed", "completed"]);
     expect(outputs).toHaveLength(3);
     expect(outputs[0]).toContain("# A");
     expect(outputs[0]).toContain("a");
@@ -3124,9 +3125,10 @@ describe("runBatchCommands serial path (concurrency=1)", () => {
       { label: "next", command: "echo next" },
       { label: "after", command: "echo after" },
     ];
-    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    const { outputs, statuses, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
     expect(callCount).toBe(1); // only slow command executed
     expect(timedOut).toBe(true);
+    expect(statuses).toEqual(["timed_out", "skipped", "skipped"]);
     expect(outputs[0]).toContain("# slow");
     expect(outputs[1]).toContain("(skipped — batch timeout exceeded)");
     expect(outputs[2]).toContain("(skipped — batch timeout exceeded)");
@@ -3296,8 +3298,9 @@ describe("runBatchCommands parallel path (concurrency>1)", () => {
       { label: "slow", command: "sleep slow" },
       { label: "fast", command: "echo fast" },
     ];
-    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    const { outputs, statuses, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX }, exec);
     expect(timedOut).toBe(true);
+    expect(statuses).toEqual(["timed_out", "completed"]);
     expect(outputs[0]).toContain("(timed out after 100ms)");
     expect(outputs[1]).toContain("ok");
   });
@@ -3340,8 +3343,9 @@ describe("runBatchCommands parallel path (concurrency>1)", () => {
 describe("runBatchCommands edge cases", () => {
   test("empty commands array returns empty outputs", async () => {
     const exec = mkMockExecutor(() => ({ stdout: "" }));
-    const { outputs, timedOut } = await runBatchCommands([], { timeout: 1000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    const { outputs, statuses, timedOut } = await runBatchCommands([], { timeout: 1000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
     expect(outputs).toHaveLength(0);
+    expect(statuses).toHaveLength(0);
     expect(timedOut).toBe(false);
   });
 
@@ -3404,7 +3408,7 @@ describe("runBatchCommands P0 hardening", () => {
       { label: "B", command: "echo b" },
       { label: "C", command: "echo c" },
     ];
-    const { outputs } = await runBatchCommands(
+    const { outputs, statuses } = await runBatchCommands(
       cmds,
       { timeout: 5000, concurrency: 4, nodeOptsPrefix: NOOP_PREFIX },
       exec,
@@ -3416,6 +3420,7 @@ describe("runBatchCommands P0 hardening", () => {
     expect(outputs[1]).toContain("(executor error: spawn EAGAIN)");
     expect(outputs[2]).toContain("beta");
     expect(outputs[3]).toContain("gamma");
+    expect(statuses).toEqual(["completed", "error", "completed", "completed"]);
     // Critically: no `undefined` slots
     expect(outputs.every((o) => typeof o === "string" && o.length > 0)).toBe(true);
   });
@@ -3636,15 +3641,18 @@ describe("ctx_fetch_and_index batch refactor", () => {
     expect(fetchHandlerSrc).not.toMatch(/Promise\.all\([^)]*indexFetched/);
   });
 
-  test("backward compat: legacy single-URL response wording preserved", () => {
-    // Original handler returned "Cached: **${label}**" / "Fetched and indexed **N sections**"
-    // The refactor must keep these EXACT strings for the legacy path so
-    // tests/mcp-integration.ts and any user-side scripts grepping the response don't break.
-    expect(fetchHandlerSrc).toContain("Cached: **${r.label}**");
+  test("legacy single-URL response remains self-sufficient after presentation compaction", () => {
+    // Markdown wording is presentation, not an API. Preserve every actionable
+    // field and command while allowing the wrapper to become materially shorter.
+    expect(fetchHandlerSrc).toContain("Cached **${r.label}**");
+    expect(fetchHandlerSrc).toContain("${r.chunkCount} sections");
+    expect(fetchHandlerSrc).toContain("age ${r.ageStr}");
+    expect(fetchHandlerSrc).toContain("TTL ${r.ttlStr}");
     expect(fetchHandlerSrc).toContain("Fetched and indexed **${r.indexed.totalChunks} sections**");
-    // The source escapes backticks inside a template literal — match the escaped form.
-    expect(fetchHandlerSrc).toContain("To refresh: call ctx_fetch_and_index again with");
+    expect(fetchHandlerSrc).toContain('ctx_search(queries: [...], source: "${r.label}")');
+    expect(fetchHandlerSrc).toContain('ctx_search(queries: [...], source: "${r.indexed.label}")');
     expect(fetchHandlerSrc).toContain("force: true");
+    expect(fetchHandlerSrc).not.toContain("You MUST call ctx_search()");
   });
 
   test("isLegacySingle gate prevents batch response wrapping for single-URL calls", () => {
@@ -6214,24 +6222,28 @@ describe("ctx_batch_execute query_scope (issue #696)", () => {
     expect(serverSrc).toMatch(/query_scope[\s\S]{0,2000}searches the entire persistent index/i);
   });
 
-  test("formatBatchQueryResults default scope keeps batch-local tip", async () => {
+  test("formatBatchQueryResults default scope searches only the batch source without wrapper tips", async () => {
     const { formatBatchQueryResults } = await import("../../src/server.js");
     const store = new ContentStore(":memory:");
-    store.index({ content: "# Section A\n\nValidation of frontmatter is critical.\n", source: "batch:cmd1" });
+    store.index({ content: "# Section A\n\nBATCH_SENTINEL validation evidence.\n", source: "batch:cmd1" });
+    store.index({ content: "# Section B\n\nOTHER_SENTINEL validation evidence.\n", source: "other:source" });
     const lines = formatBatchQueryResults(store, ["validation"], "batch:cmd1");
     const text = lines.join("\n");
-    expect(text).toMatch(/Results are scoped to this batch only/);
-    expect(text).toMatch(/query_scope:\s*"global"/);
+    expect(text).toContain("BATCH_SENTINEL");
+    expect(text).not.toContain("OTHER_SENTINEL");
+    expect(text).not.toContain("Results are scoped to this batch only");
+    expect(text).not.toContain("**Tip:**");
   });
 
-  test("formatBatchQueryResults global scope drops batch tip and notes global scope", async () => {
+  test("formatBatchQueryResults global scope searches all sources without a repeated scope note", async () => {
     const { formatBatchQueryResults } = await import("../../src/server.js");
     const store = new ContentStore(":memory:");
-    store.index({ content: "# Section A\n\nValidation of frontmatter is critical.\n", source: "other:source" });
+    store.index({ content: "# Section A\n\nGLOBAL_SENTINEL validation evidence.\n", source: "other:source" });
     const lines = formatBatchQueryResults(store, ["validation"], "batch:cmd1", undefined, "global");
     const text = lines.join("\n");
-    expect(text).toMatch(/query_scope:\s*"global"/);
-    expect(text).not.toMatch(/Results are scoped to this batch only/);
+    expect(text).toContain("GLOBAL_SENTINEL");
+    expect(text).not.toContain("query_scope");
+    expect(text).not.toContain("Results are scoped to this batch only");
   });
 });
 

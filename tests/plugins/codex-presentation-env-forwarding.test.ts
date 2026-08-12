@@ -155,8 +155,8 @@ async function runProbe(parentValues: Record<string, string>): Promise<string> {
 
 function expectPresentationMetadata(text: string, preview: number): void {
   expect(text).toMatch(new RegExp(
-    `Executed javascript \\| source=365 chars \\| preview=${preview} chars \\| ` +
-    `omitted=${365 - preview} chars \\| truncated=yes \\| sha256=[a-f0-9]{64}`,
+    `Executed javascript \\| ${preview}/365 chars \\(truncated; ${365 - preview} omitted\\) ` +
+    `\\| sha256=[a-f0-9]{64}`,
   ));
   expect(text.indexOf("```javascript")).toBeLessThan(text.indexOf("ENV_PROBE="));
 }
@@ -168,7 +168,7 @@ describe("Codex Plugin presentation environment forwarding", () => {
     expectPresentationMetadata(text, 240);
     expect(text).toContain(`ENV_PROBE=${JSON.stringify(presentationEnvVars.map(() => "unset"))}`);
     expect({ chars: text.length, lines: text.split("\n").length }).toEqual({
-      chars: 481,
+      chars: 447,
       lines: 7,
     });
   }, 30_000);
@@ -182,7 +182,7 @@ describe("Codex Plugin presentation environment forwarding", () => {
     expectPresentationMetadata(text, 64);
     expect(text).toContain(`ENV_PROBE=${JSON.stringify(configuredValues)}`);
     expect({ chars: text.length, lines: text.split("\n").length }).toEqual({
-      chars: 289,
+      chars: 255,
       lines: 7,
     });
   }, 30_000);

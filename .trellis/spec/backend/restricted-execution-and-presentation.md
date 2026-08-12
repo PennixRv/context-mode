@@ -68,6 +68,24 @@ The MCP input schemas do not expose `mode`, `readOnly`, an isolation backend,
 or another authority-elevation field. Unknown caller fields cannot replace the
 server decision.
 
+Response presentation uses these shared signatures:
+
+```typescript
+interface PresentationMeasurement {
+  utf8Bytes: number;
+  unicodeChars: number;
+  totalLines: number;
+  nonEmptyLines: number;
+}
+
+compactTypedResult<T extends object>(value: T, isError?: boolean): ToolResult
+addResponseNotice(response: ToolResult, notice: string): ToolResult
+hashBatchCommands(commands: readonly { label: string; command: string }[]): string
+```
+
+`hashBatchCommands()` hashes the JSON encoding of the complete ordered
+`[label, command]` pairs. It never hashes only display previews.
+
 ## 3. Contracts
 
 ### Execution Modes
@@ -118,9 +136,17 @@ server decision.
 
 ### Presentation
 
-- `renderExecutionSource()` and `renderCommandSource()` preserve language,
-  original character count, preview character count, omitted count, explicit
-  truncation state, and a SHA-256 digest of the complete source.
+- Presentation is downstream of execution, security, indexing, search,
+  persistence, recovery compare-and-swap, and destructive confirmation. It
+  may compact wrapper prose but must not globally truncate actionable matches,
+  warnings, errors, refusals, conflicts, targets, or counts.
+- `renderExecutionSource()` preserves language, actual bounded source,
+  original/preview/omitted character semantics, explicit truncation state, and
+  a SHA-256 digest of the complete source. Untruncated source may omit redundant
+  zero/false labels; truncated source keeps shown/original/omitted facts.
+- `renderCommandSource()` returns an actual short command without an accounting
+  suffix. A truncated command includes a visible ellipsis, shown/original
+  counts, and the complete command digest so the preview cannot look complete.
 - Truncation iterates Unicode code points and uses a Markdown fence longer than
   any backtick run in the preview. A truncated command includes an explicit
   marker and cannot look complete.
@@ -131,6 +157,23 @@ server decision.
 - Indexed and request-local result titles, query headings, term values, and
   result snippets consume the shared `PresentationPolicy`; handlers must not
   introduce independent response limits for the same concepts.
+- Normal queried `ctx_batch_execute` output has exactly two non-empty wrapper
+  lines before the first query heading: an execution/persistence/index/query
+  summary with the exact persistent source, then every bounded command in
+  input order plus one canonical batch digest. It does not repeat
+  `## Commands`, `## Indexed Sections`, or a five-field ledger per command.
+  Restricted mode uses the same command proof, reports `Persisted: no`, keeps
+  request-local section discovery after matches, and never writes FTS5.
+- `ctx_batch_execute.queries` remains required with `.min(1)`. Do not invent a
+  no-query presentation branch without an independently approved protocol
+  change and compatibility review.
+- Bounded typed checkpoint and RecoveryBrief responses put compact JSON in
+  `content[0].text` and the identical object in `structuredContent`. Additional
+  notices are appended as later text items; they must not prefix or corrupt the
+  JSON compatibility item. Error flags remain unchanged.
+- Tools whose visible body is capability-bearing rather than wrapper, including
+  `ctx_stats`, destructive `ctx_purge` results, and already-minimal
+  `ctx_insight`, are not shortened merely for an aggregate reduction metric.
 - These limits affect context-mode MCP return content only. The Codex host owns
   its `Called` argument display and may still render the complete MCP input.
 
@@ -149,7 +192,13 @@ server decision.
 | Indexable test fixture runs under hidden sandbox `TMPDIR` | Resolve the outer fixture from `HOST_TEMP_DIRECTORY`; do not relax hidden-path checks |
 | Presentation value is absent, empty, negative, non-numeric, or unsafe integer | Use the documented default |
 | Positive presentation value is below/above range | Clamp to the documented minimum/maximum |
-| Source or command is truncated | Keep preview plus original/preview/omitted/truncated/digest metadata |
+| Source is truncated | Keep preview plus shown/original/omitted/truncated/digest facts |
+| Command is truncated | Keep actual preview, explicit ellipsis, shown/original counts, and full digest |
+| Queried batch succeeds in compatibility mode | Two wrapper lines before matches; exact persistent source and every command remain visible |
+| Batch command times out, is skipped, or errors | Preserve its input position and explicit status in the command proof |
+| Restricted batch succeeds | Report request-local scope and `Persisted: no`; no FTS5 or stats write |
+| Typed state has an update notice | Keep compact JSON in `content[0]`; append notice as later text content |
+| Presentation measurement improves only by truncating an actionable result | Reject the change; wrapper and actionable measurements must be separated |
 | Codex source, built, installed, or normalized manifest omits, reorders, or adds an `env_vars` name | Fail the manifest or release-asset verification; do not publish the asset |
 
 Errors must be stable, bounded, and must not include the rejected sensitive
@@ -161,6 +210,10 @@ path or source body.
   `bubblewrap`; all three entrances read project data, cannot write or reach a
   host listener, use request-only result matching, and return bounded source
   provenance.
+- Good presentation: queried batch returns execution/index/source/query facts
+  on line one, all actual bounded commands plus canonical digest on line two,
+  then complete matches. Typed state returns compact parseable JSON and an
+  identical structured object.
 - Base: no execution mode is configured. Existing writable, networked,
   persistent behavior remains available and its tool metadata says so. If no
   presentation value is set in the Codex parent, the MCP uses the documented
@@ -171,6 +224,10 @@ path or source body.
   hidden paths indexable solely to accommodate a test fixture. A Codex manifest
   that hard-codes budgets, forwards a credential, or uses a prefix/wildcard is
   also invalid.
+- Bad presentation: remove source echo because one host displays tool input;
+  hash only command previews; repeat section inventories before inline matches;
+  prefix prose to typed JSON; hide warnings to meet a line budget; or abbreviate
+  a destructive target.
 
 ## 6. Tests Required
 
@@ -202,6 +259,16 @@ Codex delivery tests must compare the exact ordered five-name allowlist across
 the source manifest, built payload, installed payload, and normalized MCP
 transport. A real stdio process must prove both absent-variable defaults and a
 configured `64/64/16/0/160` parent environment without using secret values.
+
+Presentation contract tests must enumerate all registered tools, separate
+wrapper and actionable measurements, and pin UTF-8 bytes, Unicode characters,
+and non-empty lines for deterministic fixtures. They must assert two batch
+wrapper lines before matches, every actual command in input order, exact
+persistent source, canonical digest stability, status for partial execution,
+absence of the repeated five-field command ledger, and byte-for-byte unchanged
+actionable fixtures. Typed-state tests must parse `content[0]`, compare it with
+`structuredContent`, preserve `isError`, and prove that an added notice becomes
+a later text item.
 
 Run the shared indexing fixture through the real `ctx_execute` MCP without
 overriding its hidden `TMPDIR`; assert the `.ctx-mode-*` basename and passing
@@ -245,6 +312,29 @@ return finalizeExecutionResponse(decision, toolName, render(result));
 
 The decision and isolation object originate at the server, and restricted
 finalization bypasses every persistent accounting path.
+
+For response presentation:
+
+```typescript
+// Wrong: one global slice hides query matches, warnings, or destructive scope.
+return { content: [{ type: "text", text: render(result).slice(0, maxChars) }] };
+
+// Correct: compact only the typed wrapper; keep the actionable result intact.
+const measured = measureResponsePresentation(compactWrapper, actionableResult);
+return {
+  content: [{ type: "text", text: `${compactWrapper}\n${actionableResult}` }],
+};
+```
+
+For bounded typed state:
+
+```typescript
+// Wrong: a notice makes the compatibility JSON item unparsable.
+response.content[0].text = `${notice}\n${response.content[0].text}`;
+
+// Correct: content[0] stays compact JSON and mirrors structuredContent.
+addResponseNotice(compactTypedResult(state), notice);
+```
 
 For host-side indexable fixtures:
 
