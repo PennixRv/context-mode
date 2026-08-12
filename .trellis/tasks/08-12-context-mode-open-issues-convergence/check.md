@@ -109,6 +109,55 @@ Codex host-owned `Called` argument display is unchanged.
 
 ## Release Gates Remaining
 
-Version synchronization, final-version full validation, task archive, native
-Codex attestation, direct-child evidence commit, annotated tag, remote CI,
-GitHub Release, downloaded asset hashes, final root handoff, and clean status.
+## Version 1.0.187 Release-Candidate Gates
+
+```text
+Issue/Hook/Skill/Doctor/execution matrix
+  PASS; 19 files, 1332 tests
+
+TMPDIR=/tmp node scripts/run-pnpm.mjs test
+  PASS; 240 files, 5082 passed, 41 skipped
+  PASS; pretest typecheck/build, nine bundle assertions, asymmetric drift
+
+node scripts/run-pnpm.mjs run typecheck
+  PASS
+
+node scripts/run-pnpm.mjs run build (two consecutive runs)
+  PASS; all nine generated bundle SHA-256 values identical
+
+Codex marketplace build x2 + verify
+  PASS; archives byte-identical
+  PASS; 125 CONTENT-MANIFEST entries
+  PASS; isolated offline install, plugin registration, MCP initialize/call
+  PASS; exact five presentation env_vars and fixed CONTEXT_MODE_PLATFORM=codex
+
+npm pack --ignore-scripts --pack-destination <temporary-directory>
+  PASS; context-mode-1.0.187.tgz, 395 files
+
+Canonical + archived response measurement scripts
+  PASS; identical measurements and zero persistent files
+
+Real disposable stdio presentation probe
+  PASS; defaults: 365 source chars, 240 shown, 478 returned chars / 9 lines
+  PASS; 64/64/16/0/160: 365 source chars, 64 shown,
+        286 returned chars / 9 lines
+```
+
+Deterministic release-candidate hashes before task archive:
+
+- `server.bundle.mjs`:
+  `ffb24379e5c5d63e3943e5a03c7a789fb771eabcf192a35f63b22002c48166b3`
+- `cli.bundle.mjs`:
+  `aeb5fef03a13d27c8fa0de82864e52dd7a05a8ca103d0d7a05c373e6edbb55ff`
+- Codex marketplace archive:
+  `a0c196ca14da13433dd8cd451d59bf04e75cd9df74730a6b853c501fd40efc14`
+- `CONTENT-MANIFEST.json`:
+  `a7d21ebf7dc19a98c35b021a307d9d16a6b1c05d2e1366342dcde16fd8d0460a`
+- Marketplace sidecar:
+  `e323bdefd64c4fed9d81053a27d253a21b486396b3ef2741045c21758af55822`
+- npm package:
+  `991851904b8694bf35e5023d9f235206bac66b2dc281037e182c892360be1b93`
+
+Remaining gates are task archive/source-candidate identity, native Codex
+attestation, direct-child evidence commit, annotated tag, remote CI, GitHub
+Release, downloaded asset hashes, final root handoff, and clean status.
