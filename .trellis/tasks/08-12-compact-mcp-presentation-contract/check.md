@@ -91,6 +91,50 @@ a context-mode presentation reduction.
 
 ## Remaining Gates
 
-- Commit implementation, synchronize the next available patch version, rerun
-  all release gates, produce native Codex attestation evidence, publish the
-  annotated tag, and verify CI/Release assets.
+- Archive this checked task to create the clean release source commit, produce
+  native Codex attestation evidence, publish the annotated tag, and verify
+  CI/Release assets.
+
+## Version 1.0.186 Release-Candidate Gates
+
+```text
+npx --yes pnpm@10.23.0 run typecheck
+  PASS
+
+npx --yes pnpm@10.23.0 run build (two consecutive runs)
+  PASS; all nine bundle assertions and asymmetric drift
+  PASS; all nine generated bundle SHA-256 values identical
+
+TMPDIR=/tmp npx --yes pnpm@10.23.0 test
+  PASS; 233 files, 4988 passed, 41 skipped
+  PASS; pretest build, bundle assertions, and asymmetric drift
+
+Codex marketplace build x2 + verify
+  PASS; archives and sidecars byte-identical
+  PASS; 124 CONTENT-MANIFEST entries
+  PASS; offline install, normalized stdio, MCP initialize/call
+  PASS; source, archive, install, and normalized transport expose the exact
+        five presentation env_vars plus fixed CONTEXT_MODE_PLATFORM=codex
+
+Real disposable stdio presentation probe
+  PASS; defaults: 365 source chars, 240 shown, 125 omitted,
+        447 returned chars / 7 lines
+  PASS; 64/64/16/0/160: 365 source chars, 64 shown, 301 omitted,
+        255 returned chars / 7 lines
+
+task.py validate + git diff --check
+  PASS
+```
+
+Deterministic release-candidate hashes:
+
+- `server.bundle.mjs`:
+  `7b175faf1aa44674218bb1df315d75b3ed9a1a1868bae0728e8efcc176e9edf5`
+- `cli.bundle.mjs`:
+  `49757add808c63d0ea86f099b76deec3dc7601bae00b74f2b9cae466e232670a`
+- Codex marketplace archive:
+  `604231d2c52c8f95bc502486a433981c16b20402b9b73fad69cdfb4d32425a23`
+- `CONTENT-MANIFEST.json`:
+  `c601fabf00a9608f1746ecc818f2dccf5aeb1aab821b4b5862a8633d44540351`
+- Marketplace sidecar:
+  `f8a4b4ea1b5e6e2d87009a0463ede121340d0015d253eafd605d15fa5c92295a`

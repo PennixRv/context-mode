@@ -107,13 +107,13 @@
 
 ## 9. Commit And Release
 
-- [ ] Commit implementation, tests, docs, specs, and task evidence with the
+- [x] Commit implementation, tests, docs, specs, and task evidence with the
   repository clean after each logical gate.
-- [ ] Confirm local/remote `devel` and remote tags immediately before selecting
+- [x] Confirm local/remote `devel` and remote tags immediately before selecting
   the next patch. Stop if occupied; never overwrite or force-push.
-- [ ] Run `pnpm version <next-patch> --no-git-tag-version` or the repository's
-  approved equivalent so `version-sync` updates every owned manifest.
-- [ ] Re-run the complete validation matrix at the release version.
+- [x] Run `npm version 1.0.186 --no-git-tag-version` so the repository's
+  `version` lifecycle updates every owned manifest through `version-sync`.
+- [x] Re-run the complete validation matrix at the release version.
 - [ ] Create the final release source commit.
 - [ ] Run the official native Codex release preflight using only current
   authorized provider/auth through disposable state; print no credentials.

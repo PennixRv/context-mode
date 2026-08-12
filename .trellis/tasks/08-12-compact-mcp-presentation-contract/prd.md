@@ -142,31 +142,31 @@ over repeated accounting metadata and inventories.
 
 ## Acceptance Criteria
 
-- [ ] AC1: A checked-in matrix covers every registered MCP tool and its relevant
+- [x] AC1: A checked-in matrix covers every registered MCP tool and its relevant
   response classes, with deterministic baseline and final character/line
   measurements.
-- [ ] AC2: Normal queried `ctx_batch_execute` output presents execution and
+- [x] AC2: Normal queried `ctx_batch_execute` output presents execution and
   inventory wrapper in at most two non-empty lines before query matches and no
   longer emits a verbose per-command presentation-accounting suffix.
-- [ ] AC3: Batch commands remain individually security-checked, fully executed,
+- [x] AC3: Batch commands remain individually security-checked, fully executed,
   indexed, scoped, and retrievable; no command, section, query result, cache, or
   timeout behavior is lost.
-- [ ] AC4: Execution tools preserve language, bounded executable-source preview,
+- [x] AC4: Execution tools preserve language, bounded executable-source preview,
   original/omitted/truncated semantics, stable digest, stdout/stderr or result,
   and #717/#736 zero/minimum behavior in success and failure paths.
-- [ ] AC5: Search/index/fetch tools preserve ranking, content windows, source
+- [x] AC5: Search/index/fetch tools preserve ranking, content windows, source
   identity, freshness, cache, and follow-up retrieval while removing redundant
   wrapper and repeated tips.
-- [ ] AC6: Diagnostic, statistics, checkpoint, recovery, purge, upgrade, and
+- [x] AC6: Diagnostic, statistics, checkpoint, recovery, purge, upgrade, and
   insight tools preserve every actionable status, warning, confirmation, error
   code, and next action while using the compact shared conventions.
-- [ ] AC7: Tests cover default and configured presentation budgets, empty
+- [x] AC7: Tests cover default and configured presentation budgets, empty
   results, truncation, failures, security refusals, destructive confirmation,
   recovery conflicts, and all affected host adapters.
-- [ ] AC8: Focused tests, full typecheck, build, full test suite, all bundle
+- [x] AC8: Focused tests, full typecheck, build, full test suite, all bundle
   assertions, asymmetric/generated drift checks, marketplace build/verify,
   repeated-build stability, and real temporary-fixture MCP probes pass.
-- [ ] AC9: Documentation and `.trellis/spec/` define the new executable
+- [x] AC9: Documentation and `.trellis/spec/` define the new executable
   presentation contract and explicitly state that Codex `Called` input remains
   host-owned and unchanged.
 - [ ] AC10: Before release, the next patch version and remote tag are free;

@@ -8,7 +8,10 @@ Date: 2026-08-12
 - Baseline: `c7a098606518a53bfb9a43c0ca11caceb5bd4ed4`
 - Implementation branch: `fix/compact-mcp-presentation-contract`
 - Starting version: `1.0.185`
-- Release candidate: `1.0.186`, subject to final remote/tag availability
+- Release candidate: `1.0.186`; remote tag confirmed free before versioning
+- Implementation commit:
+  `408e25d60ab7ef93c6abe62c945eef553272fca2`
+- Version commit: `a7a9bd67e98aa2a29ec4a5167a9f9806935c7a34`
 
 ## Delivered
 
@@ -80,5 +83,32 @@ MCP return content only. The Codex host-owned `Called` input area is unchanged.
 - Hidden-path-sensitive tests run with `TMPDIR=/tmp` from the real repository
   path; no index security rule is relaxed for the harness.
 
-Final commits, versioned validation, release tag, CI, asset hashes, and
-residual risks are added only after those gates complete.
+## Version 1.0.186 Validation
+
+- `typecheck`: passed.
+- Two consecutive `build` runs passed all nine bundle assertions and
+  asymmetric drift; all nine generated artifact hashes were identical.
+- Full authoritative suite: `233 files, 4988 passed, 41 skipped`; pretest also
+  passed the complete build gate.
+- Two Codex marketplace archives and sidecars were byte-identical. The archive
+  contained `124` verified manifest entries and passed isolated offline
+  marketplace installation, normalized stdio transport, MCP initialize, and a
+  real tool call.
+- Source, archive, installed manifest, and normalized Codex transport expose
+  exactly these non-sensitive forwarded variables:
+  `CONTEXT_MODE_CODE_ECHO_MAX`, `CONTEXT_MODE_COMMAND_ECHO_MAX`,
+  `CONTEXT_MODE_TITLE_PREVIEW_MAX`, `CONTEXT_MODE_SEARCHABLE_TERMS_MAX`, and
+  `CONTEXT_MODE_RESULT_PREVIEW_MAX`. Fixed
+  `CONTEXT_MODE_PLATFORM=codex` remains unchanged.
+- Real disposable stdio probes reproduced `447 chars / 7 lines` for the default
+  240-character source preview and `255 chars / 7 lines` for
+  `64/64/16/0/160`. The 365-character source reports 125 and 301 omitted
+  characters respectively.
+- Release-candidate marketplace archive SHA-256:
+  `604231d2c52c8f95bc502486a433981c16b20402b9b73fad69cdfb4d32425a23`.
+- Release-candidate `CONTENT-MANIFEST.json` SHA-256:
+  `c601fabf00a9608f1746ecc818f2dccf5aeb1aab821b4b5862a8633d44540351`.
+
+The native attestation, release source/evidence commits, annotated tag, remote
+CI/Release state, downloaded asset hashes, and final residual-risk statement
+are recorded after those gates complete.
