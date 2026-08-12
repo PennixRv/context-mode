@@ -168,8 +168,8 @@ describe("Codex Plugin presentation environment forwarding", () => {
     expectPresentationMetadata(text, 240);
     expect(text).toContain(`ENV_PROBE=${JSON.stringify(presentationEnvVars.map(() => "unset"))}`);
     expect({ chars: text.length, lines: text.split("\n").length }).toEqual({
-      chars: 447,
-      lines: 7,
+      chars: 478,
+      lines: 9,
     });
   }, 30_000);
 
@@ -182,8 +182,8 @@ describe("Codex Plugin presentation environment forwarding", () => {
     expectPresentationMetadata(text, 64);
     expect(text).toContain(`ENV_PROBE=${JSON.stringify(configuredValues)}`);
     expect({ chars: text.length, lines: text.split("\n").length }).toEqual({
-      chars: 255,
-      lines: 7,
+      chars: 286,
+      lines: 9,
     });
   }, 30_000);
 });

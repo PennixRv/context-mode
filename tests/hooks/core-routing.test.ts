@@ -926,6 +926,28 @@ describe("routePreToolUse", () => {
       expect(isContextModeMcpToolName("mcp__plugin_context-mode_context-mode__ctx_search")).toBe(true);
     });
   });
+
+  describe("repeat aggregation responsibility", () => {
+    it("keeps routing every managed unbounded Bash read", () => {
+      const first = routePreToolUse("Bash", { command: "rg TODO src" }, "/tmp", "codex", "repeat-bash");
+      const second = routePreToolUse("Bash", { command: "git log --oneline" }, "/tmp", "codex", "repeat-bash");
+      expect(first?.action).toBe("context");
+      expect(second?.action).toBe("context");
+      expect(first?.additionalContext).toContain("ctx_batch_execute");
+      expect(second?.additionalContext).toContain("ctx_batch_execute");
+    });
+
+    it("keeps bounded structured lifecycle tools on their direct protocol", () => {
+      for (const toolName of [
+        "mcp__trellis__wait",
+        "mcp__governance__get_batch",
+        "mcp__codegraph__explore",
+        "mcp__fast_context__search",
+      ]) {
+        expect(routePreToolUse(toolName, { query: "bounded protocol" })).toBeNull();
+      }
+    });
+  });
 });
 
 // ─── mcp-ready.mjs regression matrix (#347 guard) ──────────────────────────

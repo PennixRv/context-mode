@@ -1,5 +1,15 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   detectRuntimes,
@@ -11,6 +21,14 @@ import {
   appendBubblewrapReadonlyPath,
   type BubblewrapIsolation,
 } from "./execution-policy.js";
+
+const EXECUTE_FILE_ERROR_MAX_CHARS = 2_048;
+
+function boundedExecuteFileError(error: unknown, absolutePath: string): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const message = raw.replaceAll(absolutePath, "<path>");
+  return Array.from(message).slice(0, EXECUTE_FILE_ERROR_MAX_CHARS).join("");
+}
 import { HOST_TEMP_DIRECTORY } from "./util/system-temp.js";
 export type { ExecResult } from "./types.js";
 import type { ExecResult } from "./types.js";
@@ -300,6 +318,7 @@ export function buildBubblewrapArgs(
 
 export class PolyglotExecutor {
   #hardCapBytes: number;
+  #maxInputFileBytes: number;
   /**
    * Resolves the project root on every access. Stored as a thunk so the
    * executor stays in sync with server-side env-cascade resolvers (e.g.
@@ -315,10 +334,12 @@ export class PolyglotExecutor {
 
   constructor(opts?: {
     hardCapBytes?: number;
+    maxInputFileBytes?: number;
     projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
+    this.#maxInputFileBytes = opts?.maxInputFileBytes ?? 16 * 1024 * 1024; // 16MB
     const pr = opts?.projectRoot;
     if (typeof pr === "function") {
       this.#projectRootResolver = pr;
@@ -423,8 +444,20 @@ export class PolyglotExecutor {
   async executeFile(opts: ExecuteFileOptions): Promise<ExecResult> {
     const { path: filePath, language, code, timeout } = opts;
     const absolutePath = resolve(this.#projectRoot, filePath);
+    let fileContent: string;
+    try {
+      fileContent = this.#readBoundedFileSnapshot(absolutePath);
+    } catch (error) {
+      return {
+        stdout: "",
+        stderr: boundedExecuteFileError(error, absolutePath),
+        exitCode: 1,
+        timedOut: false,
+      };
+    }
     const wrappedCode = this.#wrapWithFileContent(
       absolutePath,
+      fileContent,
       language,
       code,
     );
@@ -435,6 +468,31 @@ export class PolyglotExecutor {
       cwd: opts.cwd,
       isolation: opts.isolation,
     });
+  }
+
+  #readBoundedFileSnapshot(absolutePath: string): string {
+    const fd = openSync(absolutePath, "r");
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) {
+        throw new Error("CTX_EXEC_FILE_NOT_REGULAR: input is not a regular file");
+      }
+      if (!Number.isSafeInteger(stat.size) || stat.size > this.#maxInputFileBytes) {
+        throw new Error(
+          `CTX_EXEC_FILE_TOO_LARGE: ${stat.size} bytes exceeds ${this.#maxInputFileBytes}`,
+        );
+      }
+      const snapshot = Buffer.allocUnsafe(stat.size);
+      let offset = 0;
+      while (offset < snapshot.length) {
+        const bytesRead = readSync(fd, snapshot, offset, snapshot.length - offset, null);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      return snapshot.subarray(0, offset).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
   }
 
   #prepareScriptContent(
@@ -875,40 +933,44 @@ export class PolyglotExecutor {
 
   #wrapWithFileContent(
     absolutePath: string,
+    content: string,
     language: Language,
     code: string,
   ): string {
     const escaped = JSON.stringify(absolutePath);
+    const contentLiteral = JSON.stringify(content);
+    const base64 = Buffer.from(content, "utf8").toString("base64");
+    const bytes = [...Buffer.from(content, "utf8")].join(",");
     switch (language) {
       case "javascript":
       case "typescript":
-        return `const FILE_CONTENT_PATH = ${escaped};\nconst file_path = FILE_CONTENT_PATH;\nconst FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
+        return `const FILE_CONTENT_PATH = ${escaped};\nconst file_path = FILE_CONTENT_PATH;\nconst FILE_CONTENT = ${contentLiteral};\n${code}`;
       case "python":
-        return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nwith open(FILE_CONTENT_PATH, "r", encoding="utf-8") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
+        return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nFILE_CONTENT = ${contentLiteral}\n${code}`;
       case "shell": {
         // Single-quote the path to prevent $, backtick, and ! expansion
         const sq = "'" + absolutePath.replace(/'/g, "'\\''") + "'";
-        return `FILE_CONTENT_PATH=${sq}\nfile_path=${sq}\nFILE_CONTENT=$(cat ${sq})\n${code}`;
+        return `FILE_CONTENT_PATH=${sq}\nfile_path=${sq}\nFILE_CONTENT=$(printf '%s' '${base64}' | base64 -d; printf x)\nFILE_CONTENT=\${FILE_CONTENT%x}\n${code}`;
       }
       case "ruby":
-        return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nFILE_CONTENT = File.read(FILE_CONTENT_PATH, encoding: "utf-8")\n${code}`;
+        return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nFILE_CONTENT = ${contentLiteral}\n${code}`;
       case "go":
-        return `package main\n\nimport (\n\t"fmt"\n\t"os"\n)\n\nvar FILE_CONTENT_PATH = ${escaped}\nvar file_path = FILE_CONTENT_PATH\n\nfunc main() {\n\tb, _ := os.ReadFile(FILE_CONTENT_PATH)\n\tFILE_CONTENT := string(b)\n\t_ = FILE_CONTENT\n\t_ = fmt.Sprint()\n${code}\n}\n`;
+        return `package main\n\nimport "fmt"\n\nvar FILE_CONTENT_PATH = ${escaped}\nvar file_path = FILE_CONTENT_PATH\n\nfunc main() {\n\tFILE_CONTENT := ${contentLiteral}\n\t_ = FILE_CONTENT\n\t_ = fmt.Sprint()\n${code}\n}\n`;
       case "rust":
-        return `#![allow(unused_variables)]\nuse std::fs;\n\nfn main() {\n    let file_content_path = ${escaped};\n    let file_path = file_content_path;\n    let file_content = fs::read_to_string(file_content_path).unwrap();\n${code}\n}\n`;
+        return `#![allow(unused_variables)]\nfn main() {\n    let file_content_path = ${escaped};\n    let file_path = file_content_path;\n    let file_content = String::from_utf8(vec![${bytes}]).unwrap();\n${code}\n}\n`;
       case "php":
-        return `<?php\n$FILE_CONTENT_PATH = ${escaped};\n$file_path = $FILE_CONTENT_PATH;\n$FILE_CONTENT = file_get_contents($FILE_CONTENT_PATH);\n${code}`;
+        return `<?php\n$FILE_CONTENT_PATH = ${escaped};\n$file_path = $FILE_CONTENT_PATH;\n$FILE_CONTENT = base64_decode('${base64}');\n${code}`;
       case "perl":
-        return `my $FILE_CONTENT_PATH = ${escaped};\nmy $file_path = $FILE_CONTENT_PATH;\nopen(my $fh, '<:encoding(UTF-8)', $FILE_CONTENT_PATH) or die "Cannot open: $!";\nmy $FILE_CONTENT = do { local $/; <$fh> };\nclose($fh);\n${code}`;
+        return `my $FILE_CONTENT_PATH = ${escaped};\nmy $file_path = $FILE_CONTENT_PATH;\nmy $FILE_CONTENT = pack('C*', ${bytes});\nutf8::decode($FILE_CONTENT);\n${code}`;
       case "r":
-        return `FILE_CONTENT_PATH <- ${escaped}\nfile_path <- FILE_CONTENT_PATH\nFILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE, encoding="UTF-8")\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
+        return `FILE_CONTENT_PATH <- ${escaped}\nfile_path <- FILE_CONTENT_PATH\nFILE_CONTENT <- rawToChar(as.raw(c(${bytes})))\nEncoding(FILE_CONTENT) <- "UTF-8"\n${code}`;
       case "elixir":
-        return `file_content_path = ${escaped}\nfile_path = file_content_path\nfile_content = File.read!(file_content_path)\n${code}`;
+        return `file_content_path = ${escaped}\nfile_path = file_content_path\n{:ok, file_content} = Base.decode64("${base64}")\n${code}`;
       case "csharp":
         // .csx forbids `using` directives after any other top-level statement
         // (CS1529). User code inside executeFile must use fully-qualified type
         // names (e.g. `System.Text.Json.JsonDocument`) instead of `using`.
-        return `var FILE_CONTENT_PATH = ${escaped};\nvar file_path = FILE_CONTENT_PATH;\nvar FILE_CONTENT = System.IO.File.ReadAllText(FILE_CONTENT_PATH);\n${code}`;
+        return `var FILE_CONTENT_PATH = ${escaped};\nvar file_path = FILE_CONTENT_PATH;\nvar FILE_CONTENT = System.Text.Encoding.UTF8.GetString(System.Convert.FromBase64String("${base64}"));\n${code}`;
     }
   }
 }

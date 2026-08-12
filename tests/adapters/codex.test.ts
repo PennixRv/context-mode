@@ -398,12 +398,11 @@ describe("CodexAdapter", () => {
       expect(config.PreToolUse[0]?.matcher).toContain("apply_patch");
       expect(config.PreToolUse[0]?.matcher).toContain("Edit");
       expect(config.PreToolUse[0]?.matcher).toContain("Write");
-      expect(config.PreToolUse[0]?.matcher).toContain("ctx_execute");
-      expect(config.PreToolUse[0]?.matcher).toContain("ctx_batch_execute");
+      expect(config.PreToolUse[0]?.matcher).not.toContain("ctx_execute");
+      expect(config.PreToolUse[2]?.matcher).toContain("ctx_execute");
+      expect(config.PreToolUse[2]?.matcher).toContain("ctx_batch_execute");
       expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
-      expect(config.PreToolUse[2]?.matcher).toBe(
-        "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
-      );
+      expect(config.PreToolUse[2]?.matcher).toContain("mcp__context_mode__ctx_execute");
       expect(config.PreCompact[0]?.matcher).toBe("^(manual|auto)$");
       expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(config.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
@@ -460,9 +459,69 @@ describe("CodexAdapter", () => {
       });
       expect(adapter.checkPluginRegistration()).toMatchObject({
         status: "pass",
-        message: "context-mode@context-mode-offline plugin enabled",
+      });
+      expect(adapter.checkPluginRegistration().message).toContain(
+        "context-mode@context-mode-offline plugin enabled at",
+      );
+      expect(adapter.checkPluginRegistration().message).toContain("required hooks registered");
+      expect(adapter.getCodexPluginDiagnostic(pluginRoot)).toMatchObject({
+        channel: "codex-marketplace",
+        pluginId: "context-mode@context-mode-offline",
+        version: "1.0.179",
+        enabled: true,
+        runtimeRoot: pluginRoot,
+        missingHooks: [],
+        hooksAvailable: true,
       });
       expect(adapter.getInstalledVersion()).toBe("1.0.179");
+    });
+
+    it("does not treat the configured Doctor manifest as an active plugin when plugin list has no runtime root", () => {
+      const doctorRoot = join(codexDir, "doctor-cache-root");
+      adapter = new CodexAdapter({ codexPluginListRunner: () => "No plugins installed\n" });
+      writeCodexPluginManifest(doctorRoot);
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      expect(adapter.getCodexPluginDiagnostic(doctorRoot)).toMatchObject({
+        enabled: true,
+        configuredManifestAvailable: true,
+        runtimeRoot: null,
+        hooksAvailable: false,
+        missingHooks: ["PreToolUse", "PreCompact", "PostCompact", "SessionStart"],
+      });
+      expect(adapter.checkPluginRegistration(doctorRoot)).toMatchObject({
+        status: "warn",
+      });
+      expect(adapter.validateHooks(doctorRoot)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          check: "Codex plugin hooks",
+          status: "fail",
+          message: expect.stringContaining("did not report an active runtime root"),
+        }),
+      ]));
+    });
+
+    it("reports missing hook events from the plugin manager runtime manifest", () => {
+      const runtimeRoot = join(codexDir, "incomplete-runtime-root");
+      adapter = adapterWithCodexPluginRoot(runtimeRoot);
+      mkdirSync(join(runtimeRoot, ".codex-plugin"), { recursive: true });
+      writeFileSync(join(runtimeRoot, ".codex-plugin", "hooks.json"), JSON.stringify({
+        hooks: { PreToolUse: new CodexAdapter().generateHookConfig(runtimeRoot).PreToolUse },
+      }), "utf-8");
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const diagnostic = adapter.getCodexPluginDiagnostic(runtimeRoot);
+      expect(diagnostic.hooksAvailable).toBe(false);
+      expect(diagnostic.missingHooks).toEqual(["PreCompact", "PostCompact", "SessionStart"]);
+      expect(adapter.checkPluginRegistration(runtimeRoot)).toMatchObject({ status: "fail" });
+      expect(adapter.checkPluginRegistration(runtimeRoot).message).toContain("PostCompact");
+      expect(adapter.validateHooks(runtimeRoot)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          check: "Codex plugin hooks",
+          status: "fail",
+          message: expect.stringContaining("required hook events are missing"),
+        }),
+      ]));
     });
 
     it("writes the native Codex hooks file with the scoped PreToolUse matcher", () => {
@@ -474,15 +533,13 @@ describe("CodexAdapter", () => {
       expect(changes.some((change) => change.includes("Updated PreToolUse hook"))).toBe(true);
       expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
       expect(changes.some((change) => change.includes("Enabled Codex hooks feature flag"))).toBe(true);
-      expect(written.hooks.PreToolUse[0]?.matcher).toContain("ctx_execute");
+      expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("ctx_execute");
       expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
       expect(written.hooks.PreToolUse[1]?.matcher).toBe(
         "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
       );
       expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
-      expect(written.hooks.PreToolUse[2]?.matcher).toBe(
-        "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
-      );
+      expect(written.hooks.PreToolUse[2]?.matcher).toContain("mcp__context_mode__ctx_execute");
       expect(written.hooks.PreToolUse[2]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(written.hooks.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
@@ -522,7 +579,7 @@ describe("CodexAdapter", () => {
         entry.matcher === "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
       )).toBe(true);
       expect(written.hooks.PreToolUse.some((entry) =>
-        entry.matcher === "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
+        entry.matcher?.includes("mcp__context_mode__ctx_execute") && entry.matcher.includes("ctx_batch_execute"),
       )).toBe(true);
       expect(written.hooks.SessionStart).toHaveLength(2);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
@@ -964,6 +1021,7 @@ trusted_hash = "sha256:stale"
 
     it("passes via Codex plugin hooks and warns when user config still has context-mode hooks", () => {
       const pluginRoot = join(codexDir, "plugin-root");
+      adapter = adapterWithCodexPluginRoot(pluginRoot);
       writeCodexPluginManifest(pluginRoot);
       writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
       writeFileSync(hooksPath, JSON.stringify({
@@ -988,6 +1046,7 @@ trusted_hash = "sha256:stale"
 
     it("passes with missing user hooks.json when the Codex plugin owns hooks", () => {
       const pluginRoot = join(codexDir, "plugin-root");
+      adapter = adapterWithCodexPluginRoot(pluginRoot);
       writeCodexPluginManifest(pluginRoot);
       writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
 
@@ -1366,11 +1425,13 @@ describe("Codex matcher parity + config integrity", () => {
   it("README documents the same Codex PreToolUse matcher as the adapter", () => {
     const constant = readMatcherConstant();
     const readme = readFileSync(readmePath, "utf8");
-    const blockRe = /"PreToolUse":\s*\[\{\s*"matcher":\s*"([^"]+)"/g;
+    const blockRe = /"PreToolUse":\s*\[((?:.|\n)*?)\]\s*,/g;
     const documented: string[] = [];
     let m: RegExpExecArray | null;
     while ((m = blockRe.exec(readme)) !== null) {
-      documented.push(m[1].replace(/\\\\/g, "\\"));
+      for (const matcher of m[1].matchAll(/"matcher":\s*"([^"]+)"/g)) {
+        documented.push(matcher[1].replace(/\\\\/g, "\\"));
+      }
     }
     expect(documented).toContain(constant);
   });

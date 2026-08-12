@@ -16,16 +16,7 @@ import { join, sep } from "node:path";
 import { loadDatabase as loadDatabaseImpl } from "../db-base.js";
 import { ensureSessionEventsSchema } from "./db.js";
 import { resolveClaudeConfigDir } from "../util/claude-config.js";
-
-function semverNewer(a: string, b: string): boolean {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
-    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
-  }
-  return false;
-}
+import { compareSemanticVersions } from "../version-channel.js";
 
 
 // ─────────────────────────────────────────────────────────
@@ -2305,7 +2296,7 @@ function renderNarrative5Section(args: {
   out.push("");
   const versionStr = version ? `v${version}` : "context-mode";
   out.push(`  ${versionStr}`);
-  if (version && latestVersion && latestVersion !== "unknown" && semverNewer(latestVersion, version)) {
+  if (version && latestVersion && latestVersion !== "unknown" && compareSemanticVersions(latestVersion, version) === 1) {
     out.push(`  Update available: v${version} -> v${latestVersion}  |  ctx_upgrade`);
   }
 
@@ -2979,7 +2970,7 @@ export function formatReport(
     lines.push("");
     const versionStr = version ? `v${version}` : "context-mode";
     lines.push(versionStr);
-    if (version && latestVersion && latestVersion !== "unknown" && semverNewer(latestVersion, version)) {
+    if (version && latestVersion && latestVersion !== "unknown" && compareSemanticVersions(latestVersion, version) === 1) {
       lines.push(`Update available: v${version} -> v${latestVersion}  |  ctx_upgrade`);
     }
     return lines.join("\n");
@@ -3077,7 +3068,7 @@ export function formatReport(
   lines.push("");
   const versionStr = version ? `v${version}` : "context-mode";
   lines.push(versionStr);
-  if (version && latestVersion && latestVersion !== "unknown" && latestVersion !== version) {
+  if (version && latestVersion && latestVersion !== "unknown" && compareSemanticVersions(latestVersion, version) === 1) {
     lines.push(`Update available: v${version} -> v${latestVersion}  |  ctx_upgrade`);
   }
 

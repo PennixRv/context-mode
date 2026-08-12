@@ -225,36 +225,35 @@ describe("createExternalMcpGuidance (#529)", () => {
   it("uses kiro-style tool names for kiro platform", () => {
     const t = createToolNamer("kiro");
     const guidance = createExternalMcpGuidance(t);
+    expect(guidance).toContain("@context-mode/ctx_execute_file");
     expect(guidance).toContain("@context-mode/ctx_execute");
-    expect(guidance).toContain("@context-mode/ctx_fetch_and_index");
-    expect(guidance).toContain("@context-mode/ctx_search");
+    expect(guidance).not.toContain("@context-mode/ctx_fetch_and_index");
   });
 
   it("uses opencode-style tool names for opencode platform", () => {
     const t = createToolNamer("opencode");
     const guidance = createExternalMcpGuidance(t);
+    expect(guidance).toContain("context-mode_ctx_execute_file");
     expect(guidance).toContain("context-mode_ctx_execute");
-    expect(guidance).toContain("context-mode_ctx_fetch_and_index");
-    expect(guidance).toContain("context-mode_ctx_search");
+    expect(guidance).not.toContain("context-mode_ctx_fetch_and_index");
   });
 
   it("uses zed-style tool names for zed platform", () => {
     const t = createToolNamer("zed");
     const guidance = createExternalMcpGuidance(t);
+    expect(guidance).toContain("mcp:context-mode:ctx_execute_file");
     expect(guidance).toContain("mcp:context-mode:ctx_execute");
-    expect(guidance).toContain("mcp:context-mode:ctx_fetch_and_index");
-    expect(guidance).toContain("mcp:context-mode:ctx_search");
+    expect(guidance).not.toContain("mcp:context-mode:ctx_fetch_and_index");
   });
 
   it("mentions the routing intent so the model knows what to do", () => {
     const t = createToolNamer("claude-code");
     const guidance = createExternalMcpGuidance(t);
     // Identifies the situation
-    expect(guidance).toContain("External MCP tools");
-    // Points to the right tools — losing any of these defeats the guidance
-    expect(guidance).toMatch(/ctx_execute/);
-    expect(guidance).toMatch(/ctx_fetch_and_index/);
-    expect(guidance).toMatch(/ctx_search/);
+    expect(guidance).toContain("external MCP tool's direct lifecycle");
+    expect(guidance).toMatch(/ctx_execute_file/);
+    expect(guidance).toContain("Do not wrap bounded protocol calls");
+    expect(guidance).toContain("unverified external candidates");
   });
 });
 
@@ -295,11 +294,9 @@ describe("backward compat static exports", () => {
       "mcp__plugin_context-mode_context-mode__ctx_execute",
     );
     expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
+      "mcp__plugin_context-mode_context-mode__ctx_execute_file",
     );
-    expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_search",
-    );
+    expect(EXTERNAL_MCP_GUIDANCE).not.toContain("ctx_fetch_and_index");
     // Drift guard: the static export must equal the factory output with the
     // default (claude-code) namer — they share a single template.
     const claudeCodeT = createToolNamer("claude-code");

@@ -299,7 +299,7 @@ export interface HookAdapter {
   getHealthChecks?(pluginRoot: string): readonly HealthCheck[];
 
   /** Check if the plugin is registered/enabled on this platform. */
-  checkPluginRegistration(): DiagnosticResult;
+  checkPluginRegistration(pluginRoot?: string): DiagnosticResult;
 
   /**
    * Get the installed version from this platform's registry/marketplace, or

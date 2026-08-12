@@ -658,7 +658,10 @@ The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
    ```json
    {
      "hooks": {
-       "PreToolUse": [{ "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }],
+       "PreToolUse": [
+         { "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] },
+         { "matcher": "^(ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__context_mode__ctx_execute|mcp__context_mode__ctx_execute_file|mcp__context_mode__ctx_batch_execute|mcp__context_mode__ctx_fetch_and_index|mcp__context_mode__ctx_search|mcp__context_mode__ctx_index|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute|mcp__plugin_context-mode_context-mode__ctx_fetch_and_index|mcp__plugin_context-mode_context-mode__ctx_search|mcp__plugin_context-mode_context-mode__ctx_index)$", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }
+       ],
        "PreCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointprecompact" }] }],
        "PostCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointpostcompact" }] }],
        "SessionStart": [{ "matcher": "^compact$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointsessionstart", "additionalContextLimit": 1500 }] }]
@@ -1577,21 +1580,13 @@ Commands chained with `&&`, `;`, or `|` are split — each part is checked separ
 
 **deny** always wins over **allow**. More specific (project-level) rules override global ones.
 
-### Project-boundary containment
+### File-read authority and resource limits
 
-`ctx_execute_file` is confined to the project root. A `path` that resolves **outside** the workspace — an absolute path like `/home/user/secrets`, a `../../` traversal, or a project-local symlink whose target escapes the project — is refused with a `File access blocked` error. This closes the [#852](https://github.com/mksglu/context-mode/issues/852) escape vector where an agent, denied an out-of-project read by the host sandbox, retried through the MCP sandbox (the host's MCP approval prompt cannot inspect the tool's input params, so the escape was invisible to the approver).
+In compatibility mode, `ctx_execute_file` does not invent a second project-root permission wall. It accepts absolute paths, relative paths, `..` traversal, and symlinks when the host operating system and the MCP host allow the server process to read them. Host approval and sandboxing remain the authority for whether a path is permitted; context-mode does not reinterpret host `Read` allow rules.
 
-The guard is **on by default** and requires no configuration. To intentionally process a file outside the project (e.g. a shared log under `/var/log`), opt that path back in with the **same `permissions.allow` rule you already use for the host `Read` tool** — there is no context-mode-specific env flag:
+The tool still enforces resource protections: it opens one regular-file snapshot, rejects non-files, caps input size, applies execution timeouts, and reports bounded errors. This keeps project-local, project-external, and `ctx_index(path)` reads consistent without presenting `cwd` or a caller-supplied allow flag as a security boundary.
 
-```json
-{
-  "permissions": {
-    "allow": ["Read(/var/log/**)"]
-  }
-}
-```
-
-In compatibility mode, context-mode honors that allow rule (read from your `.claude/settings.json` / `~/.claude/settings.json`) exactly as Claude Code does, so an out-of-project grant lives in one place and stays meaningful. Restricted execution does not treat a host `Read` allow rule as arbitrary-code authority: its explicit trusted project root and operating-system isolation remain final.
+Restricted execution is a separate server policy. Its operating-system isolation exposes only the trusted project root and enforces project read-only execution; callers cannot expand that boundary through an input flag.
 
 Reviewing the prompt: compatibility titles identify arbitrary code execution and use `readOnlyHint: false`, `destructiveHint: true`, and `openWorldHint: true`. Restricted titles identify project read-only code execution and use the inverse read-only metadata. The default compatibility mode still inherits the server process's ordinary filesystem and network access, so treat its execution tools as arbitrary code and keep host-level sandboxing enabled.
 
@@ -1599,7 +1594,13 @@ Reviewing the prompt: compatibility titles identify arbitrary code execution and
 
 Execution source remains directly visible for the audit and inspection contracts established by upstream [Issue #717](https://github.com/mksglu/context-mode/issues/717) and [Issue #736](https://github.com/mksglu/context-mode/issues/736), but one shared policy bounds duplicate MCP result content. An execution proof shows the language, bounded source, original/shown/omitted character semantics, truncation state, and SHA-256 without repeating a five-field ledger. Truncation counts Unicode code points and chooses a Markdown fence longer than any backtick run in the preview.
 
-Short commands are shown directly. A truncated command adds compact `shown/original chars` accounting and its full digest, so it cannot look complete. `ctx_batch_execute` places its normal queried wrapper in two non-empty lines before matches: an execution/persistence/index/query summary with the exact indexed source, then every bounded command and one canonical digest over the complete ordered label/command sequence. It does not repeat `## Commands`, `## Indexed Sections`, or `[source=..., preview=..., omitted=..., truncated=...]` for every command. Query matches, errors, warnings, security refusals, timeout status, and later retrieval remain complete; the presentation policy is not a global result truncator.
+Short commands are shown directly. A truncated command adds compact `shown/original chars` accounting and its full digest, so it cannot look complete. `ctx_batch_execute` places its normal queried wrapper in two non-empty lines before matches: an execution/persistence/query summary, then every bounded command and one canonical digest over the complete ordered label/command sequence. Default output is request-local and reports `Persisted: no`; explicit verified persistence adds the exact indexed source to the summary. The response does not repeat `## Commands`, `## Indexed Sections`, or `[source=..., preview=..., omitted=..., truncated=...]` for every command. Query matches, errors, warnings, security refusals and timeout status remain complete; later `ctx_search` retrieval is available only for explicitly persisted successful stdout. The presentation policy is not a global result truncator.
+
+### Execution persistence and provenance
+
+`ctx_execute`, `ctx_execute_file`, and `ctx_batch_execute` do not write their output to FTS5 by default, regardless of output size. An `intent` or batch `queries` value searches successful output only within the current request. Failed, timed-out, skipped, empty, and executor-error output is never eligible for persistent indexing.
+
+Use `persistence: { mode: "verified", source, provenance }` only after the content has been locally verified and later recall is explicitly required. Provenance records a bounded kind and reference, verification time, and full content SHA-256; `ctx_purge(confirm: true, scope: "source", source)` removes that exact source. Restricted execution rejects persistence. Fast Context, web/API responses, and other external candidates remain non-persistent until local verification. `ctx_search` queries only existing persistent FTS5 content; it is not online search, a live repository scan, CodeGraph relationship analysis, or an authoritative current-project fact source. `ctx_index` is for selected locally verified files or bounded directories, not a default whole-repository indexer.
 
 Checkpoint and RecoveryBrief state uses compact JSON text plus an identical MCP `structuredContent` object. The JSON remains the first text item for compatibility; an occasional version-upgrade notice is appended separately so it cannot corrupt JSON parsing. `ctx_stats`, destructive `ctx_purge` outcomes, and already-minimal `ctx_insight` responses retain their capability-bearing content rather than being shortened for a presentation metric.
 

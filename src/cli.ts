@@ -71,6 +71,11 @@ function browserOpenArgv(
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
 import { CodexAdapter } from "./adapters/codex/index.js";
 import { isInProcessPluginPlatform } from "./adapters/types.js";
+import {
+  assessVersionRelation,
+  channelUsesNpmRegistry,
+  inferInstallationChannel,
+} from "./version-channel.js";
 
 /* -------------------------------------------------------
  * Hook dispatcher — `context-mode hook <platform> <event>`
@@ -936,13 +941,20 @@ async function doctor(): Promise<number> {
 
   // Plugin registration — adapter-aware
   p.log.step(`Checking ${adapter.name} plugin registration...`);
-  const pluginCheck = adapter.checkPluginRegistration();
+  const pluginCheck = adapter.checkPluginRegistration(pluginRoot);
   if (pluginCheck.status === "pass") {
     p.log.success(color.green("Plugin enabled: PASS") + color.dim(` — ${pluginCheck.message}`));
-  } else {
+  } else if (pluginCheck.status === "warn") {
     p.log.warn(
       color.yellow("Plugin enabled: WARN") +
-        ` — ${pluginCheck.message}`,
+      ` — ${pluginCheck.message}`,
+    );
+  } else {
+    criticalFails++;
+    p.log.error(
+      color.red("Plugin enabled: FAIL") +
+      ` — ${pluginCheck.message}` +
+      (pluginCheck.fix ? color.dim(`\n  Run: ${pluginCheck.fix}`) : ""),
     );
   }
 
@@ -1202,28 +1214,68 @@ async function doctor(): Promise<number> {
   // Version check — adapter-aware
   p.log.step("Checking versions...");
   const localVersion = getLocalVersion();
-  const latestVersion = await fetchLatestVersion();
   const installedVersion = adapter.getInstalledVersion();
+  const packageRoot = getPluginRoot();
+  const installationChannel = inferInstallationChannel({
+    adapterName: adapter.name,
+    installedVersion,
+    packageRoot,
+    sourceCheckout: existsSync(resolve(packageRoot, ".git")),
+  });
+  const latestVersion = channelUsesNpmRegistry(installationChannel)
+    ? await fetchLatestVersion()
+    : "unknown";
+  const codexMarketplace = installationChannel === "codex-marketplace";
+  const npmRelation = latestVersion === "unknown"
+    ? "uncomparable"
+    : assessVersionRelation(localVersion, latestVersion);
 
-  if (latestVersion === "unknown") {
+  if (codexMarketplace) {
+    p.log.info(
+      color.dim("npm registry: INFO") +
+        ` — not the update source for Codex marketplace v${installedVersion}`,
+    );
+  } else if (installationChannel === "standalone-git") {
+    p.log.info(
+      color.dim("Git/source installation: INFO") +
+        ` — local v${localVersion}; npm is not this installation's update source`,
+    );
+  } else if (installationChannel === "unknown") {
+    p.log.info(
+      color.dim("Installation channel: INFO") +
+        ` — local v${localVersion}; no authoritative remote version source detected`,
+    );
+  } else if (latestVersion === "unknown") {
     p.log.warn(
       color.yellow("npm (MCP): WARN") +
         ` — local v${localVersion}, could not reach npm registry`,
     );
-  } else if (localVersion === latestVersion) {
+  } else if (npmRelation === "equal") {
     p.log.success(
       color.green("npm (MCP): PASS") +
         ` — v${localVersion}`,
     );
-  } else {
+  } else if (npmRelation === "remote-newer") {
     p.log.warn(
       color.yellow("npm (MCP): WARN") +
         ` — local v${localVersion}, latest v${latestVersion}` +
         color.dim("\n  Run: /context-mode:ctx-upgrade"),
     );
+  } else if (npmRelation === "local-newer") {
+    p.log.info(
+      color.green("npm (MCP): PASS") +
+        ` — local v${localVersion} is newer than npm v${latestVersion}; no downgrade suggested`,
+    );
+  } else {
+    p.log.info(`npm (MCP): INFO — could not compare local ${localVersion} with npm ${latestVersion}`);
   }
 
-  if (installedVersion === "standalone") {
+  if (codexMarketplace) {
+    p.log.success(
+      color.green(`${adapter.name}: PASS`) +
+        ` — marketplace release v${installedVersion}; update through the configured Codex marketplace`,
+    );
+  } else if (installedVersion === "standalone") {
     p.log.info(
       color.dim(`${adapter.name}: standalone MCP mode`) +
         " — no platform plugin version to compare",
@@ -1233,16 +1285,26 @@ async function doctor(): Promise<number> {
       color.dim(`${adapter.name}: not installed`) +
         " — using standalone MCP mode",
     );
-  } else if (latestVersion !== "unknown" && installedVersion === latestVersion) {
+  } else if (!channelUsesNpmRegistry(installationChannel)) {
+    p.log.info(
+      `${adapter.name}: v${installedVersion}` +
+        color.dim(` — ${installationChannel} channel has no comparable remote version`),
+    );
+  } else if (latestVersion !== "unknown" && assessVersionRelation(installedVersion, latestVersion) === "equal") {
     p.log.success(
       color.green(`${adapter.name}: PASS`) +
         ` — v${installedVersion}`,
     );
-  } else if (latestVersion !== "unknown") {
+  } else if (latestVersion !== "unknown" && assessVersionRelation(installedVersion, latestVersion) === "remote-newer") {
     p.log.warn(
       color.yellow(`${adapter.name}: WARN`) +
         ` — v${installedVersion}, latest v${latestVersion}` +
         color.dim("\n  Run: /context-mode:ctx-upgrade"),
+    );
+  } else if (latestVersion !== "unknown" && assessVersionRelation(installedVersion, latestVersion) === "local-newer") {
+    p.log.info(
+      `${adapter.name}: v${installedVersion}` +
+        color.dim(` — newer than npm v${latestVersion}; no downgrade suggested`),
     );
   } else {
     p.log.info(

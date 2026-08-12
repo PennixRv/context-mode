@@ -298,7 +298,7 @@ describe("issue #736 — ctx_batch_execute summary includes a compact command pr
       const text = resp?.result?.content?.[0]?.text ?? "";
 
       const nonEmptyLines = text.split("\n").filter((line) => line.trim() !== "");
-      expect(nonEmptyLines[0]).toMatch(/^Executed 3 commands .*Indexed \d+ sections as "batch:alpha,bravo,charlie"\. Searched 1 request-local queries\.$/);
+      expect(nonEmptyLines[0]).toMatch(/^Executed 3 commands .*Persisted: no\. Searched 1 request-local queries\.$/);
       expect(nonEmptyLines[1]).toMatch(/^Commands \(3\):.*sha256=[a-f0-9]{64}$/);
       expect(nonEmptyLines[1]).toContain("1 alpha: echo alpha-output");
       expect(nonEmptyLines[1]).toContain("2 bravo: echo bravo-output");
@@ -306,9 +306,46 @@ describe("issue #736 — ctx_batch_execute summary includes a compact command pr
       expect(nonEmptyLines[2]).toBe("## alpha");
       expect(text).not.toContain("## Commands");
       expect(text).not.toContain("## Indexed Sections");
+      expect(text).not.toContain("Indexed 3 sections");
       expect(text).not.toContain("[source=");
       expect(text).not.toContain("preview=");
       expect(text).not.toContain("truncated=");
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
+
+  test("real MCP compound discovery finds every dynamic body in the same batch", async () => {
+    const markers = ["issue003-body", "issue013-body", "issue064-body", "issue068-body"];
+    for (const marker of markers) {
+      writeFileSync(join(projectDir, `${marker}.issue-fixture`), `${marker} verified content\n`, "utf8");
+    }
+    const proc = spawnServer({ CLAUDE_PROJECT_DIR: projectDir });
+    try {
+      await initServer(proc);
+      const resp = await awaitRpc(proc, 103, {
+        jsonrpc: "2.0", id: 103, method: "tools/call",
+        params: {
+          name: "ctx_batch_execute",
+          arguments: {
+            commands: [{
+              label: "dynamic issue discovery",
+              command: "for file in *.issue-fixture; do printf '# %s\\n' \"$file\"; cat \"$file\"; done",
+            }],
+            queries: markers,
+            query_scope: "batch",
+            persistence: { mode: "none" },
+            cwd: projectDir,
+          },
+        },
+      });
+      expect(resp?.error).toBeUndefined();
+      expect(resp?.result?.isError ?? false).toBe(false);
+      const text = resp?.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("Executed 1 commands");
+      expect(text).toContain("Persisted: no");
+      expect(text).toContain("Searched 4 request-local queries");
+      for (const marker of markers) expect(text).toContain(marker);
     } finally {
       try { proc.kill("SIGTERM"); } catch { /* best effort */ }
     }

@@ -72,7 +72,7 @@ If you previously installed context-mode manually (`.cursor/hooks.json` + `.curs
 |------|---------|
 | `ctx_execute` | Run code in any of 11 languages, return only stdout |
 | `ctx_execute_file` | Same, but read input from a workspace file path |
-| `ctx_batch_execute` | Run multiple commands in one call, auto-index outputs |
+| `ctx_batch_execute` | Run multiple commands and search successful output in one request; non-persistent by default |
 | `ctx_index` | Store text in FTS5 with a label |
 | `ctx_search` | BM25 search across the knowledge base |
 | `ctx_fetch_and_index` | Fetch a URL, strip HTML, index the result |

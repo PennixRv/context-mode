@@ -33,6 +33,15 @@ interface Chunk {
 
 type SourceMatchMode = "like" | "exact";
 
+export interface SourceProvenance {
+  kind: "local-file" | "local-command" | "external-locally-verified";
+  reference: string;
+  verifiedAt: string;
+  contentHash: string;
+}
+
+export type StoredSourceProvenanceKind = SourceProvenance["kind"] | "legacy";
+
 /**
  * RecoveryBrief files are controlled semantic state, not ordinary FTS input.
  * Indexing them would let mutable current state bypass checkpoint snapshots.
@@ -389,6 +398,7 @@ export class ContentStore {
   #stmtDeleteChunksByLabel!: PreparedStatement;
   #stmtDeleteChunksTrigramByLabel!: PreparedStatement;
   #stmtDeleteSourcesByLabel!: PreparedStatement;
+  #stmtUpdateSourceProvenance!: PreparedStatement;
 
   // Search path (hot)
   #stmtSearchPorter!: PreparedStatement;
@@ -484,7 +494,10 @@ export class ContentStore {
         code_chunk_count INTEGER NOT NULL DEFAULT 0,
         indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
         file_path TEXT,
-        content_hash TEXT
+        content_hash TEXT,
+        provenance_kind TEXT NOT NULL DEFAULT 'legacy',
+        provenance_reference TEXT,
+        verified_at TEXT
       );
 
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
@@ -564,6 +577,10 @@ export class ContentStore {
     // Stale detection columns — safe for existing DBs (ALTER is O(1) in SQLite)
     try { this.#db.exec("ALTER TABLE sources ADD COLUMN file_path TEXT"); } catch { /* already exists */ }
     try { this.#db.exec("ALTER TABLE sources ADD COLUMN content_hash TEXT"); } catch { /* already exists */ }
+    try { this.#db.exec("ALTER TABLE sources ADD COLUMN provenance_kind TEXT NOT NULL DEFAULT 'legacy'"); } catch { /* already exists */ }
+    try { this.#db.exec("ALTER TABLE sources ADD COLUMN provenance_reference TEXT"); } catch { /* already exists */ }
+    try { this.#db.exec("ALTER TABLE sources ADD COLUMN verified_at TEXT"); } catch { /* already exists */ }
+    this.#db.exec("UPDATE sources SET provenance_kind = 'legacy' WHERE provenance_kind IS NULL OR provenance_kind = ''");
   }
 
   #prepareStatements(): void {
@@ -594,6 +611,9 @@ export class ContentStore {
     );
     this.#stmtDeleteSourcesByLabel = this.#db.prepare(
       "DELETE FROM sources WHERE label = ?",
+    );
+    this.#stmtUpdateSourceProvenance = this.#db.prepare(
+      "UPDATE sources SET provenance_kind = ?, provenance_reference = ?, verified_at = ?, content_hash = ? WHERE id = ?",
     );
 
     // Search path (hot)
@@ -815,7 +835,7 @@ export class ContentStore {
       "SELECT content FROM chunks WHERE source_id = ?",
     );
     this.#stmtSourceMeta = this.#db.prepare(
-      "SELECT label, chunk_count, code_chunk_count, indexed_at, file_path, content_hash FROM sources WHERE label = ?",
+      "SELECT label, chunk_count, code_chunk_count, indexed_at, file_path, content_hash, provenance_kind, provenance_reference, verified_at FROM sources WHERE label = ?",
     );
     this.#stmtStats = this.#db.prepare(`
       SELECT
@@ -860,8 +880,9 @@ export class ContentStore {
      * chunks fall back to empty-string columns (legacy behaviour).
      */
     attribution?: { sessionId?: string; eventId?: string };
+    provenance?: SourceProvenance;
   }): IndexResult {
-    const { content, path, source, attribution } = options;
+    const { content, path, source, attribution, provenance } = options;
 
     // Treat empty string as "no content" so an empty `content` paired with a
     // valid `path` falls back to reading the file. Some MCP clients
@@ -913,7 +934,15 @@ export class ContentStore {
     const filePath = path ?? undefined;
     const contentHash = filePath ? createHash("sha256").update(text).digest("hex") : undefined;
 
-    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash, attribution));
+    return withRetry(() => this.#insertChunks(
+      chunks,
+      label,
+      text,
+      filePath,
+      contentHash,
+      attribution,
+      provenance,
+    ));
   }
 
   // ── Index Directory (#687) ──
@@ -993,21 +1022,24 @@ export class ContentStore {
     linesPerChunk: number = 20,
     attribution?: { sessionId?: string; eventId?: string },
     maxChunkBytes: number = MAX_CHUNK_BYTES,
+    provenance?: SourceProvenance,
   ): IndexResult {
     if (!content || content.trim().length === 0) {
-      return this.#insertChunks([], source, "", undefined, undefined, attribution);
+      return this.#insertChunks([], source, "", undefined, undefined, attribution, provenance);
     }
 
     const chunks = this.#chunkPlainText(content, linesPerChunk, maxChunkBytes);
 
-    return withRetry(() => this.#insertChunks(
+    const indexed = withRetry(() => this.#insertChunks(
       chunks.map((c) => ({ ...c, hasCode: false })),
       source,
       content,
       undefined,
       undefined,
       attribution,
+      provenance,
     ));
+    return indexed;
   }
 
   // ── Index JSON ──
@@ -1060,6 +1092,7 @@ export class ContentStore {
     filePath?: string,
     contentHash?: string,
     attribution?: { sessionId?: string; eventId?: string },
+    provenance?: SourceProvenance,
   ): IndexResult {
     const codeChunks = chunks.filter((c) => c.hasCode).length;
     // FK columns on chunks. Empty-string fallback preserves the FTS5-friendly
@@ -1077,7 +1110,9 @@ export class ContentStore {
 
       if (chunks.length === 0) {
         const info = this.#stmtInsertSourceEmpty.run(label, filePath ?? null, contentHash ?? null);
-        return Number(info.lastInsertRowid);
+        const sourceId = Number(info.lastInsertRowid);
+        if (provenance) this.#writeSourceProvenance(sourceId, provenance);
+        return sourceId;
       }
 
       const info = this.#stmtInsertSource.run(label, chunks.length, codeChunks, filePath ?? null, contentHash ?? null);
@@ -1089,6 +1124,8 @@ export class ContentStore {
         this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct, null, sessionIdCol, eventIdCol, now);
         this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct, null, sessionIdCol, eventIdCol, now);
       }
+
+      if (provenance) this.#writeSourceProvenance(sourceId, provenance);
 
       return sourceId;
     });
@@ -1111,6 +1148,23 @@ export class ContentStore {
       totalChunks: chunks.length,
       codeChunks,
     };
+  }
+
+  #writeSourceProvenance(sourceId: number, provenance: SourceProvenance): void {
+    this.#stmtUpdateSourceProvenance.run(
+      provenance.kind,
+      provenance.reference,
+      provenance.verifiedAt,
+      provenance.contentHash,
+      sourceId,
+    );
+  }
+
+  removeSource(label: string): boolean {
+    const before = this.#db.prepare("SELECT COUNT(*) AS count FROM sources WHERE label = ?")
+      .get(label) as { count: number } | undefined;
+    this.#removeSource(label);
+    return (before?.count ?? 0) > 0;
   }
 
   #removeSource(label: string): void {
@@ -1500,10 +1554,40 @@ export class ContentStore {
 
   // ── Sources ──
 
-  getSourceMeta(label: string): { label: string; chunkCount: number; codeChunkCount: number; indexedAt: string; filePath: string | null; contentHash: string | null } | null {
-    const row = this.#stmtSourceMeta.get(label) as { label: string; chunk_count: number; code_chunk_count: number; indexed_at: string; file_path: string | null; content_hash: string | null } | undefined;
+  getSourceMeta(label: string): {
+    label: string;
+    chunkCount: number;
+    codeChunkCount: number;
+    indexedAt: string;
+    filePath: string | null;
+    contentHash: string | null;
+    provenanceKind: StoredSourceProvenanceKind;
+    provenanceReference: string | null;
+    verifiedAt: string | null;
+  } | null {
+    const row = this.#stmtSourceMeta.get(label) as {
+      label: string;
+      chunk_count: number;
+      code_chunk_count: number;
+      indexed_at: string;
+      file_path: string | null;
+      content_hash: string | null;
+      provenance_kind: StoredSourceProvenanceKind | null;
+      provenance_reference: string | null;
+      verified_at: string | null;
+    } | undefined;
     if (!row) return null;
-    return { label: row.label, chunkCount: row.chunk_count, codeChunkCount: row.code_chunk_count, indexedAt: row.indexed_at, filePath: row.file_path ?? null, contentHash: row.content_hash ?? null };
+    return {
+      label: row.label,
+      chunkCount: row.chunk_count,
+      codeChunkCount: row.code_chunk_count,
+      indexedAt: row.indexed_at,
+      filePath: row.file_path ?? null,
+      contentHash: row.content_hash ?? null,
+      provenanceKind: row.provenance_kind ?? "legacy",
+      provenanceReference: row.provenance_reference ?? null,
+      verifiedAt: row.verified_at ?? null,
+    };
   }
 
   listSources(): Array<{ label: string; chunkCount: number }> {

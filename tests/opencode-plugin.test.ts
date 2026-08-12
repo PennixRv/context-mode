@@ -181,8 +181,23 @@ describe("ContextModePlugin", () => {
         ask: (() => ({}) as any) as any,
       });
 
+      async function seedNativeSearch(
+        plugin: Awaited<ReturnType<typeof createTestPlugin>>,
+        projectDir: string,
+        marker: string,
+      ) {
+        mkdirSync(projectDir, { recursive: true });
+        const path = join(projectDir, `${marker}.txt`);
+        writeFileSync(path, marker, "utf8");
+        await plugin.tool!.ctx_index.execute(
+          { path, source: `fixture-${marker}` },
+          baseCtx(projectDir),
+        );
+      }
+
       it("ctx_batch_execute accepts well-formed args without crashing", async () => {
         const projectDir = join(tempDir, "issue-621-baseline");
+        mkdirSync(projectDir, { recursive: true });
         const plugin = await createTestPlugin(projectDir);
         const result = await plugin.tool!.ctx_batch_execute.execute(
           {
@@ -201,6 +216,7 @@ describe("ContextModePlugin", () => {
 
       it("ctx_batch_execute coerces JSON-stringified commands array (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-json-string");
+        mkdirSync(projectDir, { recursive: true });
         const plugin = await createTestPlugin(projectDir);
         // Simulate OpenCode delivering JSON-stringified array — the
         // coerceCommandsArray preprocessor must turn this back into an
@@ -220,6 +236,7 @@ describe("ContextModePlugin", () => {
 
       it("ctx_batch_execute coerces plain-string commands into {label,command} (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-string-cmds");
+        mkdirSync(projectDir, { recursive: true });
         const plugin = await createTestPlugin(projectDir);
         // coerceCommandsArray also lifts bare strings into {label,command}.
         const result = await plugin.tool!.ctx_batch_execute.execute(
@@ -253,6 +270,7 @@ describe("ContextModePlugin", () => {
       it("ctx_search coerces JSON-stringified queries array (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-search-coerce");
         const plugin = await createTestPlugin(projectDir);
+        await seedNativeSearch(plugin, projectDir, "issue621-search");
         // ctx_search also uses z.preprocess(coerceJsonArray, …) on queries.
         // Empty knowledge base is fine — we only assert the call returns
         // without a TypeError (the original symptom).
@@ -283,6 +301,7 @@ describe("ContextModePlugin", () => {
       it("ctx_search accepts stringified limit (#627 exact reporter case)", async () => {
         const projectDir = join(tempDir, "issue-627-limit-string");
         const plugin = await createTestPlugin(projectDir);
+        await seedNativeSearch(plugin, projectDir, "issue627-limit");
         // Reporter's exact call shape: queries arrives as JSON string AND
         // limit arrives as a number-string. v1.0.140's plain z.number()
         // rejects "4" with "Expected number, received string".
@@ -305,6 +324,7 @@ describe("ContextModePlugin", () => {
       it("ctx_search lifts bare-string queries into single-element array (#627)", async () => {
         const projectDir = join(tempDir, "issue-627-bare-query");
         const plugin = await createTestPlugin(projectDir);
+        await seedNativeSearch(plugin, projectDir, "single-bare-query");
         // Some LLM providers send a single query as a bare string rather
         // than a JSON-stringified array. Without widening, coerceJsonArray
         // returns the string unchanged → z.array(z.string()) rejects it.

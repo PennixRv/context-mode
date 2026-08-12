@@ -2710,15 +2710,16 @@ describe("ctx_purge scoped handler (issue #520)", () => {
     expect(schemaSlice).not.toMatch(/\.transform\(/);
   });
 
-  test("slice 6b: handler rejects ambiguous {sessionId + scope:'project'} at runtime (#563)", () => {
+  test("slice 6b: handler rejects incompatible scoped selectors at runtime (#563)", () => {
     // The cross-field ambiguity check moved out of the schema into the
     // handler body. Verify a guard exists that fires when sessionId is
     // present AND scope === "project", and that it returns isError:true
     // rather than throwing.
     const handlerSlice = purgeBody.slice(purgeBody.indexOf("async ({"));
     expect(handlerSlice).toMatch(
-      /sessionId\s*&&\s*scope\s*===\s*["']project["']|scope\s*===\s*["']project["']\s*&&\s*sessionId/,
+      /sessionId\s*&&\s*scope\s*!==\s*undefined\s*&&\s*scope\s*!==\s*["']session["']/,
     );
+    expect(handlerSlice).toMatch(/source\s*&&\s*scope\s*!==\s*["']source["']/);
     expect(handlerSlice).toMatch(/isError:\s*true/);
     // Human-readable message preserved (matches the original refine() text
     // so consumers see the same guidance).
@@ -2728,7 +2729,9 @@ describe("ctx_purge scoped handler (issue #520)", () => {
   // Slice 7 — schema accepts {confirm:true, sessionId:"<uuid>"}.
   test("slice 7: schema declares optional sessionId and scope", () => {
     expect(purgeBody).toMatch(/sessionId:\s*z\.string\(\)\.optional\(\)/);
-    expect(purgeBody).toMatch(/scope:\s*z\.enum\(\[["']session["'],\s*["']project["']\]\)\.optional\(\)/);
+    expect(purgeBody).toMatch(
+      /scope:\s*z\.enum\(\[["']session["'],\s*["']source["'],\s*["']project["']\]\)\.optional\(\)/,
+    );
   });
 
   // Slice 8 — bare {confirm:true} (no sessionId, no scope) emits a
@@ -2914,6 +2917,20 @@ describe("Version outdated warning in trackResponse", () => {
   test("version check fires in main() after server.connect", () => {
     const mainFn = serverSrc.slice(serverSrc.indexOf("async function main"));
     expect(mainFn).toContain("fetchLatestVersion");
+    expect(mainFn).toMatch(/channelUsesNpmRegistry\(_installationChannel\)[\s\S]{0,500}fetchLatestVersion/);
+    expect(mainFn.indexOf("_detectedAdapter = await getAdapter")).toBeLessThan(
+      mainFn.indexOf("_installationChannel = inferInstallationChannel"),
+    );
+  });
+
+  test("readiness sentinel is independent of the update channel", () => {
+    const mainFn = serverSrc.slice(serverSrc.indexOf("async function main"));
+    const sentinelBlock = mainFn.slice(
+      mainFn.indexOf("// Write MCP readiness sentinel"),
+      mainFn.indexOf("// #844: refresh the sentinel"),
+    );
+    expect(sentinelBlock).toContain("writeFileSync(mcpSentinel");
+    expect(sentinelBlock).not.toContain("channelUsesNpmRegistry");
   });
 
   test("trackResponse prepends warning when outdated", () => {
@@ -2923,6 +2940,8 @@ describe("Version outdated warning in trackResponse", () => {
     );
     expect(trackFn).toContain("_latestVersion");
     expect(trackFn).toContain("outdated");
+    expect(serverSrc).toMatch(/function isOutdated[\s\S]{0,300}channelUsesNpmRegistry\(_installationChannel\)/);
+    expect(serverSrc).not.toContain('_detectedAdapter?.name === "Codex CLI"');
   });
 
   test("warning uses burst cadence (3 calls then silent)", () => {
@@ -3048,7 +3067,7 @@ import {
   type BatchCommand,
 } from "../../src/server.js";
 
-interface MockResult { stdout: string; stderr?: string; timedOut?: boolean; }
+interface MockResult { stdout: string; stderr?: string; exitCode?: number; timedOut?: boolean; }
 
 function mkMockExecutor(
   handler: (code: string, timeout: number | undefined, cwd: string | undefined) => Promise<MockResult> | MockResult,
@@ -3356,20 +3375,20 @@ describe("runBatchCommands edge cases", () => {
     expect(outputs[0]).toContain("(no output)");
   });
 
-  test("nodeOptsPrefix is prepended to each command", async () => {
+  test("nodeOptsPrefix is a preamble before the unchanged command", async () => {
     const seen: string[] = [];
     const exec = mkMockExecutor((code) => {
       seen.push(code);
       return { stdout: "ok" };
     });
     const cmds: BatchCommand[] = [{ label: "A", command: "echo hi" }];
-    await runBatchCommands(cmds, { timeout: 1000, concurrency: 1, nodeOptsPrefix: 'NODE_OPTIONS="--require /tmp/x" ' }, exec);
-    expect(seen[0]).toBe('NODE_OPTIONS="--require /tmp/x" echo hi');
+    await runBatchCommands(cmds, { timeout: 1000, concurrency: 1, nodeOptsPrefix: 'export NODE_OPTIONS="--require /tmp/x"\n' }, exec);
+    expect(seen[0]).toBe('export NODE_OPTIONS="--require /tmp/x"\necho hi');
   });
 
-  test("buildBatchNodeOptionsPrefix formats POSIX shell assignment", () => {
+  test("buildBatchNodeOptionsPrefix formats POSIX shell preamble", () => {
     const prefix = buildBatchNodeOptionsPrefix("bash", "/tmp/cm fs'preload.js");
-    expect(prefix).toBe("NODE_OPTIONS='--require /tmp/cm fs'\\''preload.js' ");
+    expect(prefix).toBe("export NODE_OPTIONS='--require \"/tmp/cm fs'\\''preload.js\"'\n");
   });
 
   test("buildBatchNodeOptionsPrefix formats PowerShell assignment", () => {
@@ -3377,7 +3396,7 @@ describe("runBatchCommands edge cases", () => {
       "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       "C:\\Temp\\cm ' fs.js",
     );
-    expect(prefix).toBe("$env:NODE_OPTIONS='--require C:\\Temp\\cm '' fs.js'; ");
+    expect(prefix).toBe("$env:NODE_OPTIONS='--require \"C:\\\\Temp\\\\cm '' fs.js\"';\n");
   });
 
   test("buildBatchNodeOptionsPrefix formats cmd assignment", () => {
@@ -3385,7 +3404,26 @@ describe("runBatchCommands edge cases", () => {
       "C:\\Windows\\System32\\cmd.exe",
       "C:\\Temp\\cm-fs-preload.js",
     );
-    expect(prefix).toBe('set "NODE_OPTIONS=--require C:\\Temp\\cm-fs-preload.js" && ');
+    expect(prefix).toBe('set "NODE_OPTIONS=--require ""C:\\\\Temp\\\\cm-fs-preload.js"""\r\n');
+  });
+
+  test("non-zero exits are failed and excluded from searchable bodies", async () => {
+    const exec = mkMockExecutor((code) => code.includes("bad")
+      ? { stdout: "misleading stdout", stderr: "failed", exitCode: 7 }
+      : { stdout: "trusted body", exitCode: 0 });
+    const result = await runBatchCommands(
+      [
+        { label: "bad", command: "bad command" },
+        { label: "good", command: "good command" },
+      ],
+      { timeout: 1000, concurrency: 2, nodeOptsPrefix: "" },
+      exec,
+    );
+    expect(result.statuses).toEqual(["failed", "completed"]);
+    expect(result.exitCodes).toEqual([7, 0]);
+    expect(result.searchableOutputs[0]).toBe("");
+    expect(result.searchableOutputs[1]).toContain("trusted body");
+    expect(result.searchableBodies).toEqual(["", "trusted body"]);
   });
 });
 

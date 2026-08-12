@@ -5,6 +5,17 @@ task analyzes, counts, filters, compares, searches, parses, transforms, fetches,
 or otherwise processes data. Raw bytes should stay in the sandbox; only the
 derived answer should enter the conversation.
 
+## Protocol passthrough
+
+Call lifecycle control, event waits, interactive actions, bounded structured
+results, and tools with dedicated status/error protocols directly. Never wrap
+Trellis/Governance, CodeGraph, Fast Context, or another bounded MCP call in
+context-mode execution. With an approved `.codegraph/`, use CodeGraph first for
+symbols, architecture, call paths, and impact. For a large structured result,
+have the original tool write a file and analyze it with
+`context-mode/ctx_execute_file`; keep unverified external candidates
+non-persistent.
+
 ## Do not dump — derive (most common mistake)
 
 Do NOT use `context-mode/ctx_execute_file` or `ctx_execute` to print a whole file
@@ -65,11 +76,12 @@ context. Use these argument shapes instead:
 - Use `context-mode/ctx_execute` for shell commands whose output may exceed a
   short fixed answer. Native Bash is only for git, mkdir, rm, mv, navigation,
   installs, or short observable output.
-- Use `context-mode/ctx_fetch_and_index` for web content, then
-  `context-mode/ctx_search` to query it. Do not dump raw HTML into the
-  conversation.
+- Keep bounded web/MCP protocols direct. For large one-shot output, save with
+  the original tool and use `context-mode/ctx_execute_file`. Use
+  `context-mode/ctx_fetch_and_index` only for a trusted source explicitly
+  selected for retention.
 - Use `context-mode/ctx_index` only when content should be stored and searched
-  later. For a one-off file question, prefer `context-mode/ctx_execute_file`;
+  later; never use it as the default whole-repository route. For a one-off file question, prefer `context-mode/ctx_execute_file`;
   for follow-up retrieval, index with a descriptive `source` and query with
   `context-mode/ctx_search`.
 - Return only derived answers, concise summaries, selected snippets, or file

@@ -178,6 +178,7 @@ describe("Schema & Lifecycle", () => {
     // Sources table still intact (not dropped)
     const sourceCount = checkDb.prepare("SELECT COUNT(*) as cnt FROM sources").get() as { cnt: number };
     expect(sourceCount.cnt).toBe(1);
+    expect(store.getSourceMeta("old-source")?.provenanceKind).toBe("legacy");
 
     // Store still functional — can index new content
     const result = store.index({ content: "# Test\n\nNew content after migration.", source: "post-migration" });
@@ -1434,6 +1435,7 @@ describe("Source metadata (TTL cache)", () => {
     expect(meta!.label).toBe("test-doc");
     expect(meta!.chunkCount).toBeGreaterThan(0);
     expect(meta!.indexedAt).toBeTruthy();
+    expect(meta!.provenanceKind).toBe("legacy");
     store.close();
   });
 

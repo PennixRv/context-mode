@@ -45,9 +45,7 @@ import {
   evaluateCommandDenyOnly,
   extractShellCommands,
   readToolDenyPatterns,
-  readToolPermissionPatterns,
   evaluateFilePath,
-  evaluateProjectContainment,
 } from "./security.js";
 import {
   detectRuntimes,
@@ -111,6 +109,13 @@ import { resolveClaudeConfigDir } from "./util/claude-config.js";
 import { resolveProjectDir } from "./util/project-dir.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getConversationStats, getContentBytesAllSessions, getConversationWindowStats, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, pricePerToken } from "./session/analytics.js";
+import {
+  channelUsesNpmRegistry,
+  compareSemanticVersions,
+  inferInstallationChannel,
+  type InstallationChannel,
+} from "./version-channel.js";
+import { createHash } from "node:crypto";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -464,7 +469,7 @@ const PRESENTATION_POLICY = resolvePresentationPolicy();
 // FS read tracking preload for ctx_batch_execute
 // ─────────────────────────────────────────────────────────
 // NODE_OPTIONS is denied by the executor's #buildSafeEnv (security).
-// Instead, we inject it as an inline shell env prefix in each batch command.
+// Instead, we inject it as a shell preamble before each complete batch script.
 // This temp file is loaded via --require when batch commands spawn Node processes.
 const CM_FS_PRELOAD = join(tmpdir(), `cm-fs-preload-${process.pid}.js`);
 if (!RESTRICTED_EXECUTION_SERVER) {
@@ -886,6 +891,7 @@ function storageErrorResult(err: unknown): ToolResult | null {
 // using a burst cadence: 3 warnings → 1h silent → 3 warnings → repeat.
 
 let _latestVersion: string | null = null;
+let _installationChannel: InstallationChannel = "unknown";
 let _warningBurstCount = 0;
 let _lastBurstStart = 0;
 const VERSION_BURST_SIZE = 3;
@@ -921,19 +927,10 @@ function getUpgradeHint(): string {
   return "npm update -g context-mode";
 }
 
-function semverNewer(a: string, b: string): boolean {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
-    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
-  }
-  return false;
-}
-
 function isOutdated(): boolean {
   if (!_latestVersion || _latestVersion === "unknown") return false;
-  return semverNewer(_latestVersion, VERSION);
+  if (!channelUsesNpmRegistry(_installationChannel)) return false;
+  return compareSemanticVersions(_latestVersion, VERSION) === 1;
 }
 
 function shouldShowVersionWarning(): boolean {
@@ -1115,6 +1112,41 @@ function restrictedOutput(
     );
   }
   return `Persisted: no (request-only).\n\n${output}`;
+}
+
+const ExecutionPersistenceSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("none") }),
+  z.object({
+    mode: z.literal("verified"),
+    source: z.string().min(1).max(160),
+    provenance: z.object({
+      kind: z.enum(["local-file", "local-command", "external-locally-verified"]),
+      reference: z.string().min(1).max(500),
+    }),
+  }),
+]);
+
+type ExecutionPersistence = z.infer<typeof ExecutionPersistenceSchema>;
+
+function buildVerifiedProvenance(
+  content: string,
+  persistence: Extract<ExecutionPersistence, { mode: "verified" }>,
+) {
+  return {
+    kind: persistence.provenance.kind,
+    reference: persistence.provenance.reference,
+    verifiedAt: new Date().toISOString(),
+    contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+  } as const;
+}
+
+function requestLocalOutput(output: string, source: string, intent?: string): string {
+  return formatEphemeralSearch(
+    output,
+    intent?.trim() ? [intent.trim()] : [],
+    source,
+    PRESENTATION_POLICY,
+  );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1309,53 +1341,6 @@ function checkNonShellDenyPolicy(
     }
   } catch {
     // Fail-open
-  }
-  return null;
-}
-
-/**
- * Issue #852 — project-boundary containment for `ctx_execute_file`.
- *
- * The harness sandbox (Claude Code, etc.) cannot inspect MCP input params, so a
- * user approving a `ctx_execute_file` call cannot see that its `path` escapes
- * the workspace. This guard refuses a `path` that resolves outside the project
- * root (absolute escape, `../` traversal, or symlink-out), restoring the
- * boundary the host believes it is enforcing.
- *
- * Escape hatch — NO bespoke opt-out env. A deliberate out-of-project read is
- * expressed in the SAME host config the user already maintains: a
- * `permissions.allow` rule like `Read(/var/log/**)`. This reuses the exact
- * mechanism Claude Code uses to whitelist a path outside its sandbox, so the
- * grant lives in one place and stays meaningful instead of rotting into a
- * context-mode-only env flag nobody sets.
- *
- * Fail-open on resolver failure (consistent with the other deny checks): if the
- * project root cannot be resolved, containment evaluates as "inside" and the
- * path is allowed through rather than spuriously blocking legitimate work.
- */
-function checkProjectBoundary(
-  filePath: string,
-  toolName: string,
-): ToolResult | null {
-  try {
-    const projectDir = getProjectDir();
-    const allowGlobs = readToolPermissionPatterns("Read", "allow", projectDir);
-    const verdict = evaluateProjectContainment(filePath, projectDir, allowGlobs);
-    if (verdict.allowed) return null;
-    return {
-      content: [{
-        type: "text" as const,
-        text:
-          `File access blocked: "${filePath}" resolves outside the project root ` +
-          `(${projectDir}). context-mode confines ${toolName} to the workspace so it ` +
-          `cannot be used to bypass the host's sandbox/permission controls (issue #852). ` +
-          `To intentionally process a file outside the project, add a host allow rule, ` +
-          `e.g. "permissions": { "allow": ["Read(${filePath})"] } in your settings.`,
-      }],
-      isError: true,
-    };
-  } catch {
-    // Fail-open — resolver failure must not block legitimate in-project work.
   }
   return null;
 }
@@ -1575,11 +1560,21 @@ export function formatBatchQueryResults(
 
 export interface BatchCommand { label: string; command: string; }
 
-export type BatchCommandStatus = "completed" | "timed_out" | "skipped" | "error";
+export type BatchCommandStatus = "completed" | "failed" | "timed_out" | "skipped" | "error";
+
+export interface BatchCommandExecution {
+  stdout: string;
+  stderr?: string;
+  exitCode: number;
+  timedOut?: boolean;
+}
 
 export interface BatchRunResult {
   outputs: string[];
+  searchableOutputs: string[];
+  searchableBodies: string[];
   statuses: BatchCommandStatus[];
+  exitCodes: Array<number | null>;
   timedOut: boolean;
 }
 
@@ -1604,7 +1599,7 @@ interface BatchExecutor {
     timeout: number | undefined;
     cwd?: string;
     isolation?: BubblewrapIsolation;
-  }): Promise<{ stdout: string; timedOut?: boolean }>;
+  }): Promise<Partial<BatchCommandExecution> & Pick<BatchCommandExecution, "stdout">>;
 }
 
 function quotePosixSingle(value: string): string {
@@ -1616,19 +1611,22 @@ function quotePowerShellSingle(value: string): string {
 }
 
 export function buildBatchNodeOptionsPrefix(shellPath: string, preloadPath: string): string {
-  const option = `--require ${preloadPath}`;
+  // NODE_OPTIONS is parsed again by Node after the shell assigns it. Preserve
+  // the preload path as one argument for both parsers, including spaces and
+  // quotes in host-authorized temporary paths.
+  const option = `--require ${JSON.stringify(preloadPath)}`;
   const shell = shellPath.toLowerCase();
   const base = shell.split(/[\\/]/).pop() ?? shell;
 
   if (shell.includes("powershell") || shell.includes("pwsh")) {
-    return `$env:NODE_OPTIONS=${quotePowerShellSingle(option)}; `;
+    return `$env:NODE_OPTIONS=${quotePowerShellSingle(option)};\n`;
   }
 
   if (base === "cmd" || base === "cmd.exe") {
-    return `set "NODE_OPTIONS=${option.replace(/"/g, '""')}" && `;
+    return `set "NODE_OPTIONS=${option.replace(/"/g, '""')}"\r\n`;
   }
 
-  return `NODE_OPTIONS=${quotePosixSingle(option)} `;
+  return `export NODE_OPTIONS=${quotePosixSingle(option)}\n`;
 }
 
 /**
@@ -1660,7 +1658,14 @@ function buildExecuteEcho(language: string, code: string, path?: string): string
 }
 
 function formatCommandOutput(label: string, command: string, raw: string, onFsBytes?: (bytes: number) => void): string {
-  let output = raw || "(no output)";
+  const sanitized = stripFsMarkers(raw, onFsBytes);
+  const output = sanitized || "(no output)";
+  const echoed = renderCommandSource(command, PRESENTATION_POLICY);
+  return `# ${label}\n\n$ ${echoed}\n\n${output}\n`;
+}
+
+function stripFsMarkers(raw: string, onFsBytes?: (bytes: number) => void): string {
+  let output = raw;
   const fsMatches = output.matchAll(/__CM_FS__:(\d+)/g);
   let cmdFsBytes = 0;
   for (const m of fsMatches) cmdFsBytes += parseInt(m[1]);
@@ -1668,11 +1673,7 @@ function formatCommandOutput(label: string, command: string, raw: string, onFsBy
     onFsBytes?.(cmdFsBytes);
     output = output.replace(/__CM_FS__:\d+\n?/g, "");
   }
-  // Echo the executed command below the section heading so per-chunk
-  // indexed content retains provenance for later ctx_search hits
-  // (Issues #717 + #736).
-  const echoed = renderCommandSource(command, PRESENTATION_POLICY);
-  return `# ${label}\n\n$ ${echoed}\n\n${output}\n`;
+  return output;
 }
 
 function combineExecOutput(result: { stdout?: string; stderr?: string }): string {
@@ -1702,7 +1703,10 @@ export async function runBatchCommands(
     // When `timeout` is undefined, no shared budget is enforced; each
     // command runs to completion (Issue #406).
     const outputs: string[] = [];
+    const searchableOutputs: string[] = [];
+    const searchableBodies: string[] = [];
     const statuses: BatchCommandStatus[] = [];
+    const exitCodes: Array<number | null> = [];
     const startTime = Date.now();
     let timedOut = false;
     for (let i = 0; i < commands.length; i++) {
@@ -1714,6 +1718,9 @@ export async function runBatchCommands(
         if (remaining <= 0) {
           outputs.push(`# ${cmd.label}\n\n(skipped — batch timeout exceeded)\n`);
           statuses.push("skipped");
+          exitCodes.push(null);
+          searchableOutputs.push("");
+          searchableBodies.push("");
           timedOut = true;
           continue;
         }
@@ -1727,23 +1734,40 @@ export async function runBatchCommands(
         isolation,
       });
       outputs.push(formatCommandOutput(cmd.label, cmd.command, combineExecOutput(result), onFsBytes));
-      statuses.push(result.timedOut ? "timed_out" : "completed");
+      const exitCode = result.exitCode ?? (result.timedOut ? 1 : 0);
+      const status: BatchCommandStatus = result.timedOut
+        ? "timed_out"
+        : exitCode === 0
+          ? "completed"
+          : "failed";
+      statuses.push(status);
+      exitCodes.push(exitCode);
+      const searchableBody = status === "completed"
+        ? stripFsMarkers(result.stdout ?? "")
+        : "";
+      searchableBodies.push(searchableBody);
+      searchableOutputs.push(searchableBody.trim()
+        ? formatCommandOutput(cmd.label, cmd.command, searchableBody)
+        : "");
       if (result.timedOut) {
         timedOut = true;
         for (let j = i + 1; j < commands.length; j++) {
           outputs.push(`# ${commands[j].label}\n\n(skipped — batch timeout exceeded)\n`);
           statuses.push("skipped");
+          exitCodes.push(null);
+          searchableOutputs.push("");
+          searchableBodies.push("");
         }
         break;
       }
     }
-    return { outputs, statuses, timedOut };
+    return { outputs, searchableOutputs, searchableBodies, statuses, exitCodes, timedOut };
   }
 
   // Parallel path — delegated to the shared runPool primitive.
   // Each job returns { output, timedOut }; runPool handles in-flight cap,
   // throw isolation (Promise.allSettled semantics), and order preservation.
-  const jobs: PoolJob<{ output: string; timedOut: boolean }>[] = commands.map((cmd) => ({
+  const jobs: PoolJob<{ output: string; searchableOutput: string; searchableBody: string; timedOut: boolean; exitCode: number }>[] = commands.map((cmd) => ({
     run: async () => {
       const result = await executor.execute({
         language: "shell",
@@ -1758,19 +1782,41 @@ export async function runBatchCommands(
       const output = result.timedOut
         ? formatted.replace(/\n$/, "") + `\n(timed out after ${timeout ?? "?"}ms)\n`
         : formatted;
-      return { output, timedOut: !!result.timedOut };
+      const exitCode = result.exitCode ?? (result.timedOut ? 1 : 0);
+      const searchableBody = !result.timedOut && exitCode === 0
+        ? stripFsMarkers(result.stdout ?? "")
+        : "";
+      return {
+        output,
+        searchableOutput: searchableBody.trim()
+          ? formatCommandOutput(cmd.label, cmd.command, searchableBody)
+          : "",
+        searchableBody,
+        timedOut: !!result.timedOut,
+        exitCode,
+      };
     },
   }));
 
   const { settled } = await runPool(jobs, { concurrency });
   const outputs: string[] = new Array(commands.length);
+  const searchableOutputs: string[] = new Array(commands.length).fill("");
+  const searchableBodies: string[] = new Array(commands.length).fill("");
   const statuses: BatchCommandStatus[] = new Array(commands.length);
+  const exitCodes: Array<number | null> = new Array(commands.length).fill(null);
   let timedOut = false;
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i];
     if (r.status === "fulfilled") {
       outputs[i] = r.value.output;
-      statuses[i] = r.value.timedOut ? "timed_out" : "completed";
+      searchableOutputs[i] = r.value.searchableOutput;
+      searchableBodies[i] = r.value.searchableBody;
+      exitCodes[i] = r.value.exitCode;
+      statuses[i] = r.value.timedOut
+        ? "timed_out"
+        : r.value.exitCode === 0
+          ? "completed"
+          : "failed";
       if (r.value.timedOut) timedOut = true;
     } else {
       // Isolated executor throw (spawn EAGAIN, ENOMEM, EMFILE, …) — siblings keep running.
@@ -1779,7 +1825,7 @@ export async function runBatchCommands(
       statuses[i] = "error";
     }
   }
-  return { outputs, statuses, timedOut };
+  return { outputs, searchableOutputs, searchableBodies, statuses, exitCodes, timedOut };
 }
 
 function formatBatchSummary(
@@ -1874,7 +1920,8 @@ WHEN:
   - Output shape or size cannot be predicted before execution (recursive finds, repo-wide greps, list endpoints, query results, log scans)
   - You would otherwise read raw output and then mentally compute — that compute belongs here, in code, where its inputs stay out of your conversation
   - You need to keep a long-running process alive (dev server, watcher, daemon) — pass \`background: true\` to detach on timeout instead of killing the process
-  - The output may legitimately be large but you only want recall-by-topic later — pass an \`intent\` string; outputs over ~5KB are auto-indexed into the knowledge base and only the section titles + previews come back, retrievable via ctx_search
+  - The output may legitimately be large — pass an \`intent\` string to search it within this request without returning the full body
+  - You have locally verified successful output and explicitly need later recall — pass \`persistence: {mode: "verified", source, provenance}\`; failed output is never persisted
 
 WHEN NOT:
   - Single observational command whose entire short output you intend to consume verbatim (whoami, pwd, git status on a clean tree) — Bash is simpler
@@ -1882,7 +1929,7 @@ WHEN NOT:
   - You already know the output is one short fixed line and you want to read it as-is
 
 RETURNS:
-  Only what your code prints. Wrap risky calls in try/catch — uncaught errors go to stderr and may leak more than intended. When \`intent\` is set and output exceeds the auto-index threshold, the response carries searchable section titles + previews instead of the raw stdout; use ctx_search(queries: [...]) to drill into specific sections.
+  Only what your code prints. Wrap risky calls in try/catch — uncaught errors go to stderr and may leak more than intended. Output is request-local by default. An \`intent\` searches large output only within this call. Later ctx_search recall requires explicit verified persistence.
 
 EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_process').execSync('npm test', {encoding:'utf8', stdio:['ignore','pipe','pipe']}); console.log(out.split('\\\\n').filter(l => /(FAIL|✗|×|Error:|Tests +.*(failed|passed))/i.test(l)).slice(0, 60).join('\\\\n'))")
 EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_process').execSync('gh issue list --json number,title --limit 100', {encoding:'utf8'}); const hooks = JSON.parse(out).filter(i => /hook|routing/i.test(i.title)); console.log(\`\${hooks.length} hook-related issues\`)")`,
@@ -1934,12 +1981,16 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
         .describe(RESTRICTED_EXECUTION_SERVER
           ? "What to match in large output. Restricted mode searches only request memory, returns bounded matches, and does not make the result available to ctx_search."
           : "What you're looking for in the output. When provided and output is large (>5KB), " +
-            "indexes output into knowledge base and returns section titles + previews — not full content. " +
-            "Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
+            "searches request-local output and returns matching sections instead of the full body. " +
+            "This does not make output available to later ctx_search calls. Example: 'failing tests', 'HTTP 500 errors'." +
             "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary."),
+      persistence: ExecutionPersistenceSchema
+        .optional()
+        .default({ mode: "none" })
+        .describe("Default none keeps output request-local. verified persists only successful output with bounded locally verified provenance."),
     }),
   },
-  async ({ language, code, timeout, background, cwd, intent }) => {
+  async ({ language, code, timeout, background, cwd, intent, persistence }) => {
     const decision = currentExecutionPolicy();
     const invocation = validateRestrictedInvocation(decision, { language, background, cwd });
     if (!invocation.ok) {
@@ -1948,6 +1999,9 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
         "ctx_execute",
         invocation.errorCode ?? "CTX_EXEC_POLICY_INVALID",
       );
+    }
+    if (decision.mode === "restricted" && persistence.mode === "verified") {
+      return executionPolicyErrorResult(decision, "ctx_execute", "CTX_EXEC_PERSISTENCE_FORBIDDEN");
     }
     const effectiveCwd = invocation.cwd ?? cwd;
 
@@ -2103,34 +2157,24 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
             isError,
           });
         }
-        if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
-          trackIndexed(Buffer.byteLength(output));
+        if (Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
           return finalizeExecutionResponse(decision, "ctx_execute", {
             content: [
-              { type: "text" as const, text: `${echo}${intentSearch(output, intent, isError ? `execute:${language}:error` : `execute:${language}`)}` },
-            ],
-            isError,
-          });
-        }
-        // Auto-index large error output into FTS5 — no data loss
-        if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
-          trackIndexed(Buffer.byteLength(output));
-          return finalizeExecutionResponse(decision, "ctx_execute", {
-            content: [
-              { type: "text" as const, text: `${echo}${intentSearch(output, "errors failures exceptions", isError ? `execute:${language}:error` : `execute:${language}`)}` },
+              { type: "text" as const, text: `${echo}${requestLocalOutput(output, `execute:${language}:error`, intent)}` },
             ],
             isError,
           });
         }
         return finalizeExecutionResponse(decision, "ctx_execute", {
           content: [
-            { type: "text" as const, text: `${echo}${output}` },
+            { type: "text" as const, text: `${echo}Persisted: no (failed output).\n\n${output}` },
           ],
           isError,
         });
       }
 
-      const stdout = result.stdout || "(no output)";
+      const rawStdout = result.stdout ?? "";
+      const stdout = rawStdout || "(no output)";
 
       if (decision.mode === "restricted") {
         return finalizeExecutionResponse(decision, "ctx_execute", {
@@ -2138,34 +2182,23 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
         });
       }
 
-      // Intent-driven search: if intent provided and output is large enough
-      if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
-        trackIndexed(Buffer.byteLength(stdout));
+      if (persistence.mode === "verified") {
         return finalizeExecutionResponse(decision, "ctx_execute", {
           content: [
-            { type: "text" as const, text: `${echo}${intentSearch(stdout, intent, `execute:${language}`)}` },
+            { type: "text" as const, text: `${echo}${persistVerifiedOutput(rawStdout, intent, persistence)}` },
           ],
         });
       }
 
-      // Auto-index large stdout into FTS5 — return pointer, not raw content
-      if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
-        const indexed = indexStdout(stdout, `execute:${language}`);
-        // Prepend echo to the first text content so provenance still surfaces
-        const echoed = {
-          ...indexed,
-          content: indexed.content.map((c, i) =>
-            i === 0 && c.type === "text"
-              ? { ...c, text: `${echo}${(c as { text: string }).text}` }
-              : c,
-          ),
-        };
-        return finalizeExecutionResponse(decision, "ctx_execute", echoed);
+      if (Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
+        return finalizeExecutionResponse(decision, "ctx_execute", {
+          content: [{ type: "text" as const, text: `${echo}${requestLocalOutput(stdout, `execute:${language}`, intent)}` }],
+        });
       }
 
       return finalizeExecutionResponse(decision, "ctx_execute", {
         content: [
-          { type: "text" as const, text: `${echo}${stdout}` },
+          { type: "text" as const, text: `${echo}Persisted: no (request-only).\n\n${stdout}` },
         ],
       });
     } catch (err: unknown) {
@@ -2184,45 +2217,40 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 // Helper: index stdout into FTS5 knowledge base
 // ─────────────────────────────────────────────────────────
 
-function indexStdout(
-  stdout: string,
-  source: string,
-): { content: Array<{ type: "text"; text: string }> } {
-  const store = getStore();
-  trackIndexed(Buffer.byteLength(stdout));
-  const indexed = store.index({ content: stdout, source, attribution: currentAttribution() });
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}\nUse ctx_search(queries: ["..."]) to query this content. Use source: "${indexed.label}" to scope results.`,
-      },
-    ],
-  };
-}
-
 // ─────────────────────────────────────────────────────────
 // Helper: intent-driven search on execution output
 // ─────────────────────────────────────────────────────────
 
 const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
-const LARGE_OUTPUT_THRESHOLD = 102_400; // 100KB — auto-index into FTS5, return pointer
-
-function intentSearch(
+function persistVerifiedOutput(
   stdout: string,
-  intent: string,
-  source: string,
+  intent: string | undefined,
+  persistence: Extract<ExecutionPersistence, { mode: "verified" }>,
   maxResults: number = 5,
 ): string {
+  if (!stdout.trim()) {
+    return "Persisted: no (empty stdout). No persistent source was created.";
+  }
+
   const totalLines = stdout.split("\n").length;
   const totalBytes = Buffer.byteLength(stdout);
 
-  // Index into the PERSISTENT store so user can ctx_search() later
   const persistent = getStore();
-  const indexed = persistent.indexPlainText(stdout, source, undefined, currentAttribution());
+  trackIndexed(totalBytes);
+  const indexed = persistent.indexPlainText(
+    stdout,
+    persistence.source,
+    undefined,
+    currentAttribution(),
+    undefined,
+    buildVerifiedProvenance(stdout, persistence),
+  );
 
-  // Search the persistent store directly (porter → trigram → fuzzy)
-  let results = persistent.searchWithFallback(intent, maxResults, source);
+  if (!intent?.trim()) {
+    return `Persisted: yes. Indexed ${indexed.totalChunks} verified sections as "${indexed.label}".\nUse ctx_search(queries: ["..."], source: "${indexed.label}") to query this content.`;
+  }
+
+  const results = persistent.searchWithFallback(intent, maxResults, persistence.source);
 
   // Extract distinctive terms as vocabulary hints for the LLM
   const distinctiveTerms = persistent.getDistinctiveTerms(
@@ -2232,7 +2260,7 @@ function intentSearch(
 
   if (results.length === 0) {
     const lines = [
-      `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
+      `Persisted: yes. Indexed ${indexed.totalChunks} verified sections as "${persistence.source}".`,
       `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).`,
     ];
     const termLine = renderSearchableTerms(distinctiveTerms, PRESENTATION_POLICY);
@@ -2247,7 +2275,7 @@ function intentSearch(
 
   // Return ONLY titles + first-line previews — not full content
   const lines = [
-    `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
+    `Persisted: yes. Indexed ${indexed.totalChunks} verified sections as "${persistence.source}".`,
     `${results.length} sections matched "${intent}" (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB):`,
     "",
   ];
@@ -2304,7 +2332,8 @@ WHEN:
   - You want to KNOW SOMETHING ABOUT a file (line count, matches of a pattern, parsed structure, statistical aggregate) without needing to SEE all of it
   - The file is structured (CSV, JSON, log, code) and a code-level derivation is cheaper than reading verbatim
   - The file is large enough that reading the full content would burn meaningful conversation memory you need for the actual work
-  - The derivation may itself produce a large output you want recall-by-topic on later — pass an \`intent\` string; outputs over ~5KB are auto-indexed and only matching sections come back, retrievable via ctx_search
+  - The derivation may itself produce a large output — pass an \`intent\` string to search it within this request
+  - You have locally verified successful output and explicitly need later recall — pass \`persistence: {mode: "verified", source, provenance}\`; failed output is never persisted
 
 WHEN NOT:
   - You intend to EDIT the file — use Read so the subsequent Edit can match the exact text
@@ -2312,7 +2341,7 @@ WHEN NOT:
   - The file is small AND you will consume all of it for understanding/editing — Read directly
 
 RETURNS:
-  Only what your code prints. The FILE_CONTENT variable holds the raw bytes inside the sandbox; nothing else leaves. When \`intent\` is set and output exceeds the auto-index threshold, the response carries searchable section titles + previews instead of the raw stdout.
+  Only what your code prints. The FILE_CONTENT variable holds the raw bytes inside the sandbox; nothing else leaves. Output is request-local by default; \`intent\` searches a large result only within this call. Later ctx_search recall requires explicit verified persistence.
 
 EXAMPLE: ctx_execute_file(path: "huge.log", language: "javascript", code: "const errs = FILE_CONTENT.split('\\\\n').filter(l => /ERROR|FATAL/.test(l)); console.log(\`\${errs.length} error lines\`); console.log(errs.slice(-5).join('\\\\n'))")
 EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const rows = FILE_CONTENT.split('\\\\n'); console.log(\`rows: \${rows.length - 1}, header: \${rows[0]}\`)")`,
@@ -2352,9 +2381,13 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
           ? "What to match in large output. Restricted mode searches only request memory and never writes the file or result to FTS5."
           : "What you're looking for in the output. When provided and output is large (>5KB), " +
             "returns only matching sections via BM25 search instead of truncated output."),
+      persistence: ExecutionPersistenceSchema
+        .optional()
+        .default({ mode: "none" })
+        .describe("Default none keeps output request-local. verified persists only successful output with bounded locally verified provenance."),
     }),
   },
-  async ({ path, language, code, timeout, intent }) => {
+  async ({ path, language, code, timeout, intent, persistence }) => {
     const decision = currentExecutionPolicy();
     const invocation = validateRestrictedInvocation(decision, { language, filePath: path });
     if (!invocation.ok) {
@@ -2365,11 +2398,9 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
       );
     }
 
-    // Security (#852): confine the processed file to the project root so
-    // ctx_execute_file cannot be used to escape the host's sandbox/permission
-    // controls. Runs before the deny-glob check — boundary first, then policy.
-    const boundaryDenied = checkProjectBoundary(path, "ctx_execute_file");
-    if (boundaryDenied) return finalizeExecutionResponse(decision, "ctx_execute_file", boundaryDenied);
+    if (decision.mode === "restricted" && persistence.mode === "verified") {
+      return executionPolicyErrorResult(decision, "ctx_execute_file", "CTX_EXEC_PERSISTENCE_FORBIDDEN");
+    }
 
     // Security: check file path against Read deny patterns
     const pathDenied = checkFilePathDenyPolicy(path, "ctx_execute_file");
@@ -2419,34 +2450,24 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
             isError,
           });
         }
-        if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
-          trackIndexed(Buffer.byteLength(output));
+        if (Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
           return finalizeExecutionResponse(decision, "ctx_execute_file", {
             content: [
-              { type: "text" as const, text: `${echo}${intentSearch(output, intent, isError ? `file:${path}:error` : `file:${path}`)}` },
-            ],
-            isError,
-          });
-        }
-        // Auto-index large error output into FTS5 — no data loss
-        if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
-          trackIndexed(Buffer.byteLength(output));
-          return finalizeExecutionResponse(decision, "ctx_execute_file", {
-            content: [
-              { type: "text" as const, text: `${echo}${intentSearch(output, "errors failures exceptions", isError ? `file:${path}:error` : `file:${path}`)}` },
+              { type: "text" as const, text: `${echo}${requestLocalOutput(output, `file:${path}:error`, intent)}` },
             ],
             isError,
           });
         }
         return finalizeExecutionResponse(decision, "ctx_execute_file", {
           content: [
-            { type: "text" as const, text: `${echo}${output}` },
+            { type: "text" as const, text: `${echo}Persisted: no (failed output).\n\n${output}` },
           ],
           isError,
         });
       }
 
-      const stdout = result.stdout || "(no output)";
+      const rawStdout = result.stdout ?? "";
+      const stdout = rawStdout || "(no output)";
 
       if (decision.mode === "restricted") {
         return finalizeExecutionResponse(decision, "ctx_execute_file", {
@@ -2454,32 +2475,23 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
         });
       }
 
-      if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
-        trackIndexed(Buffer.byteLength(stdout));
+      if (persistence.mode === "verified") {
         return finalizeExecutionResponse(decision, "ctx_execute_file", {
           content: [
-            { type: "text" as const, text: `${echo}${intentSearch(stdout, intent, `file:${path}`)}` },
+            { type: "text" as const, text: `${echo}${persistVerifiedOutput(rawStdout, intent, persistence)}` },
           ],
         });
       }
 
-      // Auto-index large stdout into FTS5 — return pointer, not raw content
-      if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
-        const indexed = indexStdout(stdout, `file:${path}`);
-        const echoed = {
-          ...indexed,
-          content: indexed.content.map((c, i) =>
-            i === 0 && c.type === "text"
-              ? { ...c, text: `${echo}${(c as { text: string }).text}` }
-              : c,
-          ),
-        };
-        return finalizeExecutionResponse(decision, "ctx_execute_file", echoed);
+      if (Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
+        return finalizeExecutionResponse(decision, "ctx_execute_file", {
+          content: [{ type: "text" as const, text: `${echo}${requestLocalOutput(stdout, `file:${path}`, intent)}` }],
+        });
       }
 
       return finalizeExecutionResponse(decision, "ctx_execute_file", {
         content: [
-          { type: "text" as const, text: `${echo}${stdout}` },
+          { type: "text" as const, text: `${echo}Persisted: no (request-only).\n\n${stdout}` },
         ],
       });
     } catch (err: unknown) {
@@ -2510,17 +2522,16 @@ server.registerTool(
       idempotentHint: false,
       openWorldHint: false,
     },
-    description: `Store content in a searchable knowledge base (BM25 over FTS5). Splits markdown by headings, keeps code blocks intact, and persists the raw chunks. The full content stays in storage — retrieve any section on-demand via ctx_search; nothing is summarized or truncated.
+    description: `Explicitly retain locally verified content in a searchable knowledge base (BM25 over FTS5). Splits markdown by headings, keeps code blocks intact, and persists the raw chunks until purged.
 
 WHEN:
-  - Documentation from Context7, Skills, or MCP tools (API docs, framework guides, code examples)
-  - API references (endpoint details, parameter specs, response schemas)
-  - MCP tools/list output (exact tool signatures and descriptions)
-  - Skill prompts and instructions that are too large to keep verbatim in conversation
-  - README files, migration guides, changelog entries
-  - Any content with code examples you may need to reference precisely later
+  - The user explicitly wants later recall of a selected local file or bounded directory
+  - An external candidate has first been saved locally, checked against an authoritative source, and explicitly approved for retention
+  - A narrow API reference, README, migration guide, or other stable document must be queried repeatedly
 
 WHEN NOT:
+  - Whole-repository source scanning, live code search, symbol/call analysis, or authoritative project facts — use current local tools or an approved CodeGraph index
+  - Unverified Fast Context, web, external API, or other external candidates
   - Log files, test output, CSV, or build output — use ctx_execute_file, which processes in-sandbox without persisting bytes
   - Single-use ephemeral content you will not query later — keep it inline if it fits, or ctx_execute_file it
 
@@ -2540,7 +2551,7 @@ EXAMPLE: ctx_index(path: "/path/to/large-spec.md", source: "openapi-v2-spec")`,
         .string()
         .optional()
         .describe(
-          "File OR directory path to read and index (content never enters context). Provide this OR content. Directory paths trigger a bounded recursive walk (#687).",
+          "Locally verified file OR deliberately selected bounded directory to retain. Not a default whole-repository indexer. Provide this OR content.",
         ),
       source: z
         .string()
@@ -2840,9 +2851,9 @@ server.registerTool(
       idempotentHint: true,
       openWorldHint: false,
     },
-    description: `Search a unified knowledge base with a multi-strategy ranking pipeline. Two parallel matchers run on every query: a Porter-stemming matcher ("caching" finds "cached", "caches", "cach") and a trigram-substring matcher ("useEff" finds "useEffect"). Their ranked lists are merged via Reciprocal Rank Fusion, so a document that ranks well in both surfaces above one that wins only on a single strategy. Multi-term queries get an additional proximity-rerank pass that boosts passages where the query terms appear close together. Typos are corrected via Levenshtein distance and re-searched. Result snippets are window-extracted around the matched terms, not blindly truncated.
+    description: `Search content that already exists in context-mode's persistent FTS5 knowledge base. This is not online search, a live filesystem or repository scan, CodeGraph-style relationship analysis, or an authoritative source of current project facts. Porter stemming, trigram substring matching, Reciprocal Rank Fusion, proximity reranking, typo correction, and matched-term windows improve retrieval.
 
-The knowledge base is unified: queries reach indexed content you stored (ctx_index, ctx_fetch_and_index, ctx_batch_execute output) AND auto-captured session memory written by hooks (decisions, errors, blockers, plans, user prompts, rejected approaches, tool failures, compaction guides — 26 event categories). File-backed sources carry a content hash and auto-flag staleness when the source file changes.
+Queries reach content explicitly retained by ctx_index, trusted ctx_fetch_and_index calls, verified execution persistence, and auto-captured session memory written by hooks. Default ctx_execute, ctx_execute_file, and ctx_batch_execute output is request-local and is not visible here. File-backed sources carry a content hash and can flag staleness when the source file changes.
 
 WHEN:
   - You want to recall something that exists in storage (recently indexed content, prior session events, auto-memory) instead of re-reading raw sources
@@ -2852,7 +2863,7 @@ WHEN:
   - You want to filter ranked results by content shape (pass \`contentType: "code"\` to surface implementation snippets or \`contentType: "prose"\` to surface explanations)
 
 WHEN NOT:
-  - The data you want to query has never been stored in the knowledge base AND no session memory has accumulated around it — capture first (run a gather-and-index call), then come back here to query
+  - The data has never been explicitly retained and no session memory covers it — use current local tools, CodeGraph, or request-local context-mode processing instead
   - You have one ad-hoc question against data that is not in the knowledge base — answer it inline by running code in the sandbox tool; one round-trip instead of capture-then-query
 
 RETURNS:
@@ -2879,9 +2890,9 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
         return trackResponse("ctx_search", {
           content: [{
             type: "text" as const,
-            text: "Knowledge base is empty. Index content first with " +
-              "ctx_batch_execute(commands, queries), ctx_fetch_and_index(url), or " +
-              "ctx_index(content, source), then search again.",
+            text: "Knowledge base is empty. Query current data with local tools or request-local execution. " +
+              "For later recall, explicitly retain locally verified content with ctx_index(path, source), " +
+              "verified execution persistence, or a trusted ctx_fetch_and_index request.",
           }],
           isError: true,
         });
@@ -3416,18 +3427,20 @@ server.registerTool(
       idempotentHint: false,
       openWorldHint: true,
     },
-    description: `Fetches URL content, converts HTML to markdown (JSON is chunked by key paths, plain text indexed directly), persists it in a searchable knowledge base, and returns a small preview window per source. The raw page bytes never enter your conversation — they live in storage and you retrieve any section on-demand via ctx_search.
+    description: `Explicitly fetch and retain user-selected, trusted URL content. HTML is converted to markdown, JSON is chunked by key path, and plain text is indexed directly. This tool performs network I/O and persistent FTS5 writes; it is not the default web or external-candidate workflow.
 
 Caching: every fetch is cached on disk and reused for repeat calls within the TTL window. The default TTL is 24 hours; override per-call with the \`ttl\` parameter (milliseconds, \`ttl: 0\` bypasses cache like \`force: true\`). Stored content older than 14 days is cleaned up on startup.
 
 WHEN:
-  - You need web content (docs, changelogs, API references, spec pages) and the raw page bytes should NOT enter your conversation
+  - The user selected a trusted documentation/spec URL and explicitly wants persistent later recall
   - Multi-URL research (library evaluation, migration scans, doc comparisons): pass the \`requests\` array and a \`concurrency\` value 2-8 for parallel I/O
   - You want repeat lookups against the same URL to be cheap (TTL cache hits return only a hint, no re-fetch)
   - You want a long-lived cache window (override \`ttl\` upward for stable specs) or a guaranteed-fresh fetch (\`ttl: 0\` or \`force: true\`)
 
 WHEN NOT:
-  - You already have the content locally — store it via the inline index tool
+  - Fast Context or another external tool returned an unverified candidate — preserve its direct protocol, verify locally, and do not persist by default
+  - One-shot web/API analysis that does not require retention — use the original protocol or a host-written artifact with ctx_execute_file
+  - You already have locally verified content — retain a selected path with ctx_index(path) only when later recall is explicitly needed
   - The page is SPA-rendered (JavaScript-required to materialize content) — this is a plain HTTP fetch, no headless browser
 
 RETURNS:
@@ -3678,7 +3691,8 @@ server.registerTool(
     title: RESTRICTED_EXECUTION_SERVER
       ? "Restricted project read-only batch execution"
       : "Batch Execute & Search",
-    // #846: runs arbitrary shell commands (with network) and indexes output.
+    // #846: runs arbitrary shell commands (with network). Successful output
+    // stays request-local unless verified persistence is explicitly requested.
     annotations: RESTRICTED_EXECUTION_SERVER ? {
       readOnlyHint: true,
       destructiveHint: false,
@@ -3692,22 +3706,22 @@ server.registerTool(
     },
     description: `${RESTRICTED_EXECUTION_SERVER ? `Server policy: project-contained read-only shell execution, no network, no persistent index, and request-local query results only.
 
-` : ""}Run multiple commands in ONE call. Every command's output is ${RESTRICTED_EXECUTION_SERVER ? "queried only in request memory" : "auto-indexed into the knowledge base"}; if you also pass \`queries\`, the matching sections come back in the same round trip so a follow-up search call is not needed.
+` : ""}Run multiple commands in ONE call. Successful command output is queried in request memory by default; if you also pass \`queries\`, matching sections come back in the same round trip. Explicit \`persistence.mode=verified\` is required to make verified successful output available to later ctx_search calls. Failed output is never persisted.
 
-Concurrency parallelizes the FETCH phase (run-the-commands). The DERIVATION phase — turning raw output into an answer — still belongs in code: add a processing command that consumes the indexed output and prints only the answer, so the raw bytes never enter your conversation (Think-in-Code, same principle as the sandbox tool).
+Concurrency parallelizes the FETCH phase (run-the-commands). The DERIVATION phase — turning raw output into an answer — still belongs in code: add a processing command that consumes locally available data and prints only the answer, so the raw bytes never enter your conversation (Think-in-Code, same principle as the sandbox tool).
 
 WHEN:
   - You have 3+ related commands you would otherwise run sequentially (multi-issue lookups, git log + git diff + git blame, multi-file reads, multi-region cloud queries)
   - You want to gather AND query in one round trip — pass \`queries\` so the matching sections come back inline
   - ${RESTRICTED_EXECUTION_SERVER ? "You want to parallelize independent reads inside the trusted project — pass `concurrency` 2-8" : "You want to parallelize I/O-bound work — pass `concurrency` 2-8 (network calls, gh CLI, cloud APIs, multi-repo git reads)"}
-  - ${RESTRICTED_EXECUTION_SERVER ? "You need bounded request-local matches without retaining output for later search" : "The combined output is large enough that piping it through ctx_search later would itself be expensive — let auto-index + inline queries do both in one shot"}
+  - You need bounded request-local matches without retaining output for later search
 
 WHEN NOT:
   - Single command with no follow-up query — run it in the sandbox tool directly
   - CPU-bound or stateful commands — keep concurrency at 1 (npm test, build, lint, port-binding servers, lock-file holders, anything that races on the same resource)
 
 RETURNS:
-  ${RESTRICTED_EXECUTION_SERVER ? "Request-local section list plus bounded matches per query; persisted=no and later ctx_search cannot recall the output." : "Auto-indexed section list per command label, plus top matches per query (when `queries` is passed)."} Raw output is NOT echoed in full — only the matched windows. Concurrency>1 switches each command to its own per-command timeout (no shared budget); concurrency=1 preserves the legacy shared-budget cascading-skip-on-timeout path.
+  Request-local section list plus bounded matches per query by default; persisted=no and later ctx_search cannot recall the output. With explicit verified persistence, successful stdout is indexed under the caller-supplied source with provenance. Raw output is NOT echoed in full — only matched windows. Concurrency>1 switches each command to its own per-command timeout (no shared budget); concurrency=1 preserves the legacy shared-budget cascading-skip-on-timeout path.
 
 EXAMPLE: ctx_batch_execute(
   commands: [
@@ -3742,7 +3756,7 @@ EXAMPLE: ctx_batch_execute(
         .min(1)
         .describe(RESTRICTED_EXECUTION_SERVER
           ? "Search queries over this request's output only. Results are bounded and discarded after the response."
-          : "Search queries to extract information from indexed output. Use 5-8 comprehensive queries. " +
+          : "Search queries to extract information from successful output within this request. Use 5-8 comprehensive queries. " +
             "Each returns top 5 matching sections with full content. " +
             "This is your ONLY chance — put ALL your questions here. No follow-up calls needed.")),
       timeout: z
@@ -3775,9 +3789,13 @@ EXAMPLE: ctx_batch_execute(
           ? "Restricted mode accepts only `batch`, which searches request-local output. `global` is rejected because persistent index access is outside the execution contract."
           : "Scope for `queries` (default: `batch`). `batch` searches ONLY the chunks produced by this batch's commands. " +
             "`global` searches the entire persistent index (same scope as ctx_search)."),
+      persistence: ExecutionPersistenceSchema
+        .optional()
+        .default({ mode: "none" })
+        .describe("Default none keeps successful command bodies request-local. verified persists only successful stdout with bounded locally verified provenance."),
     }),
   },
-  async ({ commands, queries, timeout, concurrency, cwd, query_scope }) => {
+  async ({ commands, queries, timeout, concurrency, cwd, query_scope, persistence }) => {
     const decision = currentExecutionPolicy();
     const invocation = validateRestrictedInvocation(decision, {
       language: "shell",
@@ -3791,7 +3809,9 @@ EXAMPLE: ctx_batch_execute(
         invocation.errorCode ?? "CTX_EXEC_POLICY_INVALID",
       );
     }
-
+    if (decision.mode === "restricted" && persistence.mode === "verified") {
+      return executionPolicyErrorResult(decision, "ctx_batch_execute", "CTX_EXEC_PERSISTENCE_FORBIDDEN");
+    }
     // Security: check each command against deny patterns
     for (const cmd of commands) {
       const denied = checkDenyPolicy(cmd.command, "batch_execute");
@@ -3800,16 +3820,23 @@ EXAMPLE: ctx_batch_execute(
 
     try {
       // Inject NODE_OPTIONS for FS read tracking in spawned Node processes.
-      // The executor denies NODE_OPTIONS in its env (security), so we set it
-      // as an inline shell prefix. This only affects child `node` invocations.
+      // The executor denies NODE_OPTIONS in its env (security), so a shell
+      // preamble initializes it before the caller's complete, unmodified script.
       const nodeOptsPrefix = decision.mode === "compatibility"
         ? buildBatchNodeOptionsPrefix(runtimes.shell, CM_FS_PRELOAD)
         : "";
 
-      // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
-      // Concurrency>1 switches to a worker pool with per-command timeouts.
+      // Full output is retained for this response; only successful stdout is
+      // eligible for request-local queries or explicit verified persistence.
       const effTimeout = resolveExecTimeout(timeout);
-      const { outputs: perCommandOutputs, statuses, timedOut } = await runBatchCommands(
+      const {
+        outputs: perCommandOutputs,
+        searchableOutputs,
+        searchableBodies,
+        statuses,
+        exitCodes,
+        timedOut,
+      } = await runBatchCommands(
         commands,
         {
           timeout: effTimeout,
@@ -3825,6 +3852,8 @@ EXAMPLE: ctx_batch_execute(
       );
 
       const stdout = perCommandOutputs.join("\n");
+      const requestLocalStdout = searchableOutputs.filter(Boolean).join("\n");
+      const persistentStdout = searchableBodies.filter((body) => body.trim()).join("\n\n");
       const totalBytes = Buffer.byteLength(stdout);
       const totalLines = stdout.split("\n").length;
 
@@ -3857,25 +3886,68 @@ EXAMPLE: ctx_batch_execute(
           }),
           formatBatchCommandProof(commands, statuses),
           "",
-          formatEphemeralSearch(stdout, queries, source, PRESENTATION_POLICY, { compactWrapper: true }),
+          formatEphemeralSearch(requestLocalStdout || "(no successful command output)", queries, source, PRESENTATION_POLICY, { compactWrapper: true }),
         ].join("\n");
         return finalizeExecutionResponse(decision, "ctx_batch_execute", {
           content: [{ type: "text" as const, text: output }],
         });
       }
 
-      // Track indexed bytes (raw data that stays in sandbox)
-      trackIndexed(totalBytes);
+      if (persistence.mode === "none") {
+        const queryOutput = query_scope === "global"
+          ? formatBatchQueryResults(getStore(), queries, source, undefined, "global").join("\n")
+          : formatEphemeralSearch(
+              requestLocalStdout || "(no successful command output)",
+              queries,
+              source,
+              PRESENTATION_POLICY,
+              { compactWrapper: true },
+            );
+        const output = [
+          formatBatchSummary(commands, statuses, totalLines, totalBytes, {
+            persisted: false,
+            queries: queries.length,
+            queryScope: query_scope,
+          }),
+          formatBatchCommandProof(commands, statuses),
+          "",
+          queryOutput,
+        ].join("\n");
+        return finalizeExecutionResponse(decision, "ctx_batch_execute", {
+          content: [{ type: "text" as const, text: output }],
+          isError: statuses.some((status) => status === "failed" || status === "error" || status === "timed_out"),
+        });
+      }
 
-      // Index into knowledge base — markdown heading chunking splits by # labels
+      if (!persistentStdout.trim()) {
+        return finalizeExecutionResponse(decision, "ctx_batch_execute", {
+          content: [{
+            type: "text" as const,
+            text: `${formatBatchSummary(commands, statuses, totalLines, totalBytes, { persisted: false, queries: 0, queryScope: query_scope })}\n${formatBatchCommandProof(commands, statuses)}\nNo successful stdout was eligible for verified persistence. Exit codes: ${exitCodes.map((code) => code ?? "not-run").join(", ")}.`,
+          }],
+          isError: true,
+        });
+      }
+
+      trackIndexed(Buffer.byteLength(persistentStdout));
+
+      // Persist only successful stdout bodies. Labels, command echoes, stderr,
+      // status text, and renderer diagnostics remain response-only evidence.
       const store = getStore();
-      const indexed = store.index({ content: stdout, source, attribution: currentAttribution() });
+      const indexed = store.indexPlainText(
+        persistentStdout,
+        persistence.source,
+        undefined,
+        currentAttribution(),
+        undefined,
+        buildVerifiedProvenance(persistentStdout, persistence),
+      );
 
       // Run all search queries — default scope is batch-local (legacy behavior).
       // When the caller passes query_scope: "global", searches reach the entire
       // persistent index in the same round trip. Cross-source search remains
       // available via explicit ctx_search() as well.
-      const queryResults = formatBatchQueryResults(store, queries, source, undefined, query_scope);
+      const queryResults = formatBatchQueryResults(store, queries, persistence.source, undefined, query_scope);
 
       // Get searchable terms for edge cases where follow-up is needed
       const distinctiveTerms = store.getDistinctiveTerms
@@ -3887,7 +3959,7 @@ EXAMPLE: ctx_batch_execute(
         formatBatchSummary(commands, statuses, totalLines, totalBytes, {
           persisted: true,
           indexedSections: indexed.totalChunks,
-          indexedSource: source,
+          indexedSource: persistence.source,
           queries: queries.length,
           queryScope: query_scope,
         }),
@@ -3899,6 +3971,7 @@ EXAMPLE: ctx_batch_execute(
 
       return finalizeExecutionResponse(decision, "ctx_batch_execute", {
         content: [{ type: "text" as const, text: output }],
+        isError: statuses.some((status) => status === "failed" || status === "error" || status === "timed_out"),
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -4456,6 +4529,15 @@ server.registerTool(
         lines.push(`${prefix} ${result.check}: ${result.message}${fix}`);
       }
 
+      const registration = diagnosticAdapter.checkPluginRegistration(pluginRoot);
+      const registrationPrefix = registration.status === "pass"
+        ? "[OK]"
+        : registration.status === "warn"
+          ? "[WARN]"
+          : "[FAIL]";
+      const registrationFix = registration.fix ? ` — fix: ${registration.fix}` : "";
+      lines.push(`${registrationPrefix} ${registration.check}: ${registration.message}${registrationFix}`);
+
       const hookScriptPaths = getHookScriptPaths(diagnosticAdapter, pluginRoot);
       if (hookScriptPaths.length === 0) {
         lines.push("[OK] Hook scripts: no direct .mjs script paths to verify");
@@ -4730,6 +4812,7 @@ WHEN NOT:
 
 SCOPES (pass exactly one):
   - Per-session: ctx_purge(confirm: true, sessionId: "<uuid>") deletes that session's events (auto-captured decisions, errors, plans, user prompts, rejected approaches, etc.) and per-session FTS5 chunks; sibling sessions and stats file are preserved.
+  - Per-source: ctx_purge(confirm: true, scope: "source", source: "<exact label>") deletes one exact FTS5 source and its chunks; session events and stats are preserved.
   - Per-project: ctx_purge(confirm: true, scope: "project") wipes FTS5 knowledge base, every session DB row, events markdown, and resets the stats file. Use ctx_stats first to preview category counts before purging.
 
 CONTRACT:
@@ -4742,6 +4825,7 @@ RETURNS:
   A summary of removed rows + the resolved scope.
 
 EXAMPLE: ctx_purge(confirm: true, sessionId: "7c8a-1234-5678-9abc-def012345678")
+EXAMPLE: ctx_purge(confirm: true, scope: "source", source: "verified-build-output")
 EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
     // NOTE: schema MUST be a plain z.object — no .refine()/.transform()/
     // .superRefine() wrapper. See block comment above & issue #563. The
@@ -4759,25 +4843,27 @@ EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
         "session's events + per-session FTS5 chunks. Sibling sessions and the " +
         "stats file are preserved. MUST NOT be combined with scope:'project'."
       ),
-      scope: z.enum(["session", "project"]).optional().describe(
+      scope: z.enum(["session", "source", "project"]).optional().describe(
         "Explicit scope selector. 'session' REQUIRES sessionId. 'project' wipes " +
         "the entire project (FTS5 + every session + stats). Omit only for the " +
         "deprecated bare-{confirm:true} back-compat path."
       ),
+      source: z.string().min(1).max(160).optional().describe(
+        "Exact persistent FTS5 source label. Required with scope:'source' and invalid for other scopes."
+      ),
     }),
   },
-  async ({ confirm, sessionId, scope }) => {
+  async ({ confirm, sessionId, scope, source }) => {
     // Cross-field ambiguity check — formerly a schema .refine(), moved
     // into the handler so the inputSchema stays a plain ZodObject and
     // the MCP SDK can serialize `.shape` into JSON Schema (issue #563).
     // Same human-readable message as the original refine() preserved.
-    if (sessionId && scope === "project") {
+    if ((sessionId && scope !== undefined && scope !== "session") || (source && scope !== "source")) {
       return trackResponse("ctx_purge", {
         content: [{
           type: "text" as const,
           text:
-            "Ambiguous purge: sessionId implies scope:'session', cannot combine with scope:'project'. " +
-            "Use scope:'project' WITHOUT sessionId for the legacy whole-project wipe.",
+            "Ambiguous purge: sessionId is valid only for session scope and source is valid only for source scope.",
         }],
         isError: true,
       });
@@ -4790,6 +4876,23 @@ EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
         }],
       });
     }
+    if (scope === "source") {
+      if (!source) {
+        return trackResponse("ctx_purge", {
+          content: [{ type: "text" as const, text: "Source purge requires an exact source label." }],
+          isError: true,
+        });
+      }
+      const removed = getStore().removeSource(source);
+      return trackResponse("ctx_purge", {
+        content: [{
+          type: "text" as const,
+          text: removed
+            ? `Purged exact source "${source}". Session events and stats preserved.`
+            : `No persistent source matched exact label "${source}". Nothing deleted.`,
+        }],
+      });
+    }
 
     // Effective scope resolution:
     //   - explicit scope wins
@@ -4797,7 +4900,9 @@ EXAMPLE: ctx_purge(confirm: true, scope: "project")`,
     //   - else "project" (back-compat — emit deprecation warning so
     //     callers migrate to the explicit form before a future major).
     const effectiveScope: "session" | "project" =
-      scope ?? (sessionId ? "session" : "project");
+      scope === "session" || scope === "project"
+        ? scope
+        : (sessionId ? "session" : "project");
     if (!scope && !sessionId) {
       console.warn(
         "[context-mode] ctx_purge: bare {confirm:true} is deprecated. " +
@@ -5172,7 +5277,28 @@ async function main() {
     transport as unknown as { onmessage?: (message: unknown, extra?: unknown) => unknown },
   );
 
+  // Detect the active host before deriving installation-channel behavior.
+  // Codex marketplace, npm, and source/Git installs have different version
+  // authorities and must not share the npm registry update path.
+  try {
+    const { detectPlatform, getAdapter } = await import("./adapters/detect.js");
+    const clientInfo = server.server.getClientVersion();
+    const signal = detectPlatform(clientInfo ?? undefined);
+    _detectedAdapter = await getAdapter(signal.platform);
+    if (clientInfo) {
+      console.error(`MCP client: ${clientInfo.name} v${clientInfo.version} → ${signal.platform}`);
+    }
+  } catch { /* best effort — _detectedAdapter stays null, falls back to .claude */ }
+
   // Write MCP readiness sentinel (#230)
+  const packageRoot = getPackageRoot();
+  const installedVersion = _detectedAdapter?.getInstalledVersion() ?? "standalone";
+  _installationChannel = inferInstallationChannel({
+    adapterName: _detectedAdapter?.name ?? "unknown",
+    installedVersion,
+    packageRoot,
+    sourceCheckout: existsSync(resolve(packageRoot, ".git")),
+  });
   if (!RESTRICTED_EXECUTION_SERVER) {
     try { writeFileSync(mcpSentinel, String(process.pid)); } catch { /* best effort */ }
   }
@@ -5188,17 +5314,6 @@ async function main() {
     }, 30_000);
     sentinelRefresh.unref();
   }
-
-  // Detect platform adapter — stored for platform-aware session paths
-  try {
-    const { detectPlatform, getAdapter } = await import("./adapters/detect.js");
-    const clientInfo = server.server.getClientVersion();
-    const signal = detectPlatform(clientInfo ?? undefined);
-    _detectedAdapter = await getAdapter(signal.platform);
-    if (clientInfo) {
-      console.error(`MCP client: ${clientInfo.name} v${clientInfo.version} → ${signal.platform}`);
-    }
-  } catch { /* best effort — _detectedAdapter stays null, falls back to .claude */ }
 
   // Restore tool-call counters from SessionDB BEFORE the heartbeat fires
   // so the very first persistStats() carries the prior PID's totals into
@@ -5229,7 +5344,7 @@ async function main() {
   // (some users keep the MCP server alive 24h+) catch new releases without a
   // restart. `.unref()` lets the process exit normally on SIGTERM regardless
   // of pending intervals.
-  if (!RESTRICTED_EXECUTION_SERVER) {
+  if (!RESTRICTED_EXECUTION_SERVER && channelUsesNpmRegistry(_installationChannel)) {
     fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
     setInterval(() => {
       fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });

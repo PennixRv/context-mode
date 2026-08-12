@@ -31,8 +31,8 @@ ${toolSearchBootstrap ? `
     0. MEMORY: ${t("ctx_search")}(sort: "timeline")
        - On resume or compaction, query prior decisions, errors, plans, user prompts before asking the user — auto-captured session memory is searchable.
     1. GATHER: ${t("ctx_batch_execute")}(commands, queries)
-       - Primary research tool. Runs commands in parallel, auto-indexes each output, and (when queries are passed) returns matching sections in the same round trip — no follow-up search call.
-       - Each command: {label: "section header", command: "shell command"}; the label becomes the FTS5 chunk title — descriptive labels improve search.
+       - Primary unbounded local-output tool. Runs commands in parallel and (when queries are passed) searches successful output in the same request. Output is not persistent unless verified persistence is explicitly requested.
+       - Each command: {label: "section header", command: "shell command"}; descriptive labels improve same-request matches.
     2. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
        - Multiple related questions about anything already indexed (your captures + session memory). Batch every question in one array; the ranking pipeline runs per-query and the round-trip cost is paid once.
     3. PROCESSING: ${t("ctx_execute")}(language, code) | ${t("ctx_execute_file")}(path, language, code)
@@ -42,7 +42,7 @@ ${toolSearchBootstrap ? `
   <when_not_to_use>
     - You intend to PROCESS the output (filter, count, parse, aggregate) → use ${t("ctx_batch_execute")} or ${t("ctx_execute")}. Bash stays correct when you intend to OBSERVE a short fixed output (git status on a clean tree, whoami, pwd) or when you are mutating state (git, mkdir, rm, mv, navigation).
     - You want to analyze, summarize, or extract from a file → use ${t("ctx_execute_file")}. Read stays correct when you intend to Edit the file (Edit needs the exact bytes in your conversation to match against).
-    - WebFetch → use ${t("ctx_fetch_and_index")}; full network access, results indexed for ${t("ctx_search")}, raw page bytes never enter your conversation.
+    - Web/lifecycle/interactive/structured MCP calls keep their original protocol. For a large result, ask the original tool to write a file and analyze it with ${t("ctx_execute_file")}. Use ${t("ctx_fetch_and_index")} only for a trusted source the user explicitly wants to retain.
     - ${t("ctx_execute")} and ${t("ctx_execute_file")} for file writes → these run code in a subprocess and discard the sandbox FS; they are for analysis, processing, and computation only.
   </when_not_to_use>
 
@@ -92,7 +92,7 @@ export function createBashGuidance(t) {
 }
 
 export function createExternalMcpGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    External MCP tools commonly return large payloads (channel history, file content, search results) that enter your conversation in full. When you intend to filter, count, or aggregate that data, pipe it through ' + t("ctx_execute") + '(language, code) — the raw payload stays in the sandbox and only the derived answer enters your conversation. For docs-style fetches you will want to query later, prefer ' + t("ctx_fetch_and_index") + '(url, source) then ' + t("ctx_search") + '(queries).\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    Preserve the external MCP tool\'s direct lifecycle, structured result, and error protocol. If it can write a large result to a host-approved file, analyze that artifact with ' + t("ctx_execute_file") + '(path, language, code). Do not wrap bounded protocol calls in ' + t("ctx_execute") + ' or persist unverified external candidates.\n  </tip>\n</context_guidance>';
 }
 
 // ── Backward compat: static exports defaulting to claude-code ──

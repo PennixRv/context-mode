@@ -6,18 +6,22 @@ context-mode MCP tools available. Rules protect context window from flooding. On
 
 Analyze/count/filter/compare/search/parse/transform data: **write code** via `ctx_execute(language, code)`, `console.log()` only the answer. Do NOT read raw data into context. PROGRAM the analysis, not COMPUTE it. Pure JavaScript — Node.js built-ins only (`fs`, `path`, `child_process`). `try/catch`, handle `null`/`undefined`. One script replaces ten tool calls.
 
+## Protocol passthrough
+
+Call lifecycle control, event waits, interactive actions, bounded structured results, and tools with dedicated status/error protocols directly. Never wrap Trellis/Governance, CodeGraph, Fast Context, or another bounded MCP call in context-mode execution. With an approved `.codegraph/`, use CodeGraph first for symbols, architecture, call paths, and impact. For a large structured result, have the original tool write a file and analyze it with `ctx_execute_file`; keep unverified external candidates non-persistent.
+
 ## BLOCKED — do NOT attempt
 
 ### curl / wget — BLOCKED
 Intercepted and replaced with error. Do NOT retry.
-Use: `ctx_fetch_and_index(url, source)` or `ctx_execute(language: "javascript", code: "const r = await fetch(...)")`
+For one-shot work, keep the bounded web protocol direct or save a large result and use `ctx_execute_file`. Use `ctx_fetch_and_index` only for trusted explicit retention.
 
 ### Inline HTTP — BLOCKED
 `fetch('http`, `requests.get(`, `requests.post(`, `http.get(`, `http.request(` — intercepted. Do NOT retry.
 Use: `ctx_execute(language, code)` — only stdout enters context
 
-### WebFetch — BLOCKED
-Use: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)`
+### Web and MCP protocols
+Keep bounded structured results direct. For large output, save with the original tool and use `ctx_execute_file`. Use `ctx_fetch_and_index` only for a trusted source explicitly selected for retention.
 
 ## REDIRECTED — use sandbox
 
@@ -34,11 +38,11 @@ Use `ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 ## Tool selection
 
 0. **MEMORY**: `ctx_search(sort: "timeline")` — after resume, check prior context before asking user.
-1. **GATHER**: `ctx_batch_execute(commands, queries)` — runs all commands, auto-indexes, returns search. ONE call replaces 30+. Each command: `{label: "header", command: "..."}`.
+1. **GATHER**: `ctx_batch_execute(commands, queries)` — searches successful output in this request; default output is not persistent. Each command: `{label: "header", command: "..."}`.
 2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — all questions as array, ONE call (default relevance mode).
 3. **PROCESSING**: `ctx_execute(language, code)` | `ctx_execute_file(path, language, code)` — sandbox, only stdout enters context.
-4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — raw HTML never enters context.
-5. **INDEX**: `ctx_index(content, source)` — store in FTS5 for later search.
+4. **WEB**: keep the original web protocol for bounded results; use `ctx_fetch_and_index(url, source)` only for a trusted source explicitly selected for retention.
+5. **INDEX**: `ctx_index(path, source)` — explicitly persist a locally verified artifact for later `ctx_search`; never the default whole-repository route.
 
 ## Parallel I/O batches
 

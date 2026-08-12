@@ -10,6 +10,17 @@ Use these tools directly. Do not inspect cached schema files under
 `~/.gemini/antigravity-cli/mcp/context-mode/*.json`, and do not run
 `ctx_execute` just to discover tool names or schemas.
 
+## Protocol passthrough
+
+Call lifecycle control, event waits, interactive actions, bounded structured
+results, and tools with dedicated status/error protocols directly. Never wrap
+Trellis/Governance, CodeGraph, Fast Context, or another bounded MCP call in
+context-mode execution. With an approved `.codegraph/`, use CodeGraph first for
+symbols, architecture, call paths, and impact. For a large structured result,
+have the original tool write a file and analyze it with
+`context-mode/ctx_execute_file`; keep unverified external candidates
+non-persistent.
+
 If agy uses the generic MCP wrapper, call `call_mcp_tool` with:
 
 - `ServerName`: `"context-mode"`
@@ -23,13 +34,14 @@ If agy uses the generic MCP wrapper, call `call_mcp_tool` with:
 - `context-mode/ctx_execute_file`: read one file into `FILE_CONTENT` inside the
   sandbox and run code over it. This is the context-mode file-read surface.
 - `context-mode/ctx_batch_execute`: run multiple repository commands in one
-  batch, index large output, and answer follow-up queries.
-- `context-mode/ctx_index`: store a file, directory, or content in the local
-  FTS5 knowledge base for later search.
-- `context-mode/ctx_search`: search indexed content and captured session
-  memory. Batch related questions in `queries`.
-- `context-mode/ctx_fetch_and_index`: fetch web content, store it, then query
-  with `ctx_search`.
+  batch and search successful output in the same request; output is not
+  persistent by default.
+- `context-mode/ctx_index`: explicitly retain a locally verified, selected
+  file or bounded directory in FTS5; never the default whole-repository route.
+- `context-mode/ctx_search`: search only previously persisted content and
+  captured session memory. It is not online or live repository search.
+- `context-mode/ctx_fetch_and_index`: fetch and retain a trusted source only
+  after explicit selection for persistent recall.
 - `context-mode/ctx_stats`: show context savings and current-session stats.
 - `context-mode/ctx_doctor`: diagnose context-mode runtime and hook health.
 - `context-mode/ctx_upgrade`: provide upgrade or repair guidance.
@@ -70,8 +82,9 @@ instead of many native `ListDir`, `Read`, `Grep`, or shell calls.
 
 For one-off computed answers, use `context-mode/ctx_execute`.
 For one-file analysis, use `context-mode/ctx_execute_file`.
-For durable recall across follow-up questions, use `context-mode/ctx_index`
-with a descriptive `source`, then `context-mode/ctx_search`.
+For explicitly requested durable recall of locally verified content, use
+`context-mode/ctx_index` with a descriptive `source`, then
+`context-mode/ctx_search`.
 
 Return concise derived answers. Do not paste raw command dumps, full files,
 large search results, cached schemas, or raw HTML into the conversation.

@@ -1076,13 +1076,14 @@ describe("Bin entry uses cli.bundle.mjs", () => {
   it("cli doctor treats standalone adapters as not version-comparable", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     const versionStart = src.indexOf("Checking versions");
-    const versionBlock = src.slice(versionStart, versionStart + 1800);
+    const versionBlock = src.slice(versionStart, versionStart + 4200);
 
-    expect(versionBlock).toContain('installedVersion === "standalone"');
+    expect(versionBlock).toContain("inferInstallationChannel");
+    expect(versionBlock).toContain('installationChannel === "standalone-git"');
+    expect(versionBlock).toContain("npm is not this installation's update source");
     expect(versionBlock).toContain("standalone MCP mode");
     expect(versionBlock).toContain("no platform plugin version to compare");
-    expect(versionBlock.indexOf('installedVersion === "standalone"'))
-      .toBeLessThan(versionBlock.indexOf('installedVersion === "not installed"'));
+    expect(versionBlock).toContain("no authoritative remote version source detected");
   });
 
   it("upgrade still reaches hook configuration when already on latest", () => {

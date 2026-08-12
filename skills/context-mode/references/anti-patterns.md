@@ -244,29 +244,11 @@ GOOD — specific and actionable:
 
 ---
 
-## 8. `ctx_execute` Captures, `ctx_search` Filters — Don't Merge the Layers
+## 8. Do Not Confuse Request-Local Analysis With Persistent Search
 
-`ctx_execute` and `ctx_search` are two layers, not one. `ctx_execute` exists to **capture** full output into the index. `ctx_search` exists to **filter** what was captured. When you narrow the output *inside* `ctx_execute` — at the shell layer, in script logic, anywhere upstream of capture — the dropped lines never reach the index. `ctx_search` cannot recover what was never written. You've spent the capture budget and lost the data you'd want to query later, for no context-window benefit: large stdout is already auto-indexed, not returned inline.
+`ctx_execute`, `ctx_execute_file`, and `ctx_batch_execute` keep output request-local by default. Use `intent` or same-batch `queries` to narrow large output during that call. `ctx_search` cannot retrieve it later unless a successful, locally verified result was explicitly persisted with bounded provenance.
 
-The mental model:
-
-```
-┌──────────────────────┐      ┌──────────────────────┐
-│   ctx_execute        │ ───▶ │   ctx_search         │
-│   (capture layer)    │      │   (filter layer)     │
-│                      │      │                      │
-│   produces full      │      │   queries the        │
-│   output into index  │      │   captured index     │
-└──────────────────────┘      └──────────────────────┘
-        ▲                              ▲
-        │                              │
-   Job: capture                   Job: narrow
-   Do NOT narrow here.            Do all narrowing here.
-```
-
-**Rule:** Treat `ctx_execute`'s output as write-once to the index. Run the command in full and let it index. Do every narrowing step downstream, via `ctx_search`. If you find yourself trimming inside `ctx_execute`, you are doing the filter layer's job in the capture layer — stop and move the narrowing to a `ctx_search` call.
-
-**Why the layer separation matters:** the index is what survives across calls and across sessions. Anything you discard before the index is gone permanently from this session's queryable surface. Anything you keep is queryable, repeatedly, with different questions, at zero re-execution cost.
+**Rule:** Print the smallest complete derived answer you need. Do not persist test output, logs, external candidates, failures, timeouts, titles, or command echoes merely to support a follow-up query. When durable recall is genuinely required, verify the source locally, choose a stable source label, request verified persistence explicitly, and retain the ability to purge that source exactly.
 
 ---
 

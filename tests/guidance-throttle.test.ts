@@ -31,14 +31,14 @@ describe("guidance throttle", () => {
     expect(r3).toBeNull();
   });
 
-  it("Bash: first call returns guidance, second returns null", () => {
-    // The positive managed grammar routes data reads/searches only. The
-    // throttle remains one-shot within that grammar.
+  it("Bash: every managed unbounded read retains aggregation guidance", () => {
+    // Issue 018 requires the component to keep its aggregation responsibility
+    // after the first command in a session.
     const r1 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
     const r2 = routePreToolUse("Bash", { command: "rg TODO src" }, PROJECT_DIR);
 
     expect(r1?.action).toBe("context");
-    expect(r2).toBeNull();
+    expect(r2?.action).toBe("context");
   });
 
   it("Grep: first call returns guidance, second returns null", () => {
@@ -59,13 +59,14 @@ describe("guidance throttle", () => {
     expect(bash1?.action).toBe("context");
     expect(grep1?.action).toBe("context");
 
-    // All second calls return null
+    // Read/Grep remain low-noise one-shot hints; managed Bash aggregation is
+    // enforced on every matching command.
     const read2 = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR);
     const bash2 = routePreToolUse("Bash", { command: "rg TODO src" }, PROJECT_DIR);
     const grep2 = routePreToolUse("Grep", { pattern: "bar" }, PROJECT_DIR);
 
     expect(read2).toBeNull();
-    expect(bash2).toBeNull();
+    expect(bash2?.action).toBe("context");
     expect(grep2).toBeNull();
   });
 
@@ -115,12 +116,12 @@ describe("guidance throttle", () => {
     expect(r2).toBeNull();
   });
 
-  it("Bash managed route returns null after guidance is throttled", () => {
+  it("Bash managed route remains active after other guidance is throttled", () => {
     const r1 = routePreToolUse("Bash", { command: "find /" }, PROJECT_DIR);
     expect(r1?.action).toBe("context");
 
     const r2 = routePreToolUse("Bash", { command: "rg TODO src" }, PROJECT_DIR);
-    expect(r2).toBeNull();
+    expect(r2?.action).toBe("context");
   });
 
   // Regression coverage for #298 — Windows/Git Bash spawns a new bash.exe per

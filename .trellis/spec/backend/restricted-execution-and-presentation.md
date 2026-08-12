@@ -91,8 +91,9 @@ hashBatchCommands(commands: readonly { label: string; command: string }[]): stri
 ### Execution Modes
 
 - Compatibility mode retains the historical resolver, writable subprocesses,
-  network, background execution, statistics, SessionDB events, and persistent
-  FTS5 indexing. Its tool annotations must remain explicitly non-read-only.
+  network, background execution, statistics, SessionDB events, and explicit
+  persistent FTS5 capabilities. Execution output itself is request-only by
+  default. Its tool annotations must remain explicitly non-read-only.
 - Restricted mode takes authority only from
   `CONTEXT_MODE_RESTRICTED_PROJECT_ROOT`; it never falls back to transcripts,
   `PWD`, or `process.cwd()`.
@@ -113,6 +114,21 @@ hashBatchCommands(commands: readonly { label: string; command: string }[]): stri
 
 ### Persistence And Lifecycle
 
+- Compatibility execution output is request-only by default. `intent` and
+  batch queries search successful output only within the current request;
+  output size never promotes it to FTS5 automatically.
+- Persistent execution output requires
+  `persistence: {mode: "verified", source, provenance}`. Provenance has one of
+  `local-file`, `local-command`, or `external-locally-verified`, a bounded
+  reference, verification time, and the SHA-256 of the complete persisted
+  body. Exact-source purge must remove it independently.
+- Failed, timed-out, skipped, empty, and executor-error output never becomes a
+  persistent source. Batch persistence includes successful raw stdout only,
+  not labels, command text, stderr, wrapper prose, or status text.
+- `ctx_search` queries only existing persistent FTS5 content. It is not online
+  search, a live repository scan, CodeGraph relationship analysis, or a current
+  project authority. `ctx_index` retains selected locally verified paths; it is
+  not the default whole-repository indexer.
 - Restricted execution results bypass `trackResponse()`, `ContentStore`,
   SessionDB event writes, statistics files, tool-call counters, and version
   network checks.
@@ -158,9 +174,9 @@ hashBatchCommands(commands: readonly { label: string; command: string }[]): stri
   result snippets consume the shared `PresentationPolicy`; handlers must not
   introduce independent response limits for the same concepts.
 - Normal queried `ctx_batch_execute` output has exactly two non-empty wrapper
-  lines before the first query heading: an execution/persistence/index/query
-  summary with the exact persistent source, then every bounded command in
-  input order plus one canonical batch digest. It does not repeat
+  lines before the first query heading: an execution/persistence/query summary,
+  then every bounded command in input order plus one canonical batch digest.
+  Verified persistence also reports the exact persistent source. It does not repeat
   `## Commands`, `## Indexed Sections`, or a five-field ledger per command.
   Restricted mode uses the same command proof, reports `Persisted: no`, keeps
   request-local section discovery after matches, and never writes FTS5.
@@ -194,7 +210,8 @@ hashBatchCommands(commands: readonly { label: string; command: string }[]): stri
 | Positive presentation value is below/above range | Clamp to the documented minimum/maximum |
 | Source is truncated | Keep preview plus shown/original/omitted/truncated/digest facts |
 | Command is truncated | Keep actual preview, explicit ellipsis, shown/original counts, and full digest |
-| Queried batch succeeds in compatibility mode | Two wrapper lines before matches; exact persistent source and every command remain visible |
+| Queried batch succeeds with default persistence | Two wrapper lines before matches; `Persisted: no`, request-local scope, and every command remain visible |
+| Queried batch succeeds with verified persistence | Exact persistent source, successful-body section count, and every command remain visible |
 | Batch command times out, is skipped, or errors | Preserve its input position and explicit status in the command proof |
 | Restricted batch succeeds | Report request-local scope and `Persisted: no`; no FTS5 or stats write |
 | Typed state has an update notice | Keep compact JSON in `content[0]`; append notice as later text content |
@@ -210,10 +227,11 @@ path or source body.
   `bubblewrap`; all three entrances read project data, cannot write or reach a
   host listener, use request-only result matching, and return bounded source
   provenance.
-- Good presentation: queried batch returns execution/index/source/query facts
-  on line one, all actual bounded commands plus canonical digest on line two,
-  then complete matches. Typed state returns compact parseable JSON and an
-  identical structured object.
+- Good presentation: a default queried batch returns execution/persistence/query
+  facts on line one, all actual bounded commands plus canonical digest on line
+  two, then complete request-local matches. Verified persistence adds the exact
+  source and indexed successful-body count. Typed state returns compact
+  parseable JSON and an identical structured object.
 - Base: no execution mode is configured. Existing writable, networked,
   persistent behavior remains available and its tool metadata says so. If no
   presentation value is set in the Codex parent, the MCP uses the documented

@@ -13,8 +13,8 @@ const DEFAULT_HOOK_EVENTS = [
 ];
 const RECOVERY_BRIEF_MATCHER =
   "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$";
-const CODEX_CTX_EXECUTE_MATCHER =
-  "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$";
+const CODEX_CTX_TOOL_MATCHER =
+  "^(ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__context_mode__ctx_execute|mcp__context_mode__ctx_execute_file|mcp__context_mode__ctx_batch_execute|mcp__context_mode__ctx_fetch_and_index|mcp__context_mode__ctx_search|mcp__context_mode__ctx_index|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute|mcp__plugin_context-mode_context-mode__ctx_fetch_and_index|mcp__plugin_context-mode_context-mode__ctx_search|mcp__plugin_context-mode_context-mode__ctx_index)$";
 
 describe("Codex default external MCP isolation", () => {
   let adapter: CodexAdapter;
@@ -32,17 +32,17 @@ describe("Codex default external MCP isolation", () => {
     expect(config).not.toHaveProperty("Stop");
   });
 
-  it("matches only owned Codex ctx_execute MCP forms while retaining bare ctx tools", () => {
+  it("keeps native tools, RecoveryBrief, and owned ctx aliases in disjoint groups", () => {
     const config = adapter.generateHookConfig("/some/plugin/root");
     const matcher = config.PreToolUse?.[0]?.matcher ?? "";
     const ownedMcpMatcher = config.PreToolUse?.[2]?.matcher ?? "";
 
-    expect(matcher).toContain("ctx_execute");
-    expect(matcher).toContain("ctx_search");
+    expect(matcher).not.toContain("ctx_execute");
+    expect(matcher).not.toContain("ctx_search");
     expect(config.PreToolUse?.map((entry) => entry.matcher)).toEqual([
       matcher,
       RECOVERY_BRIEF_MATCHER,
-      CODEX_CTX_EXECUTE_MATCHER,
+      CODEX_CTX_TOOL_MATCHER,
     ]);
     const matcherPattern = new RegExp(ownedMcpMatcher);
     expect(matcherPattern.test("mcp__context_mode__ctx_execute")).toBe(true);
@@ -64,9 +64,9 @@ describe("Codex default external MCP isolation", () => {
       expect(Object.keys(manifest.hooks).sort()).toEqual(DEFAULT_HOOK_EVENTS);
       const preToolMatchers = manifest.hooks.PreToolUse?.map((entry) => entry.matcher) ?? [];
       expect(preToolMatchers).toEqual([
-        expect.stringContaining("ctx_execute"),
+        expect.not.stringContaining("ctx_execute"),
         RECOVERY_BRIEF_MATCHER,
-        CODEX_CTX_EXECUTE_MATCHER,
+        CODEX_CTX_TOOL_MATCHER,
       ]);
       expect(preToolMatchers[1]).not.toMatch(/mcp__\*|mcp__\|/);
       expect(preToolMatchers[1]).not.toContain("ctx_recovery_brief_init");

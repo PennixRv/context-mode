@@ -182,11 +182,24 @@ describe(".codex-plugin/hooks.json", () => {
     expect(hooks.hooks.Stop).toBeUndefined();
 
     const preToolMatchers = hooks.hooks.PreToolUse?.map((entry) => entry.matcher ?? "") ?? [];
-    expect(preToolMatchers).toEqual([
-      expect.stringContaining("ctx_execute"),
+    expect(preToolMatchers).toHaveLength(3);
+    expect(preToolMatchers[0]).toContain("local_shell");
+    expect(preToolMatchers[0]).not.toContain("ctx_execute");
+    expect(preToolMatchers[1]).toBe(
       "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$",
-      "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$",
-    ]);
+    );
+    for (const name of [
+      "ctx_execute",
+      "ctx_execute_file",
+      "ctx_batch_execute",
+      "ctx_fetch_and_index",
+      "ctx_search",
+      "ctx_index",
+    ]) {
+      expect(preToolMatchers[2]).toContain(name);
+      expect(preToolMatchers[2]).toContain(`mcp__context_mode__${name}`);
+      expect(preToolMatchers[2]).toContain(`mcp__plugin_context-mode_context-mode__${name}`);
+    }
     expect(preToolMatchers[0]).not.toContain("Agent");
     expect(preToolMatchers[1]).not.toContain("mcp__*");
     expect(preToolMatchers[1]).not.toContain("ctx_recovery_brief_init");

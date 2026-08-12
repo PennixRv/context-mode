@@ -33,6 +33,10 @@ import { BaseAdapter, resolveContextModeDataRoot } from "../base.js";
 import { hashProjectDirCanonical } from "../../session/db.js";
 import { CODEX_RECOVERY_BRIEF_TOOL_MATCHER } from "../../checkpoint/recovery-brief-capability.js";
 import { resolveCodexConfigDir } from "./paths.js";
+import {
+  projectCodexPluginDiagnostic,
+  type CodexPluginDiagnostic,
+} from "./diagnostics.js";
 
 import {
   type HookAdapter,
@@ -80,14 +84,13 @@ type HooksConfigReadResult =
   | { ok: false; reason: "invalid_json"; error: string }
   | { ok: false; reason: "read_error"; error: string };
 
-// Keep this matcher limited to native Codex tools and context-mode's bare
-// ctx_* tools. The two exact MCP names below are owned ctx_execute forms used
-// only to establish a session-local capability proof. No wildcard external MCP
-// matcher is permitted.
+// Codex treats this restricted-character matcher as exact alternatives. Keep
+// native tools here and put every context-mode alias in one disjoint regex
+// group so one tool invocation can select only one managed handler.
 const PRE_TOOL_USE_MATCHER_PATTERN =
-  "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index";
+  "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files";
 const CODEX_CTX_EXECUTE_TOOL_MATCHER =
-  "^(mcp__context_mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute)$";
+  "^(ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__context_mode__ctx_execute|mcp__context_mode__ctx_execute_file|mcp__context_mode__ctx_batch_execute|mcp__context_mode__ctx_fetch_and_index|mcp__context_mode__ctx_search|mcp__context_mode__ctx_index|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute|mcp__plugin_context-mode_context-mode__ctx_fetch_and_index|mcp__plugin_context-mode_context-mode__ctx_search|mcp__plugin_context-mode_context-mode__ctx_index)$";
 
 const DEFAULT_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",
@@ -168,18 +171,6 @@ type CodexVersionRunner = (
 
 interface CodexAdapterOptions {
   codexPluginListRunner?: CodexVersionRunner;
-}
-
-interface CodexPluginHookStatus {
-  enabled: boolean;
-  configuredRoot: string;
-  configuredManifestAvailable: boolean;
-  runtimeRoot: string | null;
-  runtimeManifestAvailable: boolean;
-  rootMismatch: boolean;
-  releaseMatches: boolean;
-  hooksAvailable: boolean;
-  ownsHooksForUpgrade: boolean;
 }
 
 interface CodexPluginReleaseIdentity {
@@ -709,7 +700,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   private createObservabilityProfileStatus(
     hooks: HookRegistration,
-    pluginHookStatus?: CodexPluginHookStatus | null,
+    pluginHookStatus?: CodexPluginDiagnostic | null,
   ): CodexObservabilityProfileStatus {
     const optionalHooks = this.collectHookNames(
       hooks,
@@ -891,10 +882,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     }
     if (codexPluginEnabled && !codexPluginHooksAvailable) {
       const expectedRoot = pluginHookStatus.runtimeRoot ?? pluginRoot;
+      const hookDetail = pluginHookStatus.runtimeRoot === null
+        ? "`codex plugin list` did not report an active runtime root"
+        : !pluginHookStatus.runtimeManifestAvailable
+          ? `${join(expectedRoot, ".codex-plugin", "hooks.json")} is missing`
+          : `required hook events are missing (${pluginHookStatus.missingHooks.join(", ")})`;
       results.push({
         check: "Codex plugin hooks",
         status: "fail",
-        message: `context-mode Codex plugin is enabled, but ${join(expectedRoot, ".codex-plugin", "hooks.json")} is missing`,
+        message: `context-mode Codex plugin is enabled, but ${hookDetail}`,
         fix: "Reinstall or upgrade the context-mode Codex plugin",
       });
     }
@@ -1030,11 +1026,12 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return results.concat(hookChecks, duplicateChecks, profileChecks);
   }
 
-  checkPluginRegistration(): DiagnosticResult {
+  checkPluginRegistration(pluginRoot = process.cwd()): DiagnosticResult {
     try {
       const raw = readFileSync(this.getSettingsPath(), "utf-8");
-      const pluginId = getEnabledCodexPluginId(raw);
-      const pluginEnabled = pluginId !== null;
+      const diagnostic = this.getCodexPluginHookStatus(pluginRoot, raw, true);
+      const pluginId = diagnostic.pluginId;
+      const pluginEnabled = diagnostic.enabled;
       const standaloneMcp = hasStandaloneContextModeMcp(raw);
       const hasMcpSection =
         raw.includes("[mcp_servers]") || raw.includes("[mcp_servers.");
@@ -1049,10 +1046,26 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }
 
       if (pluginEnabled) {
+        if (!diagnostic.runtimeRoot) {
+          return {
+            check: "MCP registration",
+            status: "warn",
+            message: `${pluginId} is enabled in config.toml, but codex plugin list did not report an active runtime root`,
+            fix: "Restart Codex or reinstall the context-mode marketplace plugin",
+          };
+        }
+        if (!diagnostic.hooksAvailable) {
+          return {
+            check: "MCP registration",
+            status: "fail",
+            message: `${pluginId} is enabled at ${diagnostic.runtimeRoot}, but required plugin hooks are unavailable${diagnostic.missingHooks.length ? ` (${diagnostic.missingHooks.join(", ")})` : ""}`,
+            fix: "Reinstall or upgrade the context-mode Codex plugin",
+          };
+        }
         return {
           check: "MCP registration",
           status: "pass",
-          message: `${pluginId} plugin enabled`,
+          message: `${pluginId} plugin enabled at ${diagnostic.runtimeRoot}${diagnostic.version ? ` (v${diagnostic.version})` : ""}; required hooks registered`,
         };
       }
 
@@ -1094,6 +1107,19 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return runtimeRoot
       ? this.readCodexPluginReleaseIdentity(runtimeRoot)?.version ?? "standalone"
       : "standalone";
+  }
+
+  /** Shared typed facts consumed by CLI Doctor, MCP Doctor, and hook validation. */
+  getCodexPluginDiagnostic(pluginRoot: string): CodexPluginDiagnostic {
+    let settingsRaw = "";
+    let settingsReadable = false;
+    try {
+      settingsRaw = readFileSync(this.getSettingsPath(), "utf-8");
+      settingsReadable = true;
+    } catch {
+      // The projection records disabled/unavailable rather than guessing.
+    }
+    return this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
   }
 
   // ── Upgrade ────────────────────────────────────────────
@@ -1469,6 +1495,20 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return existsSync(join(pluginRoot, ".codex-plugin", "hooks.json"));
   }
 
+  private readCodexPluginHookEvents(pluginRoot: string): string[] {
+    try {
+      const manifest = JSON.parse(
+        readFileSync(join(pluginRoot, ".codex-plugin", "hooks.json"), "utf-8"),
+      ) as { hooks?: Record<string, unknown> };
+      return Object.entries(manifest.hooks ?? {})
+        .filter(([, entries]) => Array.isArray(entries) && entries.length > 0)
+        .map(([event]) => event)
+        .sort();
+    } catch {
+      return [];
+    }
+  }
+
   private readCodexPluginReleaseIdentity(pluginRoot: string): CodexPluginReleaseIdentity | null {
     try {
       const manifestPath = join(pluginRoot, ".codex-plugin", "plugin.json");
@@ -1506,43 +1546,39 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     pluginRoot: string,
     settingsRaw: string,
     settingsReadable: boolean,
-  ): CodexPluginHookStatus {
-    const enabled = settingsReadable && hasCodexPluginEnabled(settingsRaw);
+  ): CodexPluginDiagnostic {
+    const pluginId = settingsReadable ? getEnabledCodexPluginId(settingsRaw) : null;
+    const enabled = pluginId !== null;
     const configuredRoot = resolve(pluginRoot);
     const configuredManifestAvailable = this.hasCodexPluginHookManifest(configuredRoot);
     const runtimeRoot = enabled ? this.probeCodexContextModePluginRoot() : null;
     const runtimeManifestAvailable = runtimeRoot
       ? this.hasCodexPluginHookManifest(runtimeRoot)
       : false;
-    const rootMismatch = runtimeRoot
-      ? !this.samePath(configuredRoot, runtimeRoot)
-      : false;
-    const releaseMatches = runtimeRoot !== null
-      && rootMismatch
-      && this.hasMatchingCodexPluginRelease(configuredRoot, runtimeRoot);
-
-    const hooksAvailable = enabled && (
-      runtimeManifestAvailable
-      || (!runtimeRoot && configuredManifestAvailable)
-    );
-
-    return {
+    const runtimeRelease = runtimeRoot
+      ? this.readCodexPluginReleaseIdentity(runtimeRoot)
+      : null;
+    const requiredHooks = Object.keys(this.generateHookConfig(""));
+    const registeredHooks = runtimeRoot
+      ? this.readCodexPluginHookEvents(runtimeRoot)
+      : [];
+    return projectCodexPluginDiagnostic({
       enabled,
+      pluginId,
+      version: runtimeRelease?.version ?? null,
       configuredRoot,
       configuredManifestAvailable,
       runtimeRoot,
       runtimeManifestAvailable,
-      rootMismatch,
-      releaseMatches,
-      hooksAvailable,
-      ownsHooksForUpgrade: enabled
-        && runtimeRoot !== null
-        && runtimeManifestAvailable
-        && !rootMismatch,
-    };
+      sameRoot: runtimeRoot ? this.samePath(configuredRoot, runtimeRoot) : false,
+      releaseMatches: runtimeRoot !== null
+        && this.hasMatchingCodexPluginRelease(configuredRoot, runtimeRoot),
+      requiredHooks,
+      registeredHooks,
+    });
   }
 
-  private getInstalledPluginHookStatus(pluginRoot: string): CodexPluginHookStatus {
+  private getInstalledPluginHookStatus(pluginRoot: string): CodexPluginDiagnostic {
     let settingsRaw = "";
     let settingsReadable = false;
     try {

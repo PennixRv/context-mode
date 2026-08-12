@@ -683,8 +683,10 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
     if (!isManagedBashDataCommand(command)) return null;
 
-    // Managed data reads and searches may flood the conversation.
-    return guidanceOnce("bash", bashGuidance, sessionId);
+    // Managed unbounded reads/searches keep their aggregation guidance on
+    // every call. Suppressing this after the first advisory lets later large
+    // output bypass the component's aggregation responsibility (Issue 018).
+    return { action: "context", additionalContext: bashGuidance };
   }
 
   // ─── Read: nudge toward execute_file + large-file byte accounting ───
@@ -725,7 +727,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       action: "deny",
       reason: redirectsToExecuteOnly
         ? `context-mode: WebFetch redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw page bytes stay in the sandbox instead of entering your conversation. Full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`
-        : `context-mode: WebFetch redirected. Call ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch + index the page, then ${t("ctx_search")}(queries: [...]) to query the indexed content — the raw page bytes stay in storage instead of entering your conversation. Or call ${t("ctx_execute")}(language, code) when you want to derive your answer in one round trip (parse, extract, count) without persisting the response. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`,
+        : `context-mode: Raw WebFetch redirected. Call ${t("ctx_execute")}(language, code) to fetch and derive the answer in one request without persisting the response. Use ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") only when the user explicitly selected this trusted source for persistent recall via ${t("ctx_search")}. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`,
       // D2 PRD Phase 4.1: marker payload for PostToolUse byte accounting.
       redirectMeta: {
         tool: "WebFetch",

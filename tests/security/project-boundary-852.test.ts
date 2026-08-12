@@ -8,8 +8,9 @@
  * absolute path (or `../` traversal) escapes the workspace. The host's MCP
  * approval prompt cannot inspect the params, so the escape went unseen.
  *
- * These tests pin the pure containment primitive `isPathInsideProject`, which
- * the server guard `checkProjectBoundary` uses to refuse out-of-project paths.
+ * These tests retain coverage for the pure containment primitive used by other
+ * security callers. Issue #064 intentionally removed it from compatibility
+ * `ctx_execute_file`; host and OS authorization now govern that entry point.
  *
  * No regex in the implementation — pure `path.relative`/`path.resolve` math.
  */
@@ -111,23 +112,12 @@ describe("isPathInsideProject — issue #852 containment", () => {
 });
 
 // ─────────────────────────────────────────────────────────
-// Server wiring — the boundary guard must be installed in the
-// ctx_execute_file handler, resolve via the canonical getProjectDir(),
-// and expose a documented opt-out env. (Source-structural, mirroring
-// tests/core/deny-policy.test.ts.)
+// Server wiring — compatibility ctx_execute_file must not install this
+// component-owned containment primitive as a second permission wall.
 // ─────────────────────────────────────────────────────────
-describe("ctx_execute_file: project-boundary guard wiring (#852)", () => {
+describe("ctx_execute_file: host-authorized compatibility reads (#852/#064)", () => {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const serverSrc = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
-
-  // Algorithmic source-introspection helpers (no regex — project no-regex rule).
-  // extractBlock: slice from a marker to the first top-level closing brace ("\n}").
-  function extractBlock(src: string, marker: string): string | null {
-    const start = src.indexOf(marker);
-    if (start === -1) return null;
-    const end = src.indexOf("\n}", start);
-    return end === -1 ? src.slice(start) : src.slice(start, end + 2);
-  }
 
   // titleAfter: the first double-quoted string following a `title:` key that
   // appears after `marker` — equivalent to capturing group 1 of the old regex.
@@ -141,30 +131,10 @@ describe("ctx_execute_file: project-boundary guard wiring (#852)", () => {
     return q1 === -1 || q2 === -1 ? null : src.slice(q1 + 1, q2);
   }
 
-  test("checkProjectBoundary helper exists", () => {
-    expect(serverSrc).toContain("function checkProjectBoundary");
-  });
-
-  test("guard resolves via canonical getProjectDir() and evaluateProjectContainment", () => {
-    const body = extractBlock(serverSrc, "function checkProjectBoundary");
-    expect(body).not.toBeNull();
-    expect(body!).toContain("getProjectDir()");
-    expect(body!).toContain("evaluateProjectContainment");
-  });
-
-  test("ctx_execute_file handler calls the boundary guard", () => {
-    // The guard must run inside the ctx_execute_file handler.
-    expect(serverSrc).toContain('checkProjectBoundary(path, "ctx_execute_file")');
-  });
-
-  test("escape hatch reuses host permissions.allow Read rules — NO bespoke opt-out env", () => {
-    // Principled escape hatch: read the host's existing allow rules, not a
-    // context-mode-specific env that would become dead code.
-    const body = extractBlock(serverSrc, "function checkProjectBoundary")!;
-    expect(body).toContain('readToolPermissionPatterns("Read", "allow"');
-    // The dead-code env flag must NOT exist anywhere in server.ts.
+  test("compatibility handler does not implement a second project permission wall", () => {
+    expect(serverSrc).not.toContain("function checkProjectBoundary");
+    expect(serverSrc).not.toContain("File access blocked:");
     expect(serverSrc).not.toContain("CONTEXT_MODE_ALLOW_OUTSIDE_PROJECT");
-    expect(serverSrc).not.toContain("allowOutsideProject");
   });
 
   test("execution tools announce code execution in their MCP-prompt title (#852)", () => {

@@ -6,19 +6,22 @@ context-mode MCP tools available. Rules protect context window from flooding. On
 
 Analyze/count/filter/compare/search/parse/transform data: **write code** via `mcp:context-mode:ctx_execute(language, code)`, `console.log()` only the answer. Do NOT read raw data into context. PROGRAM the analysis, not COMPUTE it. Pure JavaScript — Node.js built-ins only (`fs`, `path`, `child_process`). `try/catch`, handle `null`/`undefined`. One script replaces ten tool calls.
 
+## Protocol passthrough
+
+Call lifecycle control, event waits, interactive actions, bounded structured results, and tools with dedicated status/error protocols directly. Never wrap Trellis/Governance, CodeGraph, Fast Context, or another bounded MCP call in context-mode execution. With an approved `.codegraph/`, use CodeGraph first for symbols, architecture, call paths, and impact. For a large structured result, have the original tool write a file and analyze it with `mcp:context-mode:ctx_execute_file`; keep unverified external candidates non-persistent.
+
 ## BLOCKED — do NOT use
 
 ### curl / wget — FORBIDDEN
 Do NOT use `curl`/`wget` in shell. Dumps raw HTTP into context.
-Use: `mcp:context-mode:ctx_fetch_and_index(url, source)` or `mcp:context-mode:ctx_execute(language: "javascript", code: "const r = await fetch(...)")`
+For one-shot work, keep the bounded web protocol direct or save a large result and use `mcp:context-mode:ctx_execute_file`. Use `mcp:context-mode:ctx_fetch_and_index` only for trusted explicit retention.
 
 ### Inline HTTP — FORBIDDEN
 No `node -e "fetch(..."`, `python -c "requests.get(..."`. Bypasses sandbox.
 Use: `mcp:context-mode:ctx_execute(language, code)` — only stdout enters context
 
-### Direct web fetching — FORBIDDEN
-Raw HTML can exceed 100 KB.
-Use: `mcp:context-mode:ctx_fetch_and_index(url, source)` then `mcp:context-mode:ctx_search(queries)`
+### Web and MCP protocols
+Keep bounded structured results direct. For large output, save with the original tool and use `mcp:context-mode:ctx_execute_file`. Use `mcp:context-mode:ctx_fetch_and_index` only for a trusted source explicitly selected for retention.
 
 ## REDIRECTED — use sandbox
 
@@ -34,11 +37,11 @@ Use `mcp:context-mode:ctx_execute(language: "javascript", code: "...")` in sandb
 
 ## Tool selection
 
-1. **GATHER**: `mcp:context-mode:ctx_batch_execute(commands, queries)` — runs all commands, auto-indexes, returns search. ONE call replaces 30+. Each command: `{label: "header", command: "..."}`.
+1. **GATHER**: `mcp:context-mode:ctx_batch_execute(commands, queries)` — searches successful output in this request; default output is not persistent. Each command: `{label: "header", command: "..."}`.
 2. **FOLLOW-UP**: `mcp:context-mode:ctx_search(queries: ["q1", "q2", ...])` — all questions as array, ONE call.
 3. **PROCESSING**: `mcp:context-mode:ctx_execute(language, code)` | `mcp:context-mode:ctx_execute_file(path, language, code)` — sandbox, only stdout enters context.
-4. **WEB**: `mcp:context-mode:ctx_fetch_and_index(url, source)` then `mcp:context-mode:ctx_search(queries)` — raw HTML never enters context.
-5. **INDEX**: `mcp:context-mode:ctx_index(content, source)` — store in FTS5 for later search.
+4. **WEB**: keep bounded web/MCP protocols direct; use `mcp:context-mode:ctx_fetch_and_index(url, source)` only for a trusted source explicitly selected for retention.
+5. **INDEX**: `mcp:context-mode:ctx_index(path, source)` — explicitly persist a locally verified artifact; never the default whole-repository route.
 
 ## Parallel I/O batches
 

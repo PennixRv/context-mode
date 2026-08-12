@@ -13,70 +13,72 @@ description: |
   "call API", "check response", "query results",
   "find TODOs", "count lines", "codebase statistics", "security audit",
   "outdated packages", "dependency tree", "cloud resources", "CI/CD output".
-  Also triggers on ANY MCP tool output that may exceed 20 lines.
-  Subagent routing is handled automatically via PreToolUse hook.
+  Use only for operations whose main risk is unbounded local output. Preserve
+  direct calls to tools with lifecycle, interaction, or structured-result protocols.
 ---
 
-# Context Mode: Default for All Large Output
+# Context Mode: Bounded Large-Output Processing
 
-## MANDATORY RULE
+## Routing Contract
 
 <context_mode_logic>
   <mandatory_rule>
-    Default to context-mode for ALL commands. Only use Bash for guaranteed-small-output operations.
+    Route by call semantics. Aggregate unbounded local output with context-mode;
+    preserve direct protocol calls and verify external candidates locally before persistence.
   </mandatory_rule>
 </context_mode_logic>
 
-Bash whitelist (safe to run directly):
-- **File mutations**: `mkdir`, `mv`, `cp`, `rm`, `touch`, `chmod`
-- **Git writes**: `git add`, `git commit`, `git push`, `git checkout`, `git branch`, `git merge`
-- **Navigation**: `cd`, `pwd`, `which`
-- **Process control**: `kill`, `pkill`
-- **Package management**: `npm install`, `npm publish`, `pip install`
-- **Simple output**: `echo`, `printf`
+Use the original tool through its direct protocol when the call controls a
+lifecycle, waits for an event, is interactive, returns bounded structured data,
+or has dedicated status and error fields. This includes Trellis/Governance
+dispatch and wait operations, Fast Context retrieval, CodeGraph exploration,
+and other bounded MCP calls. Do not place them inside `ctx_execute`.
 
-**Everything else → `ctx_execute` or `ctx_execute_file`.** Any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service. This includes ALL CLIs (gh, aws, kubectl, docker, terraform, wrangler, fly, heroku, gcloud, etc.) — there are thousands and we cannot list them all.
+When the project has an approved `.codegraph/` index, use CodeGraph first for
+symbols, architecture, call relationships, execution paths, and impact scope.
+Potential output size is not a reason to replace CodeGraph with a context-mode
+source scan. Use Fast Context only for genuinely ambiguous historical or legacy
+location questions after local tools and CodeGraph cannot locate the answer;
+its results are candidates until verified against current local files.
 
-**When uncertain, use context-mode.** Every KB of unnecessary context reduces the quality and speed of the entire session.
+Use context-mode for tests, logs, long diffs, recursive full-text searches,
+dependency or build output, large files, and other local commands with
+unbounded text and no independent result protocol. For a large structured tool
+result, prefer the original tool's file-output option and analyze that artifact
+with `ctx_execute_file`.
+
+Use the normal host tool directly for mutations, navigation, process control,
+package installation, guaranteed-small observations, and forbidden operations
+that must retain the host's permission or error protocol.
 
 ## Decision Tree
 
 ```
-About to run a command / read a file / call an API?
+About to call a tool, run a command, or analyze a file?
 │
-├── Command is on the Bash whitelist (file mutations, git writes, navigation, echo)?
-│   └── Use Bash
+├── Lifecycle/event wait, interactive action, bounded structured result, or dedicated errors?
+│   └── Call the original tool through its direct protocol
 │
-├── Output MIGHT be large or you're UNSURE?
-│   └── Use context-mode ctx_execute or ctx_execute_file
+├── Symbol, architecture, call-path, or impact question with approved .codegraph/?
+│   └── Use CodeGraph, then verify important current facts in local files
 │
-├── Fetching web documentation or HTML page?
-│   └── Use ctx_fetch_and_index → ctx_search
+├── Ambiguous historical/legacy location unresolved locally and by CodeGraph?
+│   └── Use Fast Context, then verify the candidate locally; do not persist by default
 │
-├── Using Playwright (navigate, snapshot, console, network)?
-│   └── ALWAYS use filename parameter to save to file, then:
+├── Large structured result supports writing an artifact?
+│   └── Original tool writes file → ctx_execute_file for one-shot analysis
+│
+├── Tests, logs, recursive search, long diff, build output, or other unbounded local text?
+│   └── Use ctx_execute, ctx_batch_execute, or ctx_execute_file
+│
+├── Using Playwright for a large snapshot, console, or network result?
+│   └── Use filename to save the result, then:
 │       browser_snapshot(filename) → ctx_index(path) or ctx_execute_file(path)
 │       browser_console_messages(filename) → ctx_execute_file(path)
 │       browser_network_requests(filename) → ctx_execute_file(path)
-│       ⚠ browser_navigate returns a snapshot automatically — ignore it,
-│         use browser_snapshot(filename) for any inspection.
-│       ⚠ Playwright MCP uses a SINGLE browser instance — NOT parallel-safe.
-│         For parallel browser ops, use agent-browser via execute instead.
 │
-├── Using agent-browser (parallel-safe browser automation)?
-│   └── Run via execute (shell) — each call gets its own subprocess:
-│       execute("agent-browser open example.com && agent-browser snapshot -i -c")
-│       ✓ Supports sessions for isolated browser instances
-│       ✓ Safe for parallel subagent execution
-│       ✓ Lightweight accessibility tree with ref-based interaction
-│
-├── Processing output from another MCP tool (Context7, GitHub API, etc.)?
-│   ├── Output already in context from a previous tool call?
-│   │   └── Use it directly. Do NOT re-index with ctx_index(content: ...).
-│   ├── Need to search the output multiple times?
-│   │   └── Save to file via ctx_execute, then ctx_index(path) → ctx_search
-│   └── One-shot extraction?
-│       └── Save to file via ctx_execute, then ctx_execute_file(path)
+├── Mutation, navigation, process control, install, or guaranteed-small observation?
+│   └── Use the host's native tool
 │
 └── Reading a file to analyze/summarize (not edit)?
     └── Use ctx_execute_file (file loads into FILE_CONTENT, not context)
@@ -94,17 +96,18 @@ About to run a command / read a file / call an API?
 | Read a log file | `ctx_execute_file` | Parse access.log, error.log, build output |
 | Read a data file | `ctx_execute_file` | Analyze CSV, JSON, YAML, XML |
 | Read source code to analyze | `ctx_execute_file` | Count functions, find patterns, extract metrics |
-| Fetch web docs | `ctx_fetch_and_index` | Index React/Next.js/Zod docs, then search |
+| Fetch trusted web docs for explicit persistent recall | `ctx_fetch_and_index` | Only after the user selects the source and requests retention |
 | Playwright snapshot | `browser_snapshot(filename)` → `ctx_index(path)` → `ctx_search` | Save to file, index server-side, query |
 | Playwright snapshot (one-shot) | `browser_snapshot(filename)` → `ctx_execute_file(path)` | Save to file, extract in sandbox |
 | Playwright console/network | `browser_*(filename)` → `ctx_execute_file(path)` | Save to file, analyze in sandbox |
 | MCP output (already in context) | Use directly | Don't re-index — it's already loaded |
-| MCP output (need multi-query) | `ctx_execute` to save → `ctx_index(path)` → `ctx_search` | Save to file first, index server-side |
+| Large structured MCP output | Original tool writes file → `ctx_execute_file` | Preserve the original protocol and analyze its artifact |
 | Wipe indexed KB content | `ctx_purge(confirm: true)` | Permanently deletes all indexed content |
 
 ## Automatic Triggers
 
-Use context-mode for ANY of these, without being asked:
+Use context-mode for these when their output is unbounded and no dedicated
+structured protocol already solves the request:
 
 - **API debugging**: "hit this endpoint", "call the API", "check the response", "find the bug in the response"
 - **Log analysis**: "check the logs", "what errors", "read access.log", "debug the 500s"
@@ -115,7 +118,7 @@ Use context-mode for ANY of these, without being asked:
 - **Dependency audit**: "check dependencies", "outdated packages", "security audit"
 - **Build output**: "build the project", "check for warnings", "compile errors"
 - **Code metrics**: "count lines", "find TODOs", "function count", "analyze codebase"
-- **Web docs lookup**: "look up the docs", "check the API reference", "find examples"
+- **Explicit documentation corpus**: fetch and index only when persistent recall is requested
 
 ## Language Selection
 
@@ -138,9 +141,10 @@ Use context-mode for ANY of these, without being asked:
 
 ## External Documentation
 
-- **Always use `ctx_fetch_and_index`** for external docs — NEVER `cat` or `ctx_execute` with local paths for packages you don't own
-- For GitHub-hosted projects, use the raw URL: `https://raw.githubusercontent.com/org/repo/main/CHANGELOG.md`
-- After indexing, use the `source` parameter in search to scope results to that specific document
+- Keep web, Fast Context, and external API calls on their original direct protocol.
+- For one-shot analysis, have the original tool write a host-approved artifact and use `ctx_execute_file`; do not persist the candidate.
+- Use `ctx_fetch_and_index` only when the user explicitly requests persistent recall from a selected trusted URL. For GitHub-hosted projects, prefer a commit-pinned raw URL and scope later `ctx_search` calls with `source`.
+- External candidates are not authoritative facts. Verify them against current local files before using them in code, task state, or persistent project knowledge.
 
 ## Critical Rules
 
@@ -150,7 +154,7 @@ For Trellis project-semantic continuity, use the project-local `trellis-recovery
 2. **Write analysis code, not just data dumps.** Don't `console.log(JSON.stringify(data))` — analyze first, print findings.
 3. **Be specific in output.** Print bug details with IDs, line numbers, exact values — not just counts.
 4. **For files you need to EDIT**: Use the normal Read tool. context-mode is for analysis, not editing.
-5. **For Bash whitelist commands only**: Use Bash for file mutations, git writes, navigation, process control, package install, and echo. Everything else goes through context-mode.
+5. **Route by semantics, not a whitelist**: Preserve direct lifecycle, wait, interactive, structured-result, CodeGraph, Fast Context, Trellis, and Governance protocols. Use context-mode for unbounded local textual output without an independent protocol.
 6. **Never use `ctx_index(content: large_data)`.** Use `ctx_index(path: ...)` to read files server-side. The `content` parameter sends data through context as a tool parameter — use it only for small inline text.
 7. **Always use `filename` parameter** on Playwright tools (`browser_snapshot`, `browser_console_messages`, `browser_network_requests`). Without it, the full output enters context.
 8. **Don't re-index data already in context.** If an MCP tool returned data in a previous response, it's already loaded — use it directly or save to file first.
@@ -163,7 +167,8 @@ For Trellis project-semantic continuity, use the project-local `trellis-recovery
     NEVER return large raw datasets directly to context.
   </critical_rule>
   <workflow>
-    LargeDataTool(filename: "path") → mcp__context-mode__ctx_index(path: "path") → ctx_search()
+    LargeDataTool(filename: "path") → ctx_execute_file(path) for one-shot analysis
+    Explicit verified retention only: ctx_index(path: "path") → ctx_search()
   </workflow>
 </sandboxed_data_workflow>
 

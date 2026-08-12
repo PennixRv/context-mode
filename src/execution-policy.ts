@@ -26,6 +26,7 @@ export type ExecutionPolicyErrorCode =
   | "CTX_EXEC_PATH_OUTSIDE_PROJECT"
   | "CTX_EXEC_PATH_INVALID"
   | "CTX_EXEC_GLOBAL_QUERY_FORBIDDEN"
+  | "CTX_EXEC_PERSISTENCE_FORBIDDEN"
   | "CTX_EXEC_LANGUAGE_UNSUPPORTED";
 
 export interface BubblewrapIsolation {
@@ -362,6 +363,7 @@ export function formatExecutionPolicyError(code: ExecutionPolicyErrorCode): stri
     CTX_EXEC_PATH_OUTSIDE_PROJECT: "the requested path is outside the project boundary",
     CTX_EXEC_PATH_INVALID: "the requested path cannot be verified",
     CTX_EXEC_GLOBAL_QUERY_FORBIDDEN: "global persistent queries are forbidden",
+    CTX_EXEC_PERSISTENCE_FORBIDDEN: "persistent indexing cannot be enabled",
     CTX_EXEC_LANGUAGE_UNSUPPORTED: "the language is not supported by restricted execution",
   };
   return `Restricted execution denied [${code}]: ${messages[code]}.`;

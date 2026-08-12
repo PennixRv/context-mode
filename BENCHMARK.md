@@ -76,7 +76,7 @@
 
 ## Part 3: Large Output Externalization (FTS5 Pointer)
 
-*When output exceeds 100 KB, context-mode auto-indexes the full content into FTS5 and returns a pointer message instead of raw content. No data is discarded — the LLM queries it on demand via `ctx_search()`.*
+*Large execution output is searched within the current request and is not persistent by default. Durable `ctx_search()` recall requires an explicit verified persistence request; failed output is never retained.*
 
 | Before | After |
 |---|---|

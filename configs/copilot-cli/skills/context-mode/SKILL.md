@@ -16,10 +16,21 @@ code** via `ctx_execute(language, code)` and `console.log()` only the answer. Do
 NOT read raw data into context. PROGRAM the analysis, do not COMPUTE it by
 reading. One script replaces ten tool calls.
 
+## Protocol passthrough
+
+Call lifecycle control, event waits, interactive actions, bounded structured
+results, and tools with dedicated status/error protocols directly. Never wrap
+Trellis/Governance, CodeGraph, Fast Context, or another bounded MCP call in
+context-mode execution. With an approved `.codegraph/`, use CodeGraph first for
+symbols, architecture, call paths, and impact. For a large structured result,
+have the original tool write a file and analyze it with `ctx_execute_file`;
+keep unverified external candidates non-persistent.
+
 ## BLOCKED — do NOT use
 
-- **curl / wget** — dumps raw HTTP into context. Use
-  `ctx_fetch_and_index(url, source)` then `ctx_search(queries)`.
+- **curl / wget** — dumps raw HTTP into context. Keep bounded web protocols
+  direct; for large one-shot results save a file and use `ctx_execute_file`.
+  Use `ctx_fetch_and_index` only for a trusted source explicitly selected for retention.
 - **Inline HTTP** (`node -e "fetch(...)"`, `python -c "requests.get(...)"`) — use
   `ctx_execute(language, code)`; only stdout enters context.
 - **Reading large files to analyze** — use
@@ -28,11 +39,12 @@ reading. One script replaces ten tool calls.
 ## Tool selection
 
 1. **GATHER**: `ctx_batch_execute(commands, queries)` — runs all commands,
-   auto-indexes, returns search. One call replaces dozens.
+   searches successful output in this request, and does not persist by default.
 2. **PROCESS**: `ctx_execute` / `ctx_execute_file` — sandbox; only stdout enters
    context.
-3. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — raw
-   HTML never enters context.
-4. **SEARCH**: `ctx_search(queries: [...])` — all questions in one call.
+3. **WEB**: preserve bounded web/MCP protocols. Use `ctx_fetch_and_index` only
+   for a trusted source explicitly selected for retention.
+4. **SEARCH**: `ctx_search(queries: [...])` queries previously persisted content only.
+5. **INDEX**: `ctx_index(path, source)` explicitly retains a locally verified artifact; never use it as the default whole-repository route.
 
 Write artifacts to FILES; return a path + one-line description, not inline dumps.

@@ -9,14 +9,14 @@ user-invocable: true
 
 # Context Mode Index
 
-Index local project content for later search.
+Explicitly retain selected, locally verified content for later search.
 
 ## Instructions
 
 1. Prefer the `ctx_index` MCP tool when it is available.
 2. Ask for a path only if the user did not provide one and the current project root is ambiguous.
 3. Use `path`, not large inline `content`, so file bytes do not enter the conversation.
-4. For repository indexing, pass conservative bounds and a clear source label:
+4. Do not index an entire source repository by default. If the user explicitly requests a selected directory, pass conservative bounds and a clear source label:
 
 ```javascript
 ctx_index({
@@ -41,6 +41,7 @@ ctx_search({ source: "project:<name>", queries: ["..."] })
 
 ## Safety
 
+- Do not persist unverified Fast Context, web, external API, or other external candidates. Verify a saved local artifact first and require an explicit retention request.
 - Do not index dependency directories, build outputs, secrets, or generated artifacts.
 - Do not index controlled RecoveryBrief state. `ctx_index` refuses Trellis runtime files, Trellis `recovery-brief.json`, and `.context-mode/recovery-provider.json` or `.context-mode/recovery-brief.json`, including when indexing a directory.
 - Prefer `--exclude` or `exclude` for project-specific noisy paths.

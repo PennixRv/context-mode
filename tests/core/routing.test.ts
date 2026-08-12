@@ -68,7 +68,8 @@ describe("Routing: Subagents (Agent only — Task removed per #241)", () => {
     const prompt = decision.updatedInput.prompt;
     expect(prompt).toContain("label");
     expect(prompt).toContain("descriptive");
-    expect(prompt).toContain("FTS5 chunk title");
+    expect(prompt).toContain("same-request matches");
+    expect(prompt).toContain("not persistent unless verified persistence is explicitly requested");
   });
 
   it("Agent block includes the ToolSearch bootstrap for deferred ctx_* tools on claude-code (#724)", () => {
