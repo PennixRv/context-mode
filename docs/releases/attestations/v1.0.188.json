@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "scope": "same-session delivery only",
+  "created_at": "2026-08-13T08:11:57.228Z",
+  "candidate": {
+    "tag": "v1.0.188",
+    "version": "1.0.188",
+    "source_commit": "61f3dd4476aa249e3b122c0cc89574b8ff9dd37c",
+    "archive_sha256": "e0f44ebacc00f31dc13004249d3e157e8f840ff97e9752fd2b0f178008fd30ab",
+    "content_manifest_sha256": "b257399c639ce3c8dac4f52f36ef0a2a5f88fc12334499b8767ba57bb62f3b04"
+  },
+  "environment": {
+    "node_version": "26.6.0",
+    "codex_cli_version": "0.146.0",
+    "provider_tuple": "openai-custom"
+  },
+  "triggers": {
+    "manual": {
+      "status": "passed",
+      "lifecycle": [
+        "pending",
+        "confirmed",
+        "claimed"
+      ],
+      "terminal_state": "claimed",
+      "opaque_id_attestation_sha256": "3810ab22d3eb207e2ff8a73034a8eadb0a1968d64a6333e4e2dbbd197d2d8ff2"
+    },
+    "automatic": {
+      "status": "passed",
+      "lifecycle": [
+        "pending",
+        "confirmed",
+        "claimed"
+      ],
+      "terminal_state": "claimed",
+      "opaque_id_attestation_sha256": "933f7307a07e3f1829fa1b98b8201e65043e6dbc134348c00daf146b8051a9de"
+    }
+  },
+  "attestation_sha256": "a118fde21b74784a80e3c9dc7f0284482c959bd5b9b690d902c9479b913bb787"
+}
