@@ -467,7 +467,7 @@ describe("CodexAdapter", () => {
       expect(adapter.getCodexPluginDiagnostic(pluginRoot)).toMatchObject({
         channel: "codex-marketplace",
         pluginId: "context-mode@context-mode-offline",
-        version: "1.0.179",
+        version: "1.0.162",
         enabled: true,
         runtimeRoot: pluginRoot,
         missingHooks: [],
@@ -476,7 +476,7 @@ describe("CodexAdapter", () => {
       expect(adapter.getInstalledVersion()).toBe("1.0.179");
     });
 
-    it("does not treat the configured Doctor manifest as an active plugin when plugin list has no runtime root", () => {
+    it("separates the loaded Doctor runtime from a missing Plugin-list installation", () => {
       const doctorRoot = join(codexDir, "doctor-cache-root");
       adapter = new CodexAdapter({ codexPluginListRunner: () => "No plugins installed\n" });
       writeCodexPluginManifest(doctorRoot);
@@ -485,19 +485,22 @@ describe("CodexAdapter", () => {
       expect(adapter.getCodexPluginDiagnostic(doctorRoot)).toMatchObject({
         enabled: true,
         configuredManifestAvailable: true,
-        runtimeRoot: null,
-        hooksAvailable: false,
-        missingHooks: ["PreToolUse", "PreCompact", "PostCompact", "SessionStart"],
+        runtimeRoot: doctorRoot,
+        hooksAvailable: true,
+        missingHooks: [],
+      });
+      expect(adapter.getCodexPluginDiagnostic(doctorRoot).checks).toMatchObject({
+        installation: { state: "missing" },
+        runtimeRoot: { state: "present", value: doctorRoot },
+        manifest: { state: "present" },
+        hooks: { state: "present" },
+        sessionHooksLoaded: { state: "unavailable" },
       });
       expect(adapter.checkPluginRegistration(doctorRoot)).toMatchObject({
         status: "warn",
       });
-      expect(adapter.validateHooks(doctorRoot)).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          check: "Codex plugin hooks",
-          status: "fail",
-          message: expect.stringContaining("did not report an active runtime root"),
-        }),
+      expect(adapter.validateHooks(doctorRoot)).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ check: "Codex plugin hooks", status: "fail" }),
       ]));
     });
 
@@ -1056,7 +1059,7 @@ trusted_hash = "sha256:stale"
       expect(results.some((result) => result.check === "SessionStart hook" && result.status === "pass")).toBe(true);
     });
 
-    it("uses the Codex plugin manager runtime root instead of failing on a stale doctor root", () => {
+    it("does not borrow hooks from the installed cache when the Doctor runtime is stale", () => {
       const staleDoctorRoot = join(codexDir, "unversioned-stale-root");
       const runtimeRoot = join(codexDir, "marketplace-runtime-root");
       adapter = adapterWithCodexPluginRoot(runtimeRoot);
@@ -1073,8 +1076,8 @@ trusted_hash = "sha256:stale"
         result.check === "Codex plugin hooks"
         && result.status === "fail"
         && result.message.includes(staleDoctorRoot),
-      )).toBe(false);
-      expect(results.some((result) => result.check === "SessionStart hook" && result.status === "pass")).toBe(true);
+      )).toBe(true);
+      expect(results.some((result) => result.check === "SessionStart hook" && result.status === "pass")).toBe(false);
     });
 
     it("accepts matching releases across Codex cache and marketplace roots", () => {
@@ -1114,7 +1117,7 @@ trusted_hash = "sha256:stale"
       expect(root?.message).toContain(runtimeRoot);
     });
 
-    it("fails against the Codex plugin manager runtime root when that manifest is missing", () => {
+    it("reports a missing installed-cache manifest without invalidating loaded runtime hooks", () => {
       const staleDoctorRoot = join(codexDir, "unversioned-stale-root");
       const runtimeRoot = join(codexDir, "missing-runtime-root");
       adapter = adapterWithCodexPluginRoot(runtimeRoot);
@@ -1123,9 +1126,10 @@ trusted_hash = "sha256:stale"
 
       const results = adapter.validateHooks(staleDoctorRoot);
 
-      const pluginHooks = results.find((result) => result.check === "Codex plugin hooks");
-      expect(pluginHooks?.status).toBe("fail");
-      expect(pluginHooks?.message).toContain(join(runtimeRoot, ".codex-plugin", "hooks.json"));
+      const cacheManifest = results.find((result) => result.check === "Codex plugin cache manifest");
+      expect(cacheManifest?.status).toBe("fail");
+      expect(cacheManifest?.message).toContain(join(runtimeRoot));
+      expect(results.some((result) => result.check === "Codex plugin hooks" && result.status === "fail")).toBe(false);
     });
 
     it("warns when plugin mode still has standalone npx MCP registration", () => {

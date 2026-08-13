@@ -892,6 +892,11 @@ async function doctor(): Promise<number> {
     }
   }
 
+  const structuredDiagnostic = adapter.getStructuredDiagnosticSummary?.(pluginRoot);
+  if (structuredDiagnostic) {
+    process.stdout.write(`Codex Plugin diagnostic (JSON): ${structuredDiagnostic}\n`);
+  }
+
   // Hook scripts exist — Algo-D1 protocol path takes precedence.
   // Adapters that override `getHealthChecks` (claude-code today) get a
   // direct `existsSync(join(pluginRoot, "hooks", scriptName))` per

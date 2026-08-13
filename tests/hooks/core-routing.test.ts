@@ -251,17 +251,22 @@ describe("routePreToolUse", () => {
     it.each([
       "npm install",
       "./gradlew build",
-      "gradle test --info",
       "mvn clean package -DskipTests",
-      "./mvnw verify",
       "sbt compile",
-      "./sbt test",
       "trellis task status",
       "codegraph index .",
-      "pnpm test",
       "unknown-workflow-cli --all",
     ])("passes external or unknown CLI through unchanged: %s", (command) => {
       expect(routePreToolUse("Bash", { command })).toBeNull();
+    });
+
+    it.each([
+      "gradle test --info",
+      "./mvnw verify",
+      "./sbt test",
+      "pnpm test",
+    ])("routes recognized test CLI through context-mode: %s", (command) => {
+      expect(routePreToolUse("Bash", { command })).toMatchObject({ action: "context" });
     });
 
     it.each([

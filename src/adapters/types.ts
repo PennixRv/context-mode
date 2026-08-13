@@ -301,6 +301,9 @@ export interface HookAdapter {
   /** Check if the plugin is registered/enabled on this platform. */
   checkPluginRegistration(pluginRoot?: string): DiagnosticResult;
 
+  /** Return a stable, content-free structured diagnostic summary when supported. */
+  getStructuredDiagnosticSummary?(pluginRoot: string): string;
+
   /**
    * Get the installed version from this platform's registry/marketplace, or
    * "standalone" when no platform-owned plugin version exists.

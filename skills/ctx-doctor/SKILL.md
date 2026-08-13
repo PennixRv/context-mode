@@ -15,8 +15,14 @@ Run diagnostics and display results directly in the conversation.
 
 1. Call the `ctx_doctor` MCP tool directly. It runs all checks server-side and returns a plain-text status report.
 2. Display the results verbatim — they are already formatted with plain-text status prefixes: `[OK]` PASS, `[FAIL]` FAIL, `[WARN]` WARN. Renderer-safe (no markdown task-list syntax) for cross-client compatibility (e.g., Z.ai GLM).
-3. For Codex continuity diagnostics, inspect the passive `PreCompact`, `PostCompact`, `SessionStart(compact)`, checkpoint bundle, and provider-availability lines. Do not request RecoveryBrief content.
-4. **Fallback** (only if MCP tool call fails): Derive the **plugin root** from this skill's base directory (go up 2 levels — remove `/skills/ctx-doctor`), then run with Bash:
+3. On Codex, retain the `Codex Plugin diagnostic (JSON)` line as the shared
+   cross-entry contract. It reports `plugin_id`, `version`, `installed`,
+   `enabled`, `source_root`, `cache_root`, `runtime_root`, and stable check IDs
+   for cache/runtime manifests, hooks, and current-session loading. Check states
+   are `present`, `missing`, `unavailable`, or `not_applicable`. `unavailable`
+   means the host could not prove a fact; it must not be rewritten as `missing`.
+4. For Codex continuity diagnostics, inspect the passive `PreCompact`, `PostCompact`, `SessionStart(compact)`, checkpoint bundle, and provider-availability lines. Do not request RecoveryBrief content.
+5. **Fallback** (only if MCP tool call fails): Derive the **plugin root** from this skill's base directory (go up 2 levels — remove `/skills/ctx-doctor`), then run with Bash:
    ```
    CLI="<PLUGIN_ROOT>/cli.bundle.mjs"; [ ! -f "$CLI" ] && CLI="<PLUGIN_ROOT>/build/cli.js"; node "$CLI" doctor
    ```

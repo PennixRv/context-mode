@@ -67,7 +67,7 @@ describe("Codex plugin diagnostic projection", () => {
       runtimeManifestAvailable: true,
       sameRoot: false,
       releaseMatches: true,
-    })).toEqual({
+    })).toMatchObject({
       channel: "codex-marketplace",
       pluginId: null,
       version: null,
@@ -84,6 +84,15 @@ describe("Codex plugin diagnostic projection", () => {
       registeredHooks: [],
       missingHooks: [],
     });
+    expect(projectCodexPluginDiagnostic({
+      enabled: true,
+      configuredRoot: "/source",
+      configuredManifestAvailable: true,
+      runtimeRoot: "/cache/1.0.186",
+      runtimeManifestAvailable: true,
+      sameRoot: false,
+      releaseMatches: true,
+    }).checks.runtimeRoot).toEqual({ state: "present", value: "/cache/1.0.186" });
   });
 
   test("standalone cannot claim plugin-owned hooks without enabled registration", () => {
@@ -120,8 +129,19 @@ describe("Codex plugin diagnostic projection", () => {
       enabled: true,
       runtimeRoot: null,
       hooksAvailable: false,
-      missingHooks: ["PreToolUse", "SessionStart"],
+      missingHooks: [],
       ownsHooksForUpgrade: false,
     });
+    expect(projectCodexPluginDiagnostic({
+      enabled: true,
+      configuredRoot: "/doctor-cache/1.0.186",
+      configuredManifestAvailable: true,
+      runtimeRoot: null,
+      runtimeManifestAvailable: false,
+      sameRoot: false,
+      releaseMatches: false,
+      requiredHooks: ["PreToolUse", "SessionStart"],
+      registeredHooks: [],
+    }).checks.manifest.state).toBe("unavailable");
   });
 });

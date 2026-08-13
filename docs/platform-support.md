@@ -227,6 +227,28 @@ context-mode hook codex userpromptsubmit
 context-mode hook codex stop
 ```
 
+**Codex Plugin diagnostics:**
+
+The CLI Doctor and MCP `ctx_doctor` use the same typed Plugin observation
+projection. The report keeps marketplace/source root, installed cache root, the
+currently loaded package root, `installed`, `enabled`, manifest and Hook
+presence, and current-session Hook loading separate. Each fact is represented
+as `present`, `missing`, `unavailable`, or `not_applicable`; `unavailable` means
+the host could not prove the fact and is not a missing-file assertion. The
+structured `Codex Plugin diagnostic (JSON)` line contains stable check IDs so a
+direct Doctor result and an MCP Doctor result can be compared without parsing
+human remediation text. The current-session loading check remains
+`unavailable` unless the host provides explicit evidence; a manifest on disk
+does not prove that an already-running Codex session loaded it.
+
+Codex's own `codex plugin list --json` remains the source of Plugin inventory
+facts. context-mode parses the shared identity, version, installed/enabled,
+marketplace source, and cache path fields when the CLI exposes them, and keeps
+legacy text parsing only as a bounded compatibility fallback. It does not
+replace the package root used by the running MCP process with a stale cache
+path, and it does not report the Codex host's session-injection state as
+confirmed from filesystem inspection alone.
+
 **Known Issues / Caveats:**
 - PreToolUse `additionalContext` is unsupported — context injection works via PostToolUse and SessionStart instead. The codex formatter handles this automatically (deny works, context is dropped). Source: `codex-rs/hooks/src/engine/output_parser.rs:267`.
 - PreToolUse input rewriting still needs upstream `updatedInput` support. Track: [openai/codex#18491](https://github.com/openai/codex/issues/18491).

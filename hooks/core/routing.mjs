@@ -476,6 +476,293 @@ function isManagedBashDataCommand(command) {
   return MANAGED_BASH_DATA_COMMANDS.some((pattern) => pattern.test(trimmed));
 }
 
+/**
+ * Split shell branches without interpreting or executing user input. This is
+ * intentionally a small lexical pass: quoted separators stay in their token,
+ * while ordinary `;`, `&&`, `||`, pipes, and newlines expose independent
+ * command branches for intent classification.
+ */
+function splitShellBranches(command) {
+  const branches = [];
+  let current = "";
+  let quote = "";
+  let escaping = false;
+  for (const ch of String(command ?? "")) {
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch;
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ";" || ch === "\n" || ch === "\r" || ch === "|") {
+      if (current.trim()) branches.push(current.trim());
+      current = "";
+      continue;
+    }
+    if (ch === "&") {
+      if (current.trim()) branches.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) branches.push(current.trim());
+  return branches;
+}
+
+function shellTokens(command) {
+  const tokens = [];
+  let current = "";
+  let quote = "";
+  let escaping = false;
+  const push = () => {
+    if (current) tokens.push(current);
+    current = "";
+  };
+  for (const ch of String(command ?? "")) {
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = "";
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) push();
+    else current += ch;
+  }
+  if (escaping) current += "\\";
+  push();
+  return tokens;
+}
+
+function commandBasename(token) {
+  return String(token ?? "").replace(/\\/g, "/").split("/").at(-1) ?? "";
+}
+
+function isAssignment(token) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token);
+}
+
+const OPTION_TAKES_VALUE = new Set([
+  "-C", "--chdir", "--cwd", "--dir", "--prefix", "--workspace",
+  "--filter", "--config", "--loglevel", "--reporter", "--mode",
+  "-p", "--package", "-u", "--user",
+]);
+
+const TIMEOUT_OPTION_TAKES_VALUE = new Set([
+  "--signal", "--kill-after", "-s", "-k",
+]);
+
+const WRAPPER_OPTION_TAKES_VALUE = {
+  command: new Set(),
+  exec: new Set(["-a"]),
+  time: new Set(["-f", "--format", "-o", "--output"]),
+  sudo: new Set([
+    "-C", "--close-from", "-g", "--group", "-h", "--host",
+    "-p", "--prompt", "-u", "--user",
+  ]),
+};
+
+function skipOption(tokens, index) {
+  const token = tokens[index] ?? "";
+  if (token === "--") return index + 1;
+  if (OPTION_TAKES_VALUE.has(token)) return Math.min(index + 2, tokens.length);
+  if ([...OPTION_TAKES_VALUE].some((option) => token.startsWith(`${option}=`))) {
+    return index + 1;
+  }
+  return index + 1;
+}
+
+function firstCommandArgument(tokens, start = 0) {
+  let index = start;
+  while (index < tokens.length) {
+    const token = tokens[index] ?? "";
+    if (isAssignment(token)) {
+      index++;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      index = skipOption(tokens, index);
+      continue;
+    }
+    return index;
+  }
+  return -1;
+}
+
+function unwrapTestCommand(tokens, depth = 0) {
+  if (depth > 4 || tokens.length === 0) return tokens;
+  let index = 0;
+  while (["then", "do", "else"].includes(tokens[index])) index++;
+  while (index < tokens.length && isAssignment(tokens[index])) index++;
+  if (tokens[index] === "--") index++;
+  const wrapper = commandBasename(tokens[index]);
+  if (wrapper === "env") {
+    index++;
+    while (index < tokens.length) {
+      if (isAssignment(tokens[index])) {
+        index++;
+        continue;
+      }
+      if (/^-/.test(tokens[index] ?? "")) {
+        index = skipOption(tokens, index);
+        continue;
+      }
+      break;
+    }
+    return unwrapTestCommand(tokens.slice(index), depth + 1);
+  }
+  if (wrapper === "npx") {
+    index++;
+    while (index < tokens.length && (/^--/.test(tokens[index]) || tokens[index] === "-p" || tokens[index] === "--package")) {
+      index += tokens[index] === "-p" || tokens[index] === "--package" ? 2 : 1;
+    }
+    return unwrapTestCommand(tokens.slice(index), depth + 1);
+  }
+  if (["command", "exec", "time", "sudo"].includes(wrapper)) {
+    index++;
+    const optionsWithValues = WRAPPER_OPTION_TAKES_VALUE[wrapper];
+    while (index < tokens.length && /^-/.test(tokens[index] ?? "")) {
+      const token = tokens[index] ?? "";
+      index = optionsWithValues.has(token)
+        ? Math.min(index + 2, tokens.length)
+        : index + 1;
+    }
+    return unwrapTestCommand(tokens.slice(index), depth + 1);
+  }
+  if (wrapper === "timeout") {
+    index++;
+    while (index < tokens.length && (/^[-]/.test(tokens[index] ?? "") || /^\d/.test(tokens[index] ?? ""))) {
+      const token = tokens[index] ?? "";
+      if (TIMEOUT_OPTION_TAKES_VALUE.has(token)) {
+        index = Math.min(index + 2, tokens.length);
+      } else {
+        index++;
+      }
+    }
+    return unwrapTestCommand(tokens.slice(index), depth + 1);
+  }
+  if (["sh", "bash", "zsh"].includes(wrapper)) {
+    const shellFlagIndex = tokens.findIndex((token, tokenIndex) =>
+      tokenIndex > index && /^-[^-]*c/.test(token),
+    );
+    if (shellFlagIndex >= 0) return shellTokens(tokens.slice(shellFlagIndex + 1).join(" "));
+  }
+  if (wrapper === "corepack") {
+    return unwrapTestCommand(tokens.slice(index + 1), depth + 1);
+  }
+  return tokens.slice(index);
+}
+
+function packageManagerTest(tokens) {
+  const manager = commandBasename(tokens[0]);
+  if (!["npm", "pnpm", "yarn"].includes(manager)) return false;
+  const args = tokens.slice(1);
+  const commandIndex = firstCommandArgument(args);
+  if (commandIndex < 0) return false;
+  const subcommand = args[commandIndex];
+  if (subcommand === "test") return true;
+  if (["run", "run-script"].includes(subcommand)) {
+    const script = args[commandIndex + 1] ?? "";
+    return /^test(?::|$)/.test(script);
+  }
+  if (["pnpm", "npm", "yarn"].includes(manager) && subcommand === "exec") {
+    return isTestRunner(unwrapTestCommand(args.slice(commandIndex + 1)));
+  }
+  return false;
+}
+
+function isTestRunner(tokens) {
+  const executable = commandBasename(tokens[0]);
+  if (["vitest", "jest", "pytest", "py.test", "tox"].includes(executable)) return true;
+  if (["python", "python3", "py"].includes(executable)) {
+    return ["-m", "pytest"].every((value, index) => tokens[index + 1] === value)
+      || ["-m", "tox"].every((value, index) => tokens[index + 1] === value);
+  }
+  return false;
+}
+
+function gradleTest(tokens) {
+  const executable = commandBasename(tokens[0]);
+  if (!["gradle", "gradlew"].includes(executable)) return false;
+  return tokens.slice(1).some((token) =>
+    /^(?:(?:\:[A-Za-z0-9_.-]+)*\:?(?:test|[A-Za-z][A-Za-z]*(?:Test|Tests)))$/.test(token),
+  );
+}
+
+function mavenTest(tokens) {
+  const executable = commandBasename(tokens[0]);
+  if (!["mvn", "mvnw"].includes(executable)) return false;
+  return tokens.slice(1).some((token) => /^(?:test|verify|integration-test|failsafe:integration-test)$/.test(token));
+}
+
+function sbtTest(tokens) {
+  return commandBasename(tokens[0]) === "sbt"
+    && tokens.slice(1).some((token) => /^(?:test|testOnly|testQuick)(?:\s|$)/.test(token));
+}
+
+function isTestExecutionCommandBranch(command) {
+  let branch = command.trim();
+  if (branch.startsWith("{")) {
+    branch = branch.slice(1).trim();
+  } else if (/^[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{/.test(branch)) {
+    branch = branch.slice(branch.indexOf("{") + 1).trim();
+  }
+  if (branch.startsWith("(") && branch.endsWith(")")) {
+    branch = branch.slice(1, -1).trim();
+  }
+  const rawTokens = shellTokens(branch);
+  const tokens = unwrapTestCommand(rawTokens);
+  if (tokens.length === 0) return false;
+  if (packageManagerTest(tokens)) return true;
+  if (isTestRunner(tokens)) return true;
+  const executable = commandBasename(tokens[0]);
+  if (executable === "go") {
+    const subcommand = firstCommandArgument(tokens, 1);
+    return subcommand >= 0 && tokens[subcommand] === "test";
+  }
+  if (executable === "cargo") {
+    const subcommand = firstCommandArgument(tokens, 1);
+    return subcommand >= 0 && tokens[subcommand] === "test";
+  }
+  if (gradleTest(tokens) || mavenTest(tokens) || sbtTest(tokens)) return true;
+  return false;
+}
+
+/**
+ * Return whether a shell command contains an actual test execution branch.
+ * Matching is based on command position and known runner grammar, never on a
+ * free-form substring such as `test` in an argument or filename.
+ */
+export function isTestExecutionCommand(command) {
+  return splitShellBranches(command).some(isTestExecutionCommandBranch);
+}
+
 function getShellCommand(toolInput) {
   if (!toolInput || typeof toolInput !== "object") return "";
   if (typeof toolInput.command === "string") return toolInput.command;
@@ -591,6 +878,14 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     }
 
     // Stage 2: Context-mode routing (existing behavior)
+
+    // Test runners are common high-volume commands, but their names and
+    // arguments are too varied for the bounded-data command list. Keep this
+    // classifier explicit and route every recognized branch, including repeat
+    // calls after guidance has already been shown.
+    if (isTestExecutionCommand(command)) {
+      return { action: "context", additionalContext: bashGuidance };
+    }
 
     // curl/wget detection: strip quoted content first to avoid false positives
     // like `gh issue edit --body "text with curl in it"` (Issue #63).

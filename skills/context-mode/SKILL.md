@@ -41,11 +41,17 @@ source scan. Use Fast Context only for genuinely ambiguous historical or legacy
 location questions after local tools and CodeGraph cannot locate the answer;
 its results are candidates until verified against current local files.
 
-Use context-mode for tests, logs, long diffs, recursive full-text searches,
-dependency or build output, large files, and other local commands with
-unbounded text and no independent result protocol. For a large structured tool
-result, prefer the original tool's file-output option and analyze that artifact
-with `ctx_execute_file`.
+Use context-mode for recognized test executions (for example `pnpm test`,
+`npm run test:unit`, `vitest`, `jest`, `pytest`, `tox`, `gradle test`,
+`mvn test`, `sbt test`, `go test`, and `cargo test`), logs, long diffs,
+recursive full-text searches, dependency or build output, large files, and
+other local commands with unbounded text and no independent result protocol.
+The test route is grammar-based and handles wrappers, path options, environment
+prefixes, and compound shell branches; a filename or argument containing
+`test` alone is not sufficient. First and repeated test calls retain the same
+context-mode routing guidance. For a large structured tool result, prefer the
+original tool's file-output option and analyze that artifact with
+`ctx_execute_file`.
 
 Use the normal host tool directly for mutations, navigation, process control,
 package installation, guaranteed-small observations, and forbidden operations

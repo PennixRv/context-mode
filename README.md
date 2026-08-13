@@ -83,7 +83,7 @@ Restart Claude Code (or run `/reload-plugins`).
 
 All checks should show `[OK]`. The doctor validates runtimes, hooks, FTS5, and plugin registration.
 
-**Routing:** Automatic. The SessionStart hook injects routing instructions at runtime — no file is written to your project. The plugin registers all hooks (PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, SessionStart, Stop) and 15 MCP tools — six execution/retrieval tools (`ctx_batch_execute`, `ctx_execute`, `ctx_execute_file`, `ctx_index`, `ctx_search`, `ctx_fetch_and_index`), one checkpoint report, three controlled RecoveryBrief operations, and five meta-tools (`ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`, `ctx_insight`).
+**Routing:** Automatic. The SessionStart hook injects routing instructions at runtime — no file is written to your project. Test commands are recognized by command grammar, including package-manager scripts, common test runners, JVM build tools, Go, and Cargo, with wrappers, path options, environment prefixes, and compound branches. Text that merely contains `test` is not routed. The plugin registers all hooks (PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, SessionStart, Stop) and 15 MCP tools — six execution/retrieval tools (`ctx_batch_execute`, `ctx_execute`, `ctx_execute_file`, `ctx_index`, `ctx_search`, `ctx_fetch_and_index`), one checkpoint report, three controlled RecoveryBrief operations, and five meta-tools (`ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`, `ctx_insight`).
 
 | Slash Command | What it does |
 |---|---|

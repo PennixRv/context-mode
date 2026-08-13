@@ -34,8 +34,11 @@ import { hashProjectDirCanonical } from "../../session/db.js";
 import { CODEX_RECOVERY_BRIEF_TOOL_MATCHER } from "../../checkpoint/recovery-brief-capability.js";
 import { resolveCodexConfigDir } from "./paths.js";
 import {
+  parseCodexPluginList,
   projectCodexPluginDiagnostic,
+  serializeCodexPluginDiagnostic,
   type CodexPluginDiagnostic,
+  type CodexPluginListEntry,
 } from "./diagnostics.js";
 
 import {
@@ -199,11 +202,8 @@ export function probeCodexCliVersion(runCommand: CodexVersionRunner = execFileSy
 }
 
 export function parseCodexContextModePluginRoot(raw: string): string | null {
-  for (const line of raw.split(/\r?\n/)) {
-    const match = line.match(/^\s*context-mode@[^\s]+\s+installed,\s+enabled\s+\S+\s+(.+?)\s*$/);
-    if (match?.[1]) return match[1].trim();
-  }
-  return null;
+  const entry = parseCodexPluginList(raw);
+  return entry.cacheRoot ?? null;
 }
 
 function getTomlSection(raw: string, sectionName: string): string | null {
@@ -856,42 +856,60 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
     const expected = this.generateHookConfig("");
     const pluginHookStatus = this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
-    const codexPluginEnabled = pluginHookStatus.enabled;
+    const codexPluginEnabled = pluginHookStatus.enabled === true;
     const codexPluginHooksAvailable = pluginHookStatus.hooksAvailable;
-    if (codexPluginEnabled && pluginHookStatus.runtimeRoot) {
-      const rootDrift = pluginHookStatus.rootMismatch && !pluginHookStatus.releaseMatches;
+    if (codexPluginEnabled && pluginHookStatus.cacheRoot) {
+      const rootDrift = pluginHookStatus.rootMismatch === true
+        && pluginHookStatus.releaseMatches !== true;
       results.push({
         check: "Codex plugin root",
         status: rootDrift ? "warn" : "pass",
         message: rootDrift
-          ? `context-mode doctor is running from ${pluginHookStatus.configuredRoot}, but Codex plugin manager reports ${pluginHookStatus.runtimeRoot}`
-          : pluginHookStatus.rootMismatch
-            ? `Codex plugin manager reports ${pluginHookStatus.runtimeRoot}; it matches the release running from ${pluginHookStatus.configuredRoot}`
-          : `Codex plugin manager reports ${pluginHookStatus.runtimeRoot}`,
+          ? `current process root ${pluginHookStatus.runtimeRoot} does not match the installed cache release at ${pluginHookStatus.cacheRoot}`
+          : pluginHookStatus.rootMismatch === true
+            ? `current process root ${pluginHookStatus.runtimeRoot}; installed cache root ${pluginHookStatus.cacheRoot}; release versions match`
+            : `current process and installed cache use ${pluginHookStatus.runtimeRoot}`,
         ...(rootDrift
-          ? { fix: "Restart Codex after upgrade; run context-mode upgrade to keep native user-hook fallback until the plugin root converges" }
+          ? { fix: "Restart Codex after upgrading the marketplace plugin so the current process loads the installed release" }
           : {}),
       });
     } else if (codexPluginEnabled) {
       results.push({
         check: "Codex plugin root",
         status: "warn",
-        message: "context-mode@context-mode is enabled, but `codex plugin list` did not report its runtime root",
-        fix: "Restart Codex or verify `codex plugin list` shows context-mode@context-mode installed and enabled",
+        message: `current process root is ${pluginHookStatus.runtimeRoot}; installed cache root is ${pluginHookStatus.checks.cacheRoot.state}`,
+        fix: "Verify `codex plugin list --json` and the marketplace plugin installation",
+      });
+    }
+    if (codexPluginEnabled && pluginHookStatus.checks.cacheManifest.state === "missing") {
+      results.push({
+        check: "Codex plugin cache manifest",
+        status: "fail",
+        message: `Plugin inventory reports ${pluginHookStatus.cacheRoot}, but its .codex-plugin/hooks.json is missing`,
+        fix: "Reinstall or upgrade the context-mode Codex plugin",
       });
     }
     if (codexPluginEnabled && !codexPluginHooksAvailable) {
-      const expectedRoot = pluginHookStatus.runtimeRoot ?? pluginRoot;
-      const hookDetail = pluginHookStatus.runtimeRoot === null
-        ? "`codex plugin list` did not report an active runtime root"
+      const expectedRoot = pluginHookStatus.runtimeRoot ?? resolve(pluginRoot);
+      const hookDetail = pluginHookStatus.checks.manifest.state === "unavailable"
+        ? "the current process manifest could not be inspected"
         : !pluginHookStatus.runtimeManifestAvailable
-          ? `${join(expectedRoot, ".codex-plugin", "hooks.json")} is missing`
+          ? `${join(expectedRoot, ".codex-plugin", "hooks.json")} is missing from the current process root`
           : `required hook events are missing (${pluginHookStatus.missingHooks.join(", ")})`;
       results.push({
         check: "Codex plugin hooks",
         status: "fail",
         message: `context-mode Codex plugin is enabled, but ${hookDetail}`,
         fix: "Reinstall or upgrade the context-mode Codex plugin",
+      });
+    }
+    if (codexPluginEnabled) {
+      results.push({
+        check: "Codex current-session hooks",
+        status: pluginHookStatus.checks.sessionHooksLoaded.state === "present" ? "pass" : "warn",
+        message: pluginHookStatus.checks.sessionHooksLoaded.state === "present"
+          ? "current session hook loading is confirmed"
+          : "current session hook loading is unavailable to the Doctor process; restart and verify from the host session",
       });
     }
     if (codexPluginEnabled && hasStandaloneContextModeMcp(settingsRaw)) {
@@ -1030,8 +1048,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     try {
       const raw = readFileSync(this.getSettingsPath(), "utf-8");
       const diagnostic = this.getCodexPluginHookStatus(pluginRoot, raw, true);
-      const pluginId = diagnostic.pluginId;
-      const pluginEnabled = diagnostic.enabled;
+      const pluginId = diagnostic.pluginId ?? "context-mode@context-mode";
+      const pluginEnabled = diagnostic.enabled === true;
       const standaloneMcp = hasStandaloneContextModeMcp(raw);
       const hasMcpSection =
         raw.includes("[mcp_servers]") || raw.includes("[mcp_servers.");
@@ -1046,12 +1064,12 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }
 
       if (pluginEnabled) {
-        if (!diagnostic.runtimeRoot) {
+        if (diagnostic.checks.installation.state !== "present") {
           return {
             check: "MCP registration",
             status: "warn",
-            message: `${pluginId} is enabled in config.toml, but codex plugin list did not report an active runtime root`,
-            fix: "Restart Codex or reinstall the context-mode marketplace plugin",
+            message: `${pluginId} is enabled in config.toml, but Plugin installation is ${diagnostic.checks.installation.state}; the current runtime root was checked independently`,
+            fix: "Verify `codex plugin list --json` and reinstall the marketplace plugin if the cache is absent",
           };
         }
         if (!diagnostic.hooksAvailable) {
@@ -1103,9 +1121,13 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getInstalledVersion(): string {
-    const runtimeRoot = this.probeCodexContextModePluginRoot();
-    return runtimeRoot
-      ? this.readCodexPluginReleaseIdentity(runtimeRoot)?.version ?? "standalone"
+    const plugin = this.probeCodexContextModePlugin();
+    if (plugin.cacheRoot) {
+      const runtimeVersion = this.readCodexPluginReleaseIdentity(plugin.cacheRoot)?.version;
+      if (runtimeVersion) return runtimeVersion;
+    }
+    return plugin.state === "present" && plugin.version
+      ? plugin.version
       : "standalone";
   }
 
@@ -1120,6 +1142,10 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       // The projection records disabled/unavailable rather than guessing.
     }
     return this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
+  }
+
+  getStructuredDiagnosticSummary(pluginRoot: string): string {
+    return serializeCodexPluginDiagnostic(this.getCodexPluginDiagnostic(pluginRoot));
   }
 
   // ── Upgrade ────────────────────────────────────────────
@@ -1529,17 +1555,16 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private hasMatchingCodexPluginRelease(
-    configuredRoot: string,
     runtimeRoot: string,
+    cacheRoot: string,
   ): boolean {
-    const configuredRelease = this.readCodexPluginReleaseIdentity(configuredRoot);
     const runtimeRelease = this.readCodexPluginReleaseIdentity(runtimeRoot);
-    return configuredRelease !== null
-      && runtimeRelease !== null
-      && configuredRelease.name === "context-mode"
+    const cacheRelease = this.readCodexPluginReleaseIdentity(cacheRoot);
+    return runtimeRelease !== null
+      && cacheRelease !== null
       && runtimeRelease.name === "context-mode"
-      && configuredRelease.name === runtimeRelease.name
-      && configuredRelease.version === runtimeRelease.version;
+      && cacheRelease.name === "context-mode"
+      && runtimeRelease.version === cacheRelease.version;
   }
 
   private getCodexPluginHookStatus(
@@ -1547,34 +1572,55 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     settingsRaw: string,
     settingsReadable: boolean,
   ): CodexPluginDiagnostic {
-    const pluginId = settingsReadable ? getEnabledCodexPluginId(settingsRaw) : null;
-    const enabled = pluginId !== null;
+    const configuredPluginId = settingsReadable ? getEnabledCodexPluginId(settingsRaw) : null;
+    const pluginList = this.probeCodexContextModePlugin();
     const configuredRoot = resolve(pluginRoot);
+    // `pluginRoot` is the package root loaded by this process. The path from
+    // `codex plugin list` is the install cache and may be stale or versioned;
+    // it must never replace the process root in a diagnostic.
+    const runtimeRoot = configuredRoot;
     const configuredManifestAvailable = this.hasCodexPluginHookManifest(configuredRoot);
-    const runtimeRoot = enabled ? this.probeCodexContextModePluginRoot() : null;
-    const runtimeManifestAvailable = runtimeRoot
-      ? this.hasCodexPluginHookManifest(runtimeRoot)
-      : false;
-    const runtimeRelease = runtimeRoot
-      ? this.readCodexPluginReleaseIdentity(runtimeRoot)
-      : null;
+    const runtimeManifestAvailable = this.hasCodexPluginHookManifest(runtimeRoot);
+    const runtimeRelease = this.readCodexPluginReleaseIdentity(runtimeRoot);
+    const cacheRoot = pluginList.cacheRoot ?? null;
+    const cacheManifestAvailable = cacheRoot
+      ? this.hasCodexPluginHookManifest(cacheRoot)
+      : pluginList.installed === false
+        ? false
+        : null;
     const requiredHooks = Object.keys(this.generateHookConfig(""));
-    const registeredHooks = runtimeRoot
+    const registeredHooks = runtimeManifestAvailable
       ? this.readCodexPluginHookEvents(runtimeRoot)
       : [];
+    const installed = pluginList.installed ?? null;
+    const enabled = pluginList.enabled
+      ?? (configuredPluginId !== null
+        ? true
+        : settingsReadable
+          ? false
+          : null);
     return projectCodexPluginDiagnostic({
+      pluginListState: pluginList.state,
+      installed,
       enabled,
-      pluginId,
-      version: runtimeRelease?.version ?? null,
+      pluginId: pluginList.pluginId ?? configuredPluginId,
+      version: pluginList.version ?? runtimeRelease?.version ?? null,
+      sourceRoot: pluginList.sourceRoot ?? null,
+      cacheRoot,
       configuredRoot,
       configuredManifestAvailable,
       runtimeRoot,
       runtimeManifestAvailable,
-      sameRoot: runtimeRoot ? this.samePath(configuredRoot, runtimeRoot) : false,
-      releaseMatches: runtimeRoot !== null
-        && this.hasMatchingCodexPluginRelease(configuredRoot, runtimeRoot),
+      cacheManifestAvailable,
+      sameRoot: cacheRoot ? this.samePath(runtimeRoot, cacheRoot) : null,
+      releaseMatches: cacheRoot
+        ? this.hasMatchingCodexPluginRelease(runtimeRoot, cacheRoot)
+        : null,
       requiredHooks,
       registeredHooks,
+      // Manifest presence proves what this process loaded from disk, not what
+      // the host inserted into the already-rendered current session.
+      sessionHooksLoaded: null,
     });
   }
 
@@ -1590,7 +1636,29 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
   }
 
-  private probeCodexContextModePluginRoot(): string | null {
+  private probeCodexContextModePlugin(): CodexPluginListEntry {
+    let structured: CodexPluginListEntry | null = null;
+    try {
+      const output = process.platform === "win32"
+        ? this.codexPluginListRunner("cmd.exe", ["/d", "/s", "/c", "codex plugin list --json"], {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 5000,
+        })
+        : this.codexPluginListRunner("codex", ["plugin", "list", "--json"], {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 5000,
+        });
+      structured = parseCodexPluginList(String(output));
+      if (structured.state === "missing" || structured.cacheRoot) return structured;
+    } catch {
+      // Older Codex versions may not support --json.
+    }
+
+    // The structured Plugin-list contract does not always expose the cache
+    // path. The bounded text view does, so merge only that missing field while
+    // preserving JSON as the authority for identity and state.
     try {
       const output = process.platform === "win32"
         ? this.codexPluginListRunner("cmd.exe", ["/d", "/s", "/c", "codex plugin list"], {
@@ -1603,9 +1671,13 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 5000,
         });
-      return parseCodexContextModePluginRoot(String(output));
+      const legacy = parseCodexPluginList(String(output));
+      if (structured?.state === "present") {
+        return { ...structured, cacheRoot: legacy.cacheRoot };
+      }
+      return legacy;
     } catch {
-      return null;
+      return structured ?? { state: "unavailable" };
     }
   }
 

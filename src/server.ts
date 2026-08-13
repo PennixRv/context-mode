@@ -132,22 +132,28 @@ function getPackageRoot(): string {
 }
 
 function resolveCodexRuntimePluginRoot(fallbackRoot: string): string {
+  const probe = (json: boolean) => process.platform === "win32"
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", `codex plugin list${json ? " --json" : ""}`], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    })
+    : spawnSync("codex", ["plugin", "list", ...(json ? ["--json"] : [])], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    });
   try {
-    const probe = process.platform === "win32"
-      ? spawnSync("cmd.exe", ["/d", "/s", "/c", "codex plugin list"], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 5000,
-      })
-      : spawnSync("codex", ["plugin", "list"], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 5000,
-      });
-    if (probe.status !== 0) return fallbackRoot;
-    const runtimeRoot = parseCodexContextModePluginRoot(String(probe.stdout));
-    if (runtimeRoot && existsSync(resolve(runtimeRoot, ".codex-plugin", "hooks.json"))) {
+    const structured = probe(true);
+    const runtimeRoot = structured.status === 0
+      ? parseCodexContextModePluginRoot(String(structured.stdout))
+      : null;
+    if (runtimeRoot) {
       return runtimeRoot;
+    }
+    const legacy = probe(false);
+    if (legacy.status === 0) {
+      return parseCodexContextModePluginRoot(String(legacy.stdout)) ?? fallbackRoot;
     }
   } catch {
     // Best effort only. Non-Codex hosts and older Codex builds may not expose
@@ -4457,10 +4463,10 @@ server.registerTool(
     } catch {
       currentPlatform = detectPlatform().platform;
     }
-    // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to plugin root.
-    // Codex is special: when plugin-manager runtime root differs from the
-    // current package root, diagnose the root Codex will actually execute.
-    const pluginRoot = getRuntimeAwarePackageRoot(currentPlatform);
+    // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to the
+    // package root actually loaded by this MCP process. The Codex plugin list
+    // path is reported separately as the installed cache root by the adapter.
+    const pluginRoot = getPackageRoot();
 
     // Runtimes
     const total = 11;
@@ -4527,6 +4533,11 @@ server.registerTool(
         const prefix = result.status === "pass" ? "[OK]" : result.status === "warn" ? "[WARN]" : "[FAIL]";
         const fix = result.fix ? ` — fix: ${result.fix}` : "";
         lines.push(`${prefix} ${result.check}: ${result.message}${fix}`);
+      }
+
+      const structuredDiagnostic = diagnosticAdapter.getStructuredDiagnosticSummary?.(pluginRoot);
+      if (structuredDiagnostic) {
+        lines.push(`[OK] Codex Plugin diagnostic (JSON): ${structuredDiagnostic}`);
       }
 
       const registration = diagnosticAdapter.checkPluginRegistration(pluginRoot);

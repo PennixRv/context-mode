@@ -23,6 +23,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Codex Trellis Recovery Boundaries](./codex-trellis-recovery-boundaries.md) | Bounded SessionStart orientation and explicit RecoveryBrief identity bridge | Active |
 | [Restricted Execution And MCP Presentation](./restricted-execution-and-presentation.md) | Server-authorized read-only execution, non-persistence, and bounded source/result presentation | Active |
 | [Trellis Task Delivery](./trellis-task-delivery.md) | Tracked cross-session task assets and local-only runtime boundaries | Active |
+| [Codex Diagnostics And Test Routing](./codex-diagnostics-and-test-routing.md) | Typed Codex Plugin Doctor state and grammar-based test routing | Active |
 
 ---
 
