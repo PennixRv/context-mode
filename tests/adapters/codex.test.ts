@@ -4,7 +4,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CodexAdapter, parseCodexContextModePluginRoot, probeCodexCliVersion } from "../../src/adapters/codex/index.js";
+import {
+  CodexAdapter,
+  parseCodexContextModePluginRoot,
+  probeCodexCliVersion,
+  probeCodexCliVersionResult,
+} from "../../src/adapters/codex/index.js";
+import { resolveCodexCliWorkingDirectory } from "../../src/adapters/codex/paths.js";
 import { resolveSessionDbPath } from "../../src/session/db.js";
 
 function writeCodexPluginManifest(pluginRoot: string): void {
@@ -346,6 +352,103 @@ describe("CodexAdapter", () => {
   // ── Version diagnostics ───────────────────────────────
 
   describe("version diagnostics", () => {
+    it("selects existing stable directories without consulting process.cwd()", () => {
+      const root = mkdtempSync(join(tmpdir(), "ctx-codex-cwd-"));
+      const codexHome = join(root, "codex-home");
+      const home = join(root, "home");
+      mkdirSync(codexHome);
+      mkdirSync(home);
+      expect(resolveCodexCliWorkingDirectory(
+        { CODEX_HOME: codexHome, HOME: home },
+        join(root, "missing"),
+      )).toEqual({ cwd: resolve(codexHome), source: "CODEX_HOME" });
+      rmSync(codexHome, { recursive: true, force: true });
+      expect(resolveCodexCliWorkingDirectory(
+        { CODEX_HOME: codexHome, HOME: home },
+        join(root, "missing"),
+      )).toEqual({ cwd: resolve(home), source: "HOME" });
+      rmSync(home, { recursive: true, force: true });
+      expect(resolveCodexCliWorkingDirectory(
+        { CODEX_HOME: codexHome, HOME: home },
+        root,
+      )).toEqual({ cwd: resolve(root), source: "homedir" });
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("returns null when every stable cwd candidate is unavailable", () => {
+      const root = mkdtempSync(join(tmpdir(), "ctx-codex-cwd-unavailable-"));
+      const missing = join(root, "missing");
+      expect(resolveCodexCliWorkingDirectory(
+        { CODEX_HOME: missing, HOME: missing },
+        missing,
+      )).toBeNull();
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("passes the stable cwd to nested Codex version and inventory probes", () => {
+      const calls: Array<{ args: string[]; cwd?: string }> = [];
+      const root = mkdtempSync(join(tmpdir(), "ctx-codex-cwd-runner-"));
+      const codexHome = join(root, "codex-home");
+      const home = join(root, "home");
+      mkdirSync(codexHome);
+      mkdirSync(home);
+      const runner = (_file: string, args: string[], options: { cwd?: string }): string => {
+        calls.push({ args, cwd: options.cwd });
+        return args[0] === "--version"
+          ? "codex-cli 0.1.0\n"
+          : JSON.stringify({ installed: [], available: [] });
+      };
+      const savedCodexHome = process.env.CODEX_HOME;
+      const savedHome = process.env.HOME;
+      process.env.CODEX_HOME = codexHome;
+      process.env.HOME = home;
+      try {
+        expect(probeCodexCliVersionResult(runner).version).toBe("codex-cli 0.1.0");
+        new CodexAdapter({ codexPluginListRunner: runner })
+          .getCodexPluginDiagnostic(join(root, "runtime"));
+        expect(calls.length).toBeGreaterThanOrEqual(2);
+        expect(calls.every((call) => call.cwd === resolve(codexHome))).toBe(true);
+      } finally {
+        if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = savedCodexHome;
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("reports cwd unavailability when the selected directory disappears before invocation", () => {
+      const root = mkdtempSync(join(tmpdir(), "ctx-codex-cwd-race-"));
+      const codexHome = join(root, "codex-home");
+      const home = join(root, "home");
+      const runtimeRoot = join(root, "runtime");
+      mkdirSync(codexHome);
+      mkdirSync(home);
+      const savedCodexHome = process.env.CODEX_HOME;
+      const savedHome = process.env.HOME;
+      process.env.CODEX_HOME = codexHome;
+      process.env.HOME = home;
+      try {
+        const testAdapter = new CodexAdapter({
+          codexPluginListRunner: (_file, _args, options) => {
+            rmSync(options.cwd, { recursive: true, force: true });
+            throw Object.assign(new Error("selected cwd disappeared"), { status: 1 });
+          },
+        });
+        const diagnostic = testAdapter.getCodexPluginDiagnostic(runtimeRoot);
+        expect(diagnostic.checks.installation).toEqual({
+          state: "unavailable",
+          reason: "codex_cli_cwd_unavailable",
+        });
+      } finally {
+        if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = savedCodexHome;
+        if (savedHome === undefined) delete process.env.HOME;
+        else process.env.HOME = savedHome;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it("reports standalone MCP mode instead of a missing platform plugin", () => {
       expect(adapter.getInstalledVersion()).toBe("standalone");
     });
@@ -560,18 +663,45 @@ describe("CodexAdapter", () => {
 
       expect(pluginRootCheck).toMatchObject({
         status: "unavailable",
-        reason: "plugin_inventory_command_failed",
+        reason: "codex_cli_command_failed",
       });
       expect(pluginRootCheck?.fix).toBeUndefined();
       expect(report.registration).toMatchObject({
         status: "unavailable",
-        reason: "plugin_inventory_command_failed",
+        reason: "codex_cli_command_failed",
       });
       expect(report.registration.fix).toBeUndefined();
       expect(structured.checks?.["codex.plugin.installation"]).toEqual({
         state: "unavailable",
-        reason: "plugin_inventory_command_failed",
+        reason: "codex_cli_command_failed",
       });
+    });
+
+    it.each([
+      ["command startup", { code: "ENOENT" }, "codex_cli_command_not_started"],
+      ["non-zero exit", { status: 2 }, "codex_cli_command_nonzero_exit"],
+      ["timeout", { code: "ETIMEDOUT", killed: true }, "codex_cli_command_timed_out"],
+      ["generic invocation", {}, "codex_cli_command_failed"],
+    ] as const)("reports %s separately from Plugin installation state", (_label, fields, reason) => {
+      const pluginRoot = join(codexDir, `inventory-${reason}`);
+      adapter = new CodexAdapter({
+        codexPluginListRunner: () => {
+          throw Object.assign(new Error("synthetic Codex CLI failure"), fields);
+        },
+      });
+      writeCodexPluginManifest(pluginRoot);
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const report = adapter.getDiagnosticReport(pluginRoot);
+      const structured = JSON.parse(report.structuredSummary ?? "{}") as {
+        checks?: Record<string, { state?: string; reason?: string }>;
+      };
+      expect(structured.checks?.["codex.plugin.installation"]).toEqual({
+        state: "unavailable",
+        reason,
+      });
+      expect(report.registration).toMatchObject({ status: "unavailable", reason });
+      expect(report.registration.fix).toBeUndefined();
     });
 
     it("reports an omitted installation field as unavailable without a repair action", () => {

@@ -25,6 +25,7 @@ import {
   copyFileSync,
   constants,
   mkdirSync,
+  statSync,
 } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +33,10 @@ import { fileURLToPath } from "node:url";
 import { BaseAdapter, resolveContextModeDataRoot } from "../base.js";
 import { hashProjectDirCanonical } from "../../session/db.js";
 import { CODEX_RECOVERY_BRIEF_TOOL_MATCHER } from "../../checkpoint/recovery-brief-capability.js";
-import { resolveCodexConfigDir } from "./paths.js";
+import {
+  resolveCodexCliWorkingDirectory,
+  resolveCodexConfigDir,
+} from "./paths.js";
 import {
   parseCodexPluginList,
   projectCodexPluginDiagnostic,
@@ -170,6 +174,7 @@ type CodexVersionRunner = (
     encoding: BufferEncoding;
     stdio: ["ignore", "pipe", "ignore"];
     timeout: number;
+    cwd: string;
   },
 ) => string | Buffer;
 
@@ -182,24 +187,86 @@ interface CodexPluginReleaseIdentity {
   version: string;
 }
 
-export function probeCodexCliVersion(runCommand: CodexVersionRunner = execFileSync): string | null {
+type CodexCliCommandFailureReason =
+  | "codex_cli_cwd_unavailable"
+  | "codex_cli_command_not_started"
+  | "codex_cli_command_nonzero_exit"
+  | "codex_cli_command_timed_out"
+  | "codex_cli_command_failed";
+
+interface CodexCliVersionProbe {
+  version: string | null;
+  reason?: CodexCliCommandFailureReason;
+}
+
+function isUsableCodexCliCwd(cwd: string): boolean {
+  try {
+    if (!statSync(cwd).isDirectory()) return false;
+    accessSync(cwd, constants.R_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function classifyCodexCliCommandFailure(
+  error: unknown,
+  cwd: string,
+): CodexCliCommandFailureReason {
+  if (!isUsableCodexCliCwd(cwd)) return "codex_cli_cwd_unavailable";
+  const failure = error as {
+    code?: unknown;
+    status?: unknown;
+    signal?: unknown;
+    killed?: unknown;
+  };
+  if (failure.code === "ETIMEDOUT" || failure.killed === true) {
+    return "codex_cli_command_timed_out";
+  }
+  if (failure.code === "ENOENT" || failure.code === "EACCES") {
+    return "codex_cli_command_not_started";
+  }
+  if (typeof failure.status === "number" || failure.signal !== undefined) {
+    return "codex_cli_command_nonzero_exit";
+  }
+  return "codex_cli_command_failed";
+}
+
+export function probeCodexCliVersionResult(
+  runCommand: CodexVersionRunner = execFileSync,
+): CodexCliVersionProbe {
+  const workingDirectory = resolveCodexCliWorkingDirectory();
+  if (!workingDirectory) {
+    return { version: null, reason: "codex_cli_cwd_unavailable" };
+  }
   try {
     const output = process.platform === "win32"
       ? runCommand("cmd.exe", ["/d", "/s", "/c", "codex --version"], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 5000,
+        cwd: workingDirectory.cwd,
       })
       : runCommand("codex", ["--version"], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 1500,
+        cwd: workingDirectory.cwd,
       });
     const version = String(output).trim();
-    return version.length > 0 ? version : "available (version output empty)";
-  } catch {
-    return null;
+    return {
+      version: version.length > 0 ? version : "available (version output empty)",
+    };
+  } catch (error) {
+    return {
+      version: null,
+      reason: classifyCodexCliCommandFailure(error, workingDirectory.cwd),
+    };
   }
+}
+
+export function probeCodexCliVersion(runCommand: CodexVersionRunner = execFileSync): string | null {
+  return probeCodexCliVersionResult(runCommand).version;
 }
 
 export function parseCodexContextModePluginRoot(raw: string): string | null {
@@ -823,7 +890,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   validateHooks(pluginRoot: string): DiagnosticResult[] {
     const results: DiagnosticResult[] = [];
-    const codexCliVersion = probeCodexCliVersion();
+    const codexCliVersionProbe = probeCodexCliVersionResult();
+    const codexCliVersion = codexCliVersionProbe.version;
     const snapshot = this.getCodexDiagnosticSnapshot(pluginRoot);
     const { settingsRaw, settingsReadable } = snapshot;
 
@@ -832,7 +900,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       status: codexCliVersion ? "pass" : "warn",
       message: codexCliVersion
         ? `codex --version resolved to ${codexCliVersion}`
-        : "Could not run codex --version; hooks need the Codex CLI available on PATH",
+        : `Could not run codex --version (reason=${codexCliVersionProbe.reason ?? "codex_cli_command_failed"}); hooks need the Codex CLI available on PATH`,
+      ...(codexCliVersionProbe.reason ? { reason: codexCliVersionProbe.reason } : {}),
       ...(codexCliVersion ? {} : { fix: "Install Codex CLI or make codex available on PATH" }),
     });
 
@@ -1708,22 +1777,30 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private probeCodexContextModePlugin(): CodexPluginListEntry {
+    const workingDirectory = resolveCodexCliWorkingDirectory();
+    if (!workingDirectory) {
+      return { state: "unavailable", reason: "codex_cli_cwd_unavailable" };
+    }
     let structured: CodexPluginListEntry | null = null;
+    let structuredFailure: CodexCliCommandFailureReason | null = null;
     try {
       const output = process.platform === "win32"
         ? this.codexPluginListRunner("cmd.exe", ["/d", "/s", "/c", "codex plugin list --json"], {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 5000,
+          cwd: workingDirectory.cwd,
         })
         : this.codexPluginListRunner("codex", ["plugin", "list", "--json"], {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 5000,
+          cwd: workingDirectory.cwd,
         });
       structured = parseCodexPluginList(String(output));
       if (structured.state === "missing" || structured.cacheRoot) return structured;
-    } catch {
+    } catch (error) {
+      structuredFailure = classifyCodexCliCommandFailure(error, workingDirectory.cwd);
       // Older Codex versions may not support --json.
     }
 
@@ -1736,21 +1813,24 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 5000,
+          cwd: workingDirectory.cwd,
         })
         : this.codexPluginListRunner("codex", ["plugin", "list"], {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 5000,
+          cwd: workingDirectory.cwd,
         });
       const legacy = parseCodexPluginList(String(output));
       if (structured?.state === "present") {
         return { ...structured, cacheRoot: legacy.cacheRoot };
       }
       return legacy;
-    } catch {
+    } catch (error) {
+      const legacyFailure = classifyCodexCliCommandFailure(error, workingDirectory.cwd);
       return structured ?? {
         state: "unavailable",
-        reason: "plugin_inventory_command_failed",
+        reason: structuredFailure ?? legacyFailure,
       };
     }
   }

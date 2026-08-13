@@ -1610,6 +1610,14 @@ those Hooks, so `session_hooks_loaded` remains
 `host_session_observation_unavailable` until Codex exposes direct host-session
 evidence.
 
+Nested Codex CLI Doctor probes use an explicit existing directory selected from
+`CODEX_HOME`, `HOME`, or the operating-system home directory. They never inherit
+`process.cwd()`, because a Plugin MCP process can outlive a deleted
+`plugin-backup-*` update directory. If no stable directory is observable, the
+diagnostic reports `codex_cli_cwd_unavailable`; command startup, non-zero exit,
+timeout, and generic invocation failures retain distinct reasons. This is a
+component-side mitigation and does not claim to fix Codex Plugin update cleanup.
+
 ### MCP response presentation
 
 Execution source remains directly visible for the audit and inspection contracts established by upstream [Issue #717](https://github.com/mksglu/context-mode/issues/717) and [Issue #736](https://github.com/mksglu/context-mode/issues/736), but one shared policy bounds duplicate MCP result content. An execution proof shows the language, bounded source, original/shown/omitted character semantics, truncation state, and SHA-256 without repeating a five-field ledger. Truncation counts Unicode code points and chooses a Markdown fence longer than any backtick run in the preview.

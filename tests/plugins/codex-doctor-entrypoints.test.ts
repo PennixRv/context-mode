@@ -2,8 +2,10 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -166,6 +168,14 @@ async function stopChild(child: ChildProcess): Promise<void> {
   await exited;
 }
 
+async function waitForFile(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
 function extractDiagnostic(text: string): Record<string, unknown> {
   const plain = text.replace(/\u001b\[[0-9;]*m/g, "");
   const marker = plain.indexOf('"plugin_id"');
@@ -309,4 +319,83 @@ describe("Issue 009 built Doctor entry points", () => {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 40_000);
+
+  test.runIf(process.platform === "linux")(
+    "MCP inventory survives deletion of its inherited cwd by using stable CODEX_HOME",
+    async () => {
+      const temporaryRoot = mkdtempSync(join(tmpdir(), "context-mode-deleted-cwd-"));
+      const { cacheRoot, fakeBin, packageVersion } = writeFixture(temporaryRoot);
+      const doomedCwd = join(temporaryRoot, "plugin-backup-deleted");
+      const readyPath = join(temporaryRoot, "server-ready");
+      const continuePath = join(temporaryRoot, "server-continue");
+      const bootstrapPath = join(temporaryRoot, "bootstrap.mjs");
+      mkdirSync(doomedCwd);
+      const environment = scrubEnvironment(temporaryRoot, fakeBin);
+      const cli = spawnSync(process.execPath, [join(repositoryRoot, "cli.bundle.mjs"), "doctor"], {
+        cwd: repositoryRoot,
+        env: environment,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      expect(cli.error).toBeUndefined();
+      const cliDiagnostic = extractDiagnostic(`${cli.stdout}\n${cli.stderr}`);
+      writeFileSync(bootstrapPath, [
+        `import { existsSync, writeFileSync } from "node:fs";`,
+        `writeFileSync(${JSON.stringify(readyPath)}, "ready\\n");`,
+        `while (!existsSync(${JSON.stringify(continuePath)})) {`,
+        `  await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));`,
+        `}`,
+        `await import(${JSON.stringify(join(repositoryRoot, "server.bundle.mjs"))});`,
+      ].join("\n"));
+
+      const child = spawn(process.execPath, [bootstrapPath], {
+        cwd: doomedCwd,
+        env: environment,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stderr = "";
+      child.stderr!.on("data", (data: Buffer) => { stderr += data.toString(); });
+
+      try {
+        await waitForFile(readyPath);
+        rmSync(doomedCwd, { recursive: true, force: true });
+        expect(readlinkSync(`/proc/${child.pid}/cwd`)).toContain("(deleted)");
+        writeFileSync(continuePath, "continue\n");
+        const initialized = await awaitRpc(child, 1, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "deleted-cwd-test", version: "1.0" },
+          },
+        }, () => stderr);
+        expect(initialized.error).toBeUndefined();
+        sendRpc(child, { jsonrpc: "2.0", method: "notifications/initialized" });
+        const called = await awaitRpc(child, 2, {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "ctx_doctor", arguments: {} },
+        }, () => stderr);
+        const text = called.result?.content?.map((item) => item.text).join("\n") ?? "";
+        const diagnostic = extractDiagnostic(text);
+        expect(diagnostic).toEqual(cliDiagnostic);
+        expect(diagnostic).toMatchObject({
+          plugin_id: "context-mode@context-mode",
+          version: packageVersion,
+          installed: true,
+          enabled: true,
+          cache_root: cacheRoot,
+        });
+        expect(JSON.stringify(diagnostic)).not.toContain("plugin_inventory_command_failed");
+        expect(text).not.toContain("failed to load configuration");
+      } finally {
+        await stopChild(child);
+        rmSync(temporaryRoot, { recursive: true, force: true });
+      }
+    },
+    40_000,
+  );
 });

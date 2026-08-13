@@ -40,6 +40,16 @@ Every diagnostic check uses exactly one of `present`, `missing`,
 converted to `missing`. A filesystem manifest proves package contents only; it
 does not prove that an already-running host session loaded the Hook.
 
+Nested Codex CLI probes must pass an explicit, existing working directory. The
+candidate order is `CODEX_HOME`, `HOME`, then the operating-system home
+directory; `process.cwd()` is never a diagnostic fallback because a Plugin MCP
+process may inherit a deleted update-backup directory. If all candidates are
+unusable, the probe reports `codex_cli_cwd_unavailable`. Command startup,
+non-zero exit, timeout, and generic invocation failures retain separate reason
+codes. This is a component-side diagnostic mitigation; it does not repair the
+Codex host's Plugin update cleanup or guarantee the host process itself has a
+stable cwd.
+
 The Codex MCP manifest forwards the exact read-only discovery variables
 `PATH`, `HOME`, and `CODEX_HOME`, plus the five bounded presentation variables.
 It keeps `CONTEXT_MODE_PLATFORM=codex` fixed and does not forward credentials or

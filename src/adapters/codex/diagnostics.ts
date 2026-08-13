@@ -6,6 +6,11 @@ export type CodexDiagnosticState =
 
 export type CodexDiagnosticReason =
   | "plugin_inventory_command_failed"
+  | "codex_cli_cwd_unavailable"
+  | "codex_cli_command_not_started"
+  | "codex_cli_command_nonzero_exit"
+  | "codex_cli_command_timed_out"
+  | "codex_cli_command_failed"
   | "plugin_inventory_output_empty"
   | "plugin_inventory_output_invalid"
   | "plugin_not_listed"

@@ -115,6 +115,7 @@ import {
   inferInstallationChannel,
   type InstallationChannel,
 } from "./version-channel.js";
+import { resolveCodexCliWorkingDirectory } from "./adapters/codex/paths.js";
 import { createHash } from "node:crypto";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
@@ -132,16 +133,20 @@ function getPackageRoot(): string {
 }
 
 function resolveCodexRuntimePluginRoot(fallbackRoot: string): string {
+  const workingDirectory = resolveCodexCliWorkingDirectory();
+  if (!workingDirectory) return fallbackRoot;
   const probe = (json: boolean) => process.platform === "win32"
     ? spawnSync("cmd.exe", ["/d", "/s", "/c", `codex plugin list${json ? " --json" : ""}`], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
+      cwd: workingDirectory.cwd,
     })
     : spawnSync("codex", ["plugin", "list", ...(json ? ["--json"] : [])], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,
+      cwd: workingDirectory.cwd,
     });
   try {
     const structured = probe(true);
