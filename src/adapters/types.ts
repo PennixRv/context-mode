@@ -304,6 +304,9 @@ export interface HookAdapter {
   /** Return a stable, content-free structured diagnostic summary when supported. */
   getStructuredDiagnosticSummary?(pluginRoot: string): string;
 
+  /** Collect one fact snapshot for all Doctor renderers when supported. */
+  getDiagnosticReport?(pluginRoot: string): PlatformDiagnosticReport;
+
   /**
    * Get the installed version from this platform's registry/marketplace, or
    * "standalone" when no platform-owned plugin version exists.
@@ -334,12 +337,20 @@ export interface HookAdapter {
 export interface DiagnosticResult {
   /** What was checked. */
   check: string;
-  /** Pass, fail, or warning. */
-  status: "pass" | "fail" | "warn";
+  /** Pass, fail, warning, or an explicitly unavailable observation. */
+  status: "pass" | "fail" | "warn" | "unavailable";
   /** Human-readable message. */
   message: string;
+  /** Stable reason for an unavailable observation, when the adapter exposes one. */
+  reason?: string;
   /** Suggested fix command (if applicable). */
   fix?: string;
+}
+
+export interface PlatformDiagnosticReport {
+  hookResults: DiagnosticResult[];
+  structuredSummary?: string;
+  registration: DiagnosticResult;
 }
 
 /**

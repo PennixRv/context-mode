@@ -16,9 +16,10 @@ serializeCodexPluginDiagnostic(diagnostic: CodexPluginDiagnostic): string
 isTestExecutionCommand(command: string): boolean
 ```
 
-The CLI Doctor and MCP `ctx_doctor` call the same `getStructuredDiagnosticSummary`
-projection. `codex plugin list --json` is an upstream input, with bounded legacy
-text fallback; context-mode does not rewrite the Codex CLI's own schema.
+The CLI Doctor and MCP `ctx_doctor` collect one diagnostic report and render
+its Hook checks, structured projection, and registration result. `codex plugin
+list --json` is an upstream input, with bounded legacy text fallback;
+context-mode does not rewrite the Codex CLI's own schema.
 
 ## 3. Contracts
 
@@ -38,6 +39,12 @@ Every diagnostic check uses exactly one of `present`, `missing`,
 `unavailable` means the host or probe did not expose evidence. It must not be
 converted to `missing`. A filesystem manifest proves package contents only; it
 does not prove that an already-running host session loaded the Hook.
+
+The Codex MCP manifest forwards the exact read-only discovery variables
+`PATH`, `HOME`, and `CODEX_HOME`, plus the five bounded presentation variables.
+It keeps `CONTEXT_MODE_PLATFORM=codex` fixed and does not forward credentials or
+an open-ended environment. This gives the CLI and MCP processes the same
+Codex executable and profile discovery inputs without hard-coding a root.
 
 ### Test routing
 
@@ -67,7 +74,9 @@ output is response evidence only.
 | --- | --- |
 | Plugin list is empty/unparseable | `unavailable` |
 | Plugin list explicitly has no matching Plugin | `missing` |
+| Matching Plugin omits an inventory field | that field is `unavailable` with a stable field-specific reason |
 | Plugin disabled | `enabled: missing`; session Hook loading `not_applicable` |
+| Plugin is confirmed absent | cache and current-session observations are `not_applicable` |
 | Cache path/manifest cannot be observed | `unavailable` or `not_applicable`, never false `missing` |
 | Runtime/cache roots differ but release matches | alignment `present: different_matching_release` |
 | Runtime/cache roots differ and release differs | alignment `missing: different_release` |

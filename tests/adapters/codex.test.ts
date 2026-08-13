@@ -490,11 +490,11 @@ describe("CodexAdapter", () => {
         missingHooks: [],
       });
       expect(adapter.getCodexPluginDiagnostic(doctorRoot).checks).toMatchObject({
-        installation: { state: "missing" },
+        installation: { state: "missing", reason: "plugin_not_installed" },
         runtimeRoot: { state: "present", value: doctorRoot },
         manifest: { state: "present" },
         hooks: { state: "present" },
-        sessionHooksLoaded: { state: "unavailable" },
+        sessionHooksLoaded: { state: "not_applicable", reason: "plugin_not_installed" },
       });
       expect(adapter.checkPluginRegistration(doctorRoot)).toMatchObject({
         status: "warn",
@@ -502,6 +502,139 @@ describe("CodexAdapter", () => {
       expect(adapter.validateHooks(doctorRoot)).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ check: "Codex plugin hooks", status: "fail" }),
       ]));
+    });
+
+    it("uses one Plugin inventory snapshot throughout one Doctor report", () => {
+      const pluginRoot = join(codexDir, "single-snapshot-root");
+      let inventoryCalls = 0;
+      adapter = new CodexAdapter({
+        codexPluginListRunner: () => {
+          inventoryCalls++;
+          return JSON.stringify({
+            installed: [{
+              pluginId: "context-mode@context-mode",
+              version: "1.0.188",
+              installed: true,
+              enabled: true,
+              marketplaceSource: { source: "/fixture/marketplace" },
+              installedPath: pluginRoot,
+            }],
+            available: [],
+          });
+        },
+      });
+      writeCodexPluginManifest(pluginRoot);
+      writeCodexPluginReleaseIdentity(pluginRoot, "1.0.188");
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const report = adapter.getDiagnosticReport(pluginRoot);
+
+      expect(inventoryCalls).toBe(1);
+      expect(report.registration.status).toBe("pass");
+      expect(JSON.parse(report.structuredSummary ?? "{}")).toMatchObject({
+        installed: true,
+        enabled: true,
+        source_root: "/fixture/marketplace",
+        cache_root: pluginRoot,
+        runtime_root: pluginRoot,
+      });
+    });
+
+    it("reports inventory observation failures without repair warnings", () => {
+      const pluginRoot = join(codexDir, "inventory-unavailable-root");
+      adapter = new CodexAdapter({
+        codexPluginListRunner: () => {
+          throw new Error("synthetic unavailable inventory");
+        },
+      });
+      writeCodexPluginManifest(pluginRoot);
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const report = adapter.getDiagnosticReport(pluginRoot);
+      const pluginRootCheck = report.hookResults.find((result) =>
+        result.check === "Codex plugin root"
+      );
+      const structured = JSON.parse(report.structuredSummary ?? "{}") as {
+        checks?: Record<string, { state?: string; reason?: string }>;
+      };
+
+      expect(pluginRootCheck).toMatchObject({
+        status: "unavailable",
+        reason: "plugin_inventory_command_failed",
+      });
+      expect(pluginRootCheck?.fix).toBeUndefined();
+      expect(report.registration).toMatchObject({
+        status: "unavailable",
+        reason: "plugin_inventory_command_failed",
+      });
+      expect(report.registration.fix).toBeUndefined();
+      expect(structured.checks?.["codex.plugin.installation"]).toEqual({
+        state: "unavailable",
+        reason: "plugin_inventory_command_failed",
+      });
+    });
+
+    it("reports an omitted installation field as unavailable without a repair action", () => {
+      const pluginRoot = join(codexDir, "inventory-field-unreported-root");
+      adapter = new CodexAdapter({
+        codexPluginListRunner: () => JSON.stringify({
+          installed: [{
+            pluginId: "context-mode@context-mode",
+            version: "1.0.188",
+            enabled: true,
+          }],
+          available: [],
+        }),
+      });
+      writeCodexPluginManifest(pluginRoot);
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const report = adapter.getDiagnosticReport(pluginRoot);
+      const pluginRootCheck = report.hookResults.find((result) =>
+        result.check === "Codex plugin root"
+      );
+
+      expect(pluginRootCheck).toMatchObject({
+        status: "unavailable",
+        reason: "plugin_installation_unreported",
+      });
+      expect(pluginRootCheck?.fix).toBeUndefined();
+      expect(report.registration).toMatchObject({
+        status: "unavailable",
+        reason: "plugin_installation_unreported",
+      });
+      expect(report.registration.fix).toBeUndefined();
+    });
+
+    it("reports an omitted cache root as unavailable without a repair action", () => {
+      const pluginRoot = join(codexDir, "inventory-root-unreported");
+      adapter = new CodexAdapter({
+        codexPluginListRunner: () => JSON.stringify({
+          installed: [{
+            pluginId: "context-mode@context-mode",
+            version: "1.0.189",
+            installed: true,
+            enabled: true,
+            marketplaceSource: { source: "/fixture/marketplace" },
+          }],
+          available: [],
+        }),
+      });
+      writeCodexPluginManifest(pluginRoot);
+      writeCodexPluginReleaseIdentity(pluginRoot, "1.0.189");
+      writeFileSync(join(codexDir, "config.toml"), pluginEnabledSettings(), "utf-8");
+
+      const report = adapter.getDiagnosticReport(pluginRoot);
+      const pluginRootCheck = report.hookResults.find((result) =>
+        result.check === "Codex plugin root"
+      );
+
+      expect(pluginRootCheck).toMatchObject({
+        status: "unavailable",
+        reason: "plugin_cache_root_unreported",
+      });
+      expect(pluginRootCheck?.fix).toBeUndefined();
+      expect(report.registration.status).toBe("pass");
     });
 
     it("reports missing hook events from the plugin manager runtime manifest", () => {
@@ -1115,6 +1248,7 @@ trusted_hash = "sha256:stale"
       expect(root?.status).toBe("warn");
       expect(root?.message).toContain(doctorRoot);
       expect(root?.message).toContain(runtimeRoot);
+      expect(root?.fix).toContain("Restart Codex");
     });
 
     it("reports a missing installed-cache manifest without invalidating loaded runtime hooks", () => {
@@ -1129,6 +1263,7 @@ trusted_hash = "sha256:stale"
       const cacheManifest = results.find((result) => result.check === "Codex plugin cache manifest");
       expect(cacheManifest?.status).toBe("fail");
       expect(cacheManifest?.message).toContain(join(runtimeRoot));
+      expect(cacheManifest?.fix).toContain("Reinstall or upgrade");
       expect(results.some((result) => result.check === "Codex plugin hooks" && result.status === "fail")).toBe(false);
     });
 

@@ -16,7 +16,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const presentationEnvVars = [
+const codexMcpEnvVars = [
+  "PATH",
+  "HOME",
+  "CODEX_HOME",
   "CONTEXT_MODE_CODE_ECHO_MAX",
   "CONTEXT_MODE_COMMAND_ECHO_MAX",
   "CONTEXT_MODE_TITLE_PREVIEW_MAX",
@@ -46,9 +49,9 @@ function readContextModeMcpEntry(path) {
   return entry;
 }
 
-function assertPresentationEnvironment(entry, description) {
-  if (JSON.stringify(entry.env_vars) !== JSON.stringify(presentationEnvVars)) {
-    throw new Error(`${description} does not declare the exact presentation env_vars allowlist`);
+function assertCodexMcpEnvironment(entry, description) {
+  if (JSON.stringify(entry.env_vars) !== JSON.stringify(codexMcpEnvVars)) {
+    throw new Error(`${description} does not declare the exact Codex MCP env_vars allowlist`);
   }
   if (
     JSON.stringify(entry.env) !==
@@ -111,8 +114,8 @@ function main() {
     const payloadMcpEntry = readContextModeMcpEntry(
       join(extractionRoot, "plugins", "context-mode", ".codex-plugin", "mcp.json"),
     );
-    assertPresentationEnvironment(sourceMcpEntry, "source Codex MCP manifest");
-    assertPresentationEnvironment(payloadMcpEntry, "marketplace Codex MCP manifest");
+    assertCodexMcpEnvironment(sourceMcpEntry, "source Codex MCP manifest");
+    assertCodexMcpEnvironment(payloadMcpEntry, "marketplace Codex MCP manifest");
 
     run("codex", ["plugin", "marketplace", "add", extractionRoot], {
       cwd: projectRoot,
@@ -141,7 +144,7 @@ function main() {
     const installedMcpEntry = readContextModeMcpEntry(
       join(pluginRoot, ".codex-plugin", "mcp.json"),
     );
-    assertPresentationEnvironment(installedMcpEntry, "installed Codex MCP manifest");
+    assertCodexMcpEnvironment(installedMcpEntry, "installed Codex MCP manifest");
 
     const normalizedServers = JSON.parse(run("codex", ["mcp", "list", "--json"], {
       cwd: projectRoot,
@@ -151,7 +154,7 @@ function main() {
     if (!normalizedServer || normalizedServer.transport?.type !== "stdio") {
       throw new Error("Codex did not normalize the installed context-mode stdio MCP server");
     }
-    assertPresentationEnvironment(
+    assertCodexMcpEnvironment(
       normalizedServer.transport,
       "normalized Codex MCP transport",
     );
@@ -195,7 +198,7 @@ function main() {
       archiveSha256: sha256(archivePath),
       installed: "context-mode@context-mode-offline",
       mcpInitialized: true,
-      envVars: presentationEnvVars,
+      envVars: codexMcpEnvVars,
       manifestEntries: manifest.entries.length,
     }, null, 2));
   } finally {

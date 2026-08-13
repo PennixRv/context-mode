@@ -9,7 +9,10 @@ import { gunzipSync } from "node:zlib";
 const repositoryRoot = resolve(__dirname, "..", "..");
 const builderPath = resolve(repositoryRoot, "scripts", "build-codex-marketplace-bundle.mjs");
 const verifierPath = resolve(repositoryRoot, "scripts", "verify-codex-release-asset.mjs");
-const presentationEnvVars = [
+const codexMcpEnvVars = [
+  "PATH",
+  "HOME",
+  "CODEX_HOME",
   "CONTEXT_MODE_CODE_ECHO_MAX",
   "CONTEXT_MODE_COMMAND_ECHO_MAX",
   "CONTEXT_MODE_TITLE_PREVIEW_MAX",
@@ -148,7 +151,7 @@ describe("Codex offline marketplace release asset", () => {
       const payloadMcp = readFileSync(payloadMcpPath, "utf8");
       const payloadEntry = JSON.parse(payloadMcp).mcpServers["context-mode"];
       expect(payloadMcp).toBe(sourceMcp);
-      expect(payloadEntry.env_vars).toEqual(presentationEnvVars);
+      expect(payloadEntry.env_vars).toEqual(codexMcpEnvVars);
       expect(payloadEntry.env).toEqual({ CONTEXT_MODE_PLATFORM: "codex" });
 
       const contentManifest = JSON.parse(

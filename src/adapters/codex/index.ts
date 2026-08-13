@@ -46,6 +46,7 @@ import {
   type HookParadigm,
   type PlatformCapabilities,
   type DiagnosticResult,
+  type PlatformDiagnosticReport,
   type PreToolUseEvent,
   type PostToolUseEvent,
   type PreCompactEvent,
@@ -344,6 +345,12 @@ function parseTomlQuotedString(raw: string): string | null {
 
 export class CodexAdapter extends BaseAdapter implements HookAdapter {
   private readonly codexPluginListRunner: CodexVersionRunner;
+  private diagnosticSnapshot: {
+    pluginRoot: string;
+    settingsRaw: string;
+    settingsReadable: boolean;
+    diagnostic: CodexPluginDiagnostic;
+  } | null = null;
 
   constructor(options: CodexAdapterOptions = {}) {
     super([".codex"]);
@@ -817,8 +824,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   validateHooks(pluginRoot: string): DiagnosticResult[] {
     const results: DiagnosticResult[] = [];
     const codexCliVersion = probeCodexCliVersion();
-    let settingsRaw = "";
-    let settingsReadable = false;
+    const snapshot = this.getCodexDiagnosticSnapshot(pluginRoot);
+    const { settingsRaw, settingsReadable } = snapshot;
 
     results.push({
       check: "Codex CLI binary",
@@ -829,9 +836,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       ...(codexCliVersion ? {} : { fix: "Install Codex CLI or make codex available on PATH" }),
     });
 
-    try {
-      settingsRaw = readFileSync(this.getSettingsPath(), "utf-8");
-      settingsReadable = true;
+    if (settingsReadable) {
       const enabled = hasCodexHooksFeature(settingsRaw);
       const deprecatedOnly = !enabled && hasDeprecatedCodexHooksFeature(settingsRaw);
 
@@ -845,17 +850,17 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             : `[features].hooks missing from ${this.getSettingsPath()}`,
         ...(enabled ? {} : { fix: "context-mode upgrade" }),
       });
-    } catch {
+    } else {
       results.push({
         check: "Codex hooks feature flag",
-        status: "warn",
-        message: `Could not read ${this.getSettingsPath()}`,
-        fix: "context-mode upgrade",
+        status: "unavailable",
+        reason: "codex_config_unavailable",
+        message: `Could not observe ${this.getSettingsPath()} (reason=codex_config_unavailable)`,
       });
     }
 
     const expected = this.generateHookConfig("");
-    const pluginHookStatus = this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
+    const pluginHookStatus = snapshot.diagnostic;
     const codexPluginEnabled = pluginHookStatus.enabled === true;
     const codexPluginHooksAvailable = pluginHookStatus.hooksAvailable;
     if (codexPluginEnabled && pluginHookStatus.cacheRoot) {
@@ -874,11 +879,23 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           : {}),
       });
     } else if (codexPluginEnabled) {
+      const rootUnavailable = pluginHookStatus.checks.installation.state === "unavailable"
+        || pluginHookStatus.checks.cacheRoot.state === "unavailable";
+      const rootUnavailableReason = pluginHookStatus.checks.installation.state === "unavailable"
+        ? pluginHookStatus.checks.installation.reason
+        : pluginHookStatus.checks.cacheRoot.reason;
       results.push({
         check: "Codex plugin root",
-        status: "warn",
-        message: `current process root is ${pluginHookStatus.runtimeRoot}; installed cache root is ${pluginHookStatus.checks.cacheRoot.state}`,
-        fix: "Verify `codex plugin list --json` and the marketplace plugin installation",
+        status: rootUnavailable ? "unavailable" : "warn",
+        ...(rootUnavailable
+          ? { reason: rootUnavailableReason }
+          : {}),
+        message: rootUnavailable
+          ? `current process root is ${pluginHookStatus.runtimeRoot}; installed Plugin root is unavailable (reason=${rootUnavailableReason})`
+          : `current process root is ${pluginHookStatus.runtimeRoot}; installed cache root is ${pluginHookStatus.checks.cacheRoot.state}`,
+        ...(rootUnavailable
+          ? {}
+          : { fix: "Verify `codex plugin list --json` and the marketplace plugin installation" }),
       });
     }
     if (codexPluginEnabled && pluginHookStatus.checks.cacheManifest.state === "missing") {
@@ -906,10 +923,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     if (codexPluginEnabled) {
       results.push({
         check: "Codex current-session hooks",
-        status: pluginHookStatus.checks.sessionHooksLoaded.state === "present" ? "pass" : "warn",
+        status: pluginHookStatus.checks.sessionHooksLoaded.state === "present"
+          ? "pass"
+          : "unavailable",
+        ...(pluginHookStatus.checks.sessionHooksLoaded.state === "present"
+          ? {}
+          : { reason: pluginHookStatus.checks.sessionHooksLoaded.reason }),
         message: pluginHookStatus.checks.sessionHooksLoaded.state === "present"
           ? "current session hook loading is confirmed"
-          : "current session hook loading is unavailable to the Doctor process; restart and verify from the host session",
+          : `current session hook loading is unavailable to the Doctor process (reason=${pluginHookStatus.checks.sessionHooksLoaded.reason})`,
       });
     }
     if (codexPluginEnabled && hasStandaloneContextModeMcp(settingsRaw)) {
@@ -1046,8 +1068,17 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   checkPluginRegistration(pluginRoot = process.cwd()): DiagnosticResult {
     try {
-      const raw = readFileSync(this.getSettingsPath(), "utf-8");
-      const diagnostic = this.getCodexPluginHookStatus(pluginRoot, raw, true);
+      const snapshot = this.getCodexDiagnosticSnapshot(pluginRoot);
+      if (!snapshot.settingsReadable) {
+        return {
+          check: "MCP registration",
+          status: "unavailable",
+          reason: "codex_config_unavailable",
+          message: `Could not observe ${this.getSettingsPath()} (reason=codex_config_unavailable)`,
+        };
+      }
+      const raw = snapshot.settingsRaw;
+      const diagnostic = snapshot.diagnostic;
       const pluginId = diagnostic.pluginId ?? "context-mode@context-mode";
       const pluginEnabled = diagnostic.enabled === true;
       const standaloneMcp = hasStandaloneContextModeMcp(raw);
@@ -1064,6 +1095,14 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }
 
       if (pluginEnabled) {
+        if (diagnostic.checks.installation.state === "unavailable") {
+          return {
+            check: "MCP registration",
+            status: "unavailable",
+            reason: diagnostic.checks.installation.reason,
+            message: `${pluginId} is enabled in readable config.toml and the current runtime root is ${diagnostic.runtimeRoot}; Plugin inventory is unavailable (reason=${diagnostic.checks.installation.reason})`,
+          };
+        }
         if (diagnostic.checks.installation.state !== "present") {
           return {
             check: "MCP registration",
@@ -1133,6 +1172,11 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   /** Shared typed facts consumed by CLI Doctor, MCP Doctor, and hook validation. */
   getCodexPluginDiagnostic(pluginRoot: string): CodexPluginDiagnostic {
+    return this.getCodexDiagnosticSnapshot(pluginRoot).diagnostic;
+  }
+
+  private collectCodexDiagnosticSnapshot(pluginRoot: string): NonNullable<CodexAdapter["diagnosticSnapshot"]> {
+    const normalizedRoot = resolve(pluginRoot);
     let settingsRaw = "";
     let settingsReadable = false;
     try {
@@ -1141,11 +1185,37 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     } catch {
       // The projection records disabled/unavailable rather than guessing.
     }
-    return this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable);
+    return {
+      pluginRoot: normalizedRoot,
+      settingsRaw,
+      settingsReadable,
+      diagnostic: this.getCodexPluginHookStatus(pluginRoot, settingsRaw, settingsReadable),
+    };
+  }
+
+  private getCodexDiagnosticSnapshot(pluginRoot: string): NonNullable<CodexAdapter["diagnosticSnapshot"]> {
+    const normalizedRoot = resolve(pluginRoot);
+    return this.diagnosticSnapshot?.pluginRoot === normalizedRoot
+      ? this.diagnosticSnapshot
+      : this.collectCodexDiagnosticSnapshot(pluginRoot);
   }
 
   getStructuredDiagnosticSummary(pluginRoot: string): string {
     return serializeCodexPluginDiagnostic(this.getCodexPluginDiagnostic(pluginRoot));
+  }
+
+  getDiagnosticReport(pluginRoot: string): PlatformDiagnosticReport {
+    const snapshot = this.collectCodexDiagnosticSnapshot(pluginRoot);
+    this.diagnosticSnapshot = snapshot;
+    try {
+      return {
+        hookResults: this.validateHooks(pluginRoot),
+        structuredSummary: serializeCodexPluginDiagnostic(snapshot.diagnostic),
+        registration: this.checkPluginRegistration(pluginRoot),
+      };
+    } finally {
+      this.diagnosticSnapshot = null;
+    }
   }
 
   // ── Upgrade ────────────────────────────────────────────
@@ -1601,6 +1671,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           : null);
     return projectCodexPluginDiagnostic({
       pluginListState: pluginList.state,
+      pluginListReason: pluginList.reason,
       installed,
       enabled,
       pluginId: pluginList.pluginId ?? configuredPluginId,
@@ -1677,7 +1748,10 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       }
       return legacy;
     } catch {
-      return structured ?? { state: "unavailable" };
+      return structured ?? {
+        state: "unavailable",
+        reason: "plugin_inventory_command_failed",
+      };
     }
   }
 

@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/codex-diagnostics-and-test-routing.md","reason":"Defines the shared Doctor field and routing contract that implementation must preserve and extend."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Guides manifest-to-runtime-to-entry-point data-flow validation."}
+{"file":".trellis/spec/guides/repository-maintenance-thinking-guide.md","reason":"Defines generated asset, release, and repository drift discipline."}
+{"file":".trellis/tasks/08-13-context-mode-009-doctor-runtime-facts/research/root-issue-009-v1.0.188-evidence.md","reason":"Immutable local copy of the user-supplied real installed CLI/MCP reproduction and root acceptance boundary."}

@@ -12,11 +12,14 @@ const RUNTIME_ROOT = "/runtime/context-mode";
 
 describe("Issue 009 Codex Plugin diagnostic projection", () => {
   it("does not infer a missing installation from an empty probe", () => {
-    expect(parseCodexPluginList("  \n")).toEqual({ state: "unavailable" });
+    expect(parseCodexPluginList("  \n")).toEqual({
+      state: "unavailable",
+      reason: "plugin_inventory_output_empty",
+    });
     expect(parseCodexPluginList(JSON.stringify({ installed: [], available: [] })))
-      .toEqual({ state: "missing" });
+      .toEqual({ state: "missing", reason: "plugin_not_listed" });
     expect(parseCodexPluginList("No plugins installed"))
-      .toEqual({ state: "missing" });
+      .toEqual({ state: "missing", reason: "plugin_not_listed" });
   });
 
   it("parses the structured Codex Plugin list contract", () => {
@@ -40,6 +43,47 @@ describe("Issue 009 Codex Plugin diagnostic projection", () => {
       enabled: true,
       sourceRoot: SOURCE_ROOT,
       cacheRoot: CACHE_ROOT,
+    });
+  });
+
+  it("keeps omitted matching-inventory fields unavailable instead of missing", () => {
+    const parsed = parseCodexPluginList(JSON.stringify({
+      installed: [{
+        pluginId: "context-mode@context-mode",
+        version: "1.0.188",
+        enabled: true,
+      }],
+      available: [],
+    }));
+    const diagnostic = projectCodexPluginDiagnostic({
+      pluginListState: parsed.state,
+      pluginId: parsed.pluginId,
+      version: parsed.version,
+      installed: parsed.installed,
+      enabled: parsed.enabled,
+      sourceRoot: parsed.sourceRoot,
+      cacheRoot: parsed.cacheRoot,
+      runtimeRoot: RUNTIME_ROOT,
+      runtimeManifestAvailable: true,
+      cacheManifestAvailable: null,
+      sameRoot: null,
+      releaseMatches: null,
+      requiredHooks: ["PreToolUse"],
+      registeredHooks: ["PreToolUse"],
+      sessionHooksLoaded: null,
+    });
+
+    expect(diagnostic.checks.installation).toEqual({
+      state: "unavailable",
+      reason: "plugin_installation_unreported",
+    });
+    expect(diagnostic.checks.sourceRoot).toEqual({
+      state: "unavailable",
+      reason: "plugin_source_unreported",
+    });
+    expect(diagnostic.checks.cacheRoot).toEqual({
+      state: "unavailable",
+      reason: "plugin_cache_root_unreported",
     });
   });
 
@@ -119,6 +163,9 @@ describe("Issue 009 Codex Plugin diagnostic projection", () => {
     expect(diagnostic.checks.manifest.state).toBe("present");
     expect(diagnostic.checks.hooks.state).toBe("present");
     expect(diagnostic.checks.sessionHooksLoaded.state).toBe("unavailable");
+    expect(diagnostic.checks.sessionHooksLoaded.reason).toBe(
+      "host_session_observation_unavailable",
+    );
     expect(diagnostic.missingHooks).toEqual([]);
   });
 
@@ -158,7 +205,11 @@ describe("Issue 009 Codex Plugin diagnostic projection", () => {
       registeredHooks: ["PreToolUse"],
       sessionHooksLoaded: null,
     });
-    expect(uninstalled.checks.installation).toEqual({ state: "missing", value: false });
+    expect(uninstalled.checks.installation).toEqual({
+      state: "missing",
+      value: false,
+      reason: "plugin_not_installed",
+    });
     expect(uninstalled.checks.cacheManifest.state).toBe("not_applicable");
     expect(uninstalled.checks.sessionHooksLoaded.state).toBe("not_applicable");
 
@@ -178,8 +229,14 @@ describe("Issue 009 Codex Plugin diagnostic projection", () => {
       registeredHooks: ["PreToolUse"],
       sessionHooksLoaded: null,
     });
-    expect(absentCache.checks.cacheRoot.state).toBe("missing");
-    expect(absentCache.checks.cacheManifest.state).toBe("unavailable");
+    expect(absentCache.checks.cacheRoot).toEqual({
+      state: "unavailable",
+      reason: "plugin_cache_root_unreported",
+    });
+    expect(absentCache.checks.cacheManifest).toEqual({
+      state: "unavailable",
+      reason: "plugin_cache_root_unreported",
+    });
 
     const missingManifest = projectCodexPluginDiagnostic({
       pluginListState: "present",
@@ -239,6 +296,7 @@ describe("Issue 009 Codex Plugin diagnostic projection", () => {
     expect(diagnostic.checks.runtimeCacheAlignment).toEqual({
       state: "missing",
       value: "different_release",
+      reason: "runtime_release_mismatch",
     });
   });
 });

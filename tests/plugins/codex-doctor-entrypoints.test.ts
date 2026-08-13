@@ -20,6 +20,15 @@ interface RpcResponse {
   error?: { code: number; message: string };
 }
 
+interface CodexMcpManifest {
+  mcpServers: {
+    "context-mode": {
+      env?: Record<string, string>;
+      env_vars?: string[];
+    };
+  };
+}
+
 function scrubEnvironment(temporaryRoot: string, fakeBin: string): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const key of [
@@ -50,6 +59,34 @@ function scrubEnvironment(temporaryRoot: string, fakeBin: string): NodeJS.Proces
     CONTEXT_MODE_PROJECT_DIR: join(temporaryRoot, "project"),
     PATH: [fakeBin, process.env.PATH].filter(Boolean).join(delimiter),
   };
+}
+
+function projectPluginMcpEnvironment(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const manifest = JSON.parse(
+    readFileSync(join(repositoryRoot, ".codex-plugin", "mcp.json"), "utf8"),
+  ) as CodexMcpManifest;
+  const server = manifest.mcpServers["context-mode"];
+  const projected: NodeJS.ProcessEnv = { ...server.env };
+  for (const name of server.env_vars ?? []) {
+    if (parent[name] !== undefined) projected[name] = parent[name];
+  }
+
+  // Content-free test controls are not host capabilities. Keep all state in
+  // this fixture and prevent os.homedir() from reaching the operator profile
+  // while the pre-fix manifest intentionally omits HOME/CODEX_HOME.
+  for (const name of [
+    "CODEX_CI",
+    "CONTEXT_MODE_DISABLE_VERSION_CHECK",
+    "CONTEXT_MODE_DIR",
+    "CONTEXT_MODE_PROJECT_DIR",
+  ]) {
+    if (parent[name] !== undefined) projected[name] = parent[name];
+  }
+  // Node resolves os.homedir() through the process account even when HOME is
+  // absent. Pin an empty temporary home so a failing manifest projection can
+  // never fall back to the operator's real Codex profile.
+  projected.HOME = parent.HOME;
+  return projected;
 }
 
 function writeFixture(temporaryRoot: string): {
@@ -213,6 +250,7 @@ describe("Issue 009 built Doctor entry points", () => {
     const temporaryRoot = mkdtempSync(join(tmpdir(), "context-mode-doctor-entrypoints-"));
     const { cacheRoot, fakeBin, packageVersion } = writeFixture(temporaryRoot);
     const environment = scrubEnvironment(temporaryRoot, fakeBin);
+    const mcpEnvironment = projectPluginMcpEnvironment(environment);
     const cli = spawnSync(process.execPath, [join(repositoryRoot, "cli.bundle.mjs"), "doctor"], {
       cwd: repositoryRoot,
       env: environment,
@@ -222,7 +260,7 @@ describe("Issue 009 built Doctor entry points", () => {
 
     const child = spawn(process.execPath, [join(repositoryRoot, "server.bundle.mjs")], {
       cwd: repositoryRoot,
-      env: environment,
+      env: mcpEnvironment,
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";

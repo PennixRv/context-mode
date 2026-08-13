@@ -872,7 +872,8 @@ async function doctor(): Promise<number> {
   // Hooks — adapter-aware validation
   p.log.step(`Checking ${adapter.name} hooks configuration...`);
   const pluginRoot = getPluginRoot();
-  const hookResults = adapter.validateHooks(pluginRoot);
+  const diagnosticReport = adapter.getDiagnosticReport?.(pluginRoot);
+  const hookResults = diagnosticReport?.hookResults ?? adapter.validateHooks(pluginRoot);
 
   for (const result of hookResults) {
     if (result.status === "pass") {
@@ -883,16 +884,21 @@ async function doctor(): Promise<number> {
           ` — ${result.message}` +
           (result.fix ? color.dim(`\n  Run: ${result.fix}`) : ""),
       );
-    } else {
+    } else if (result.status === "fail") {
       p.log.error(
         color.red(`${result.check}: FAIL`) +
           ` — ${result.message}` +
           (result.fix ? color.dim(`\n  Run: ${result.fix}`) : ""),
       );
+    } else {
+      p.log.info(
+        color.dim(`${result.check}: UNAVAILABLE`) + ` — ${result.message}`,
+      );
     }
   }
 
-  const structuredDiagnostic = adapter.getStructuredDiagnosticSummary?.(pluginRoot);
+  const structuredDiagnostic = diagnosticReport?.structuredSummary
+    ?? adapter.getStructuredDiagnosticSummary?.(pluginRoot);
   if (structuredDiagnostic) {
     process.stdout.write(`Codex Plugin diagnostic (JSON): ${structuredDiagnostic}\n`);
   }
@@ -946,7 +952,8 @@ async function doctor(): Promise<number> {
 
   // Plugin registration — adapter-aware
   p.log.step(`Checking ${adapter.name} plugin registration...`);
-  const pluginCheck = adapter.checkPluginRegistration(pluginRoot);
+  const pluginCheck = diagnosticReport?.registration
+    ?? adapter.checkPluginRegistration(pluginRoot);
   if (pluginCheck.status === "pass") {
     p.log.success(color.green("Plugin enabled: PASS") + color.dim(` — ${pluginCheck.message}`));
   } else if (pluginCheck.status === "warn") {
@@ -954,12 +961,16 @@ async function doctor(): Promise<number> {
       color.yellow("Plugin enabled: WARN") +
       ` — ${pluginCheck.message}`,
     );
-  } else {
+  } else if (pluginCheck.status === "fail") {
     criticalFails++;
     p.log.error(
       color.red("Plugin enabled: FAIL") +
       ` — ${pluginCheck.message}` +
       (pluginCheck.fix ? color.dim(`\n  Run: ${pluginCheck.fix}`) : ""),
+    );
+  } else {
+    p.log.info(
+      color.dim("Plugin enabled: UNAVAILABLE") + ` — ${pluginCheck.message}`,
     );
   }
 

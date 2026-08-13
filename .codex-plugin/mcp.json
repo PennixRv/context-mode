@@ -8,6 +8,9 @@
         "CONTEXT_MODE_PLATFORM": "codex"
       },
       "env_vars": [
+        "PATH",
+        "HOME",
+        "CODEX_HOME",
         "CONTEXT_MODE_CODE_ECHO_MAX",
         "CONTEXT_MODE_COMMAND_ECHO_MAX",
         "CONTEXT_MODE_TITLE_PREVIEW_MAX",

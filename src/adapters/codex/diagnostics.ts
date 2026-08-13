@@ -4,13 +4,40 @@ export type CodexDiagnosticState =
   | "unavailable"
   | "not_applicable";
 
+export type CodexDiagnosticReason =
+  | "plugin_inventory_command_failed"
+  | "plugin_inventory_output_empty"
+  | "plugin_inventory_output_invalid"
+  | "plugin_not_listed"
+  | "plugin_not_installed"
+  | "plugin_disabled"
+  | "plugin_identity_unreported"
+  | "plugin_version_unreported"
+  | "plugin_installation_unreported"
+  | "plugin_enabled_unreported"
+  | "plugin_source_unreported"
+  | "plugin_cache_root_unreported"
+  | "plugin_cache_manifest_missing"
+  | "plugin_cache_manifest_unavailable"
+  | "codex_config_unavailable"
+  | "runtime_root_unavailable"
+  | "runtime_cache_not_comparable"
+  | "runtime_release_mismatch"
+  | "runtime_manifest_missing"
+  | "runtime_manifest_unavailable"
+  | "runtime_hooks_missing"
+  | "host_session_hooks_not_loaded"
+  | "host_session_observation_unavailable";
+
 export interface CodexDiagnosticObservation<T = string> {
   state: CodexDiagnosticState;
   value?: T;
+  reason?: CodexDiagnosticReason;
 }
 
 export interface CodexPluginListEntry {
   state: "present" | "missing" | "unavailable";
+  reason?: CodexDiagnosticReason;
   pluginId?: string;
   version?: string;
   installed?: boolean;
@@ -60,6 +87,7 @@ export interface CodexPluginDiagnostic {
 
 export interface CodexPluginDiagnosticFacts {
   pluginListState?: "present" | "missing" | "unavailable";
+  pluginListReason?: CodexDiagnosticReason;
   installed?: boolean | null;
   enabled?: boolean | null;
   pluginId?: string | null;
@@ -121,11 +149,15 @@ function objectField(value: unknown): Record<string, unknown> | null {
 /** Parse `codex plugin list --json`, with bounded compatibility for legacy text output. */
 export function parseCodexPluginList(raw: string): CodexPluginListEntry {
   const text = raw.trim();
-  if (!text) return { state: "unavailable" };
+  if (!text) {
+    return { state: "unavailable", reason: "plugin_inventory_output_empty" };
+  }
 
   try {
     const payload = objectField(JSON.parse(text));
-    if (!payload) return { state: "unavailable" };
+    if (!payload) {
+      return { state: "unavailable", reason: "plugin_inventory_output_invalid" };
+    }
     const rows = [
       ...(Array.isArray(payload.installed) ? payload.installed : []),
       ...(Array.isArray(payload.available) ? payload.available : []),
@@ -133,7 +165,7 @@ export function parseCodexPluginList(raw: string): CodexPluginListEntry {
     const row = rows
       .map(objectField)
       .find((candidate) => stringField(candidate?.pluginId)?.startsWith("context-mode@"));
-    if (!row) return { state: "missing" };
+    if (!row) return { state: "missing", reason: "plugin_not_listed" };
 
     const marketplaceSource = objectField(row.marketplaceSource);
     return {
@@ -161,16 +193,21 @@ export function parseCodexPluginList(raw: string): CodexPluginListEntry {
       };
     }
     return /no plugins installed/i.test(text)
-      ? { state: "missing" }
-      : { state: "unavailable" };
+      ? { state: "missing", reason: "plugin_not_listed" }
+      : { state: "unavailable", reason: "plugin_inventory_output_invalid" };
   }
 }
 
 function observed<T = string>(
   state: CodexDiagnosticState,
   value?: T,
+  reason?: CodexDiagnosticReason,
 ): CodexDiagnosticObservation<T> {
-  return value === undefined ? { state } : { state, value };
+  return {
+    state,
+    ...(value === undefined ? {} : { value }),
+    ...(state === "present" || reason === undefined ? {} : { reason }),
+  };
 }
 
 /** Project raw Codex/plugin-list facts into the shared Doctor model. */
@@ -205,80 +242,138 @@ export function projectCodexPluginDiagnostic(
     && runtimeManifestAvailable === true
     && missingHooks.length === 0;
 
-  const identity = facts.pluginId
-    ? observed("present", facts.pluginId)
-    : observed(pluginListState === "missing" ? "missing" : "unavailable");
-  const version = facts.version
-    ? observed("present", facts.version)
-    : observed(pluginListState === "missing" ? "not_applicable" : "unavailable");
+  const inventoryUnavailableReason = facts.pluginListReason
+    ?? "plugin_inventory_command_failed";
+  const absentReason = installed === false
+    ? "plugin_not_installed" as const
+    : "plugin_not_listed" as const;
+
+  const identity: CodexDiagnosticObservation<string> = facts.pluginId
+    ? observed<string>("present", facts.pluginId)
+    : observed<string>(
+        pluginListState === "missing" ? "missing" : "unavailable",
+        undefined,
+        pluginListState === "missing"
+          ? absentReason
+          : pluginListState === "unavailable"
+            ? inventoryUnavailableReason
+            : "plugin_identity_unreported",
+      );
+  const version: CodexDiagnosticObservation<string> = facts.version
+    ? observed<string>("present", facts.version)
+    : observed<string>(
+        pluginListState === "missing" ? "not_applicable" : "unavailable",
+        undefined,
+        pluginListState === "missing" ? absentReason : "plugin_version_unreported",
+      );
   const installation = pluginListState === "unavailable"
-    ? observed<boolean>("unavailable")
+    ? observed<boolean>("unavailable", undefined, inventoryUnavailableReason)
     : installed === true
       ? observed("present", true)
       : installed === false
-        ? observed("missing", false)
-        : observed<boolean>("unavailable");
-  const enabledCheck = installed === false && enabledValue === null
-      ? observed<boolean>("not_applicable")
+        ? observed("missing", false, "plugin_not_installed")
+        : observed<boolean>("unavailable", undefined, "plugin_installation_unreported");
+  const enabledCheck = installed === false
+      ? observed<boolean>("not_applicable", undefined, "plugin_not_installed")
       : enabledValue === null
-        ? observed<boolean>("unavailable")
+        ? observed<boolean>(
+            "unavailable",
+            undefined,
+            pluginListState === "unavailable"
+              ? inventoryUnavailableReason
+              : "plugin_enabled_unreported",
+          )
         : enabledValue === true
         ? observed("present", true)
-        : observed("missing", false);
-  const sourceRoot = facts.sourceRoot
-    ? observed("present", facts.sourceRoot)
-    : observed(pluginListState === "missing" ? "not_applicable" : "unavailable");
-  const cacheRoot = facts.cacheRoot
-    ? observed("present", facts.cacheRoot)
-    : facts.cacheManifestAvailable === false || installed === false
-      ? observed("missing")
-      : observed(pluginListState === "missing" ? "not_applicable" : "unavailable");
-  const cacheManifest = facts.cacheRoot === null || facts.cacheRoot === undefined
-    ? observed(pluginListState === "missing" || installed === false
+        : observed("missing", false, "plugin_disabled");
+  const sourceRoot: CodexDiagnosticObservation<string> = facts.sourceRoot
+    ? observed<string>("present", facts.sourceRoot)
+    : observed<string>(
+        pluginListState === "missing" ? "not_applicable" : "unavailable",
+        undefined,
+        pluginListState === "missing"
+          ? absentReason
+          : pluginListState === "unavailable"
+            ? inventoryUnavailableReason
+            : "plugin_source_unreported",
+      );
+  const cacheRoot: CodexDiagnosticObservation<string> = facts.cacheRoot
+    ? observed<string>("present", facts.cacheRoot)
+    : installed === false || pluginListState === "missing"
+      ? observed<string>("not_applicable", undefined, absentReason)
+      : observed<string>(
+          "unavailable",
+          undefined,
+          pluginListState === "unavailable"
+            ? inventoryUnavailableReason
+            : "plugin_cache_root_unreported",
+        );
+  const cacheManifest: CodexDiagnosticObservation<string> = facts.cacheRoot === null || facts.cacheRoot === undefined
+    ? observed<string>(pluginListState === "missing" || installed === false
       ? "not_applicable"
-      : "unavailable")
+      : "unavailable", undefined, pluginListState === "missing" || installed === false
+        ? absentReason
+        : pluginListState === "unavailable"
+          ? inventoryUnavailableReason
+          : "plugin_cache_root_unreported")
     : facts.cacheManifestAvailable === true
-      ? observed("present")
+      ? observed<string>("present")
       : facts.cacheManifestAvailable === false
-        ? observed("missing")
-        : observed("unavailable");
-  const runtimeRootCheck = runtimeRoot
-    ? observed("present", runtimeRoot)
-    : observed("unavailable");
-  const runtimeCacheAlignment = facts.cacheRoot === null || facts.cacheRoot === undefined
+        ? observed<string>("missing", undefined, "plugin_cache_manifest_missing")
+        : observed<string>("unavailable", undefined, "plugin_cache_manifest_unavailable");
+  const runtimeRootCheck: CodexDiagnosticObservation<string> = runtimeRoot
+    ? observed<string>("present", runtimeRoot)
+    : observed<string>("unavailable", undefined, "runtime_root_unavailable");
+  const runtimeCacheAlignment: CodexDiagnosticObservation<
+    "same" | "different_matching_release" | "different_release"
+  > = facts.cacheRoot === null || facts.cacheRoot === undefined
     ? observed<"same" | "different_matching_release" | "different_release">(
         installed === false || pluginListState === "missing" ? "not_applicable" : "unavailable",
+        undefined,
+        installed === false || pluginListState === "missing"
+          ? absentReason
+          : pluginListState === "unavailable"
+            ? inventoryUnavailableReason
+            : "runtime_cache_not_comparable",
       )
     : facts.sameRoot === true
       ? observed("present", "same" as const)
       : facts.sameRoot === false && facts.releaseMatches === true
         ? observed("present", "different_matching_release" as const)
         : facts.sameRoot === false && facts.releaseMatches === false
-          ? observed("missing", "different_release" as const)
-          : observed<"same" | "different_matching_release" | "different_release">("unavailable");
-  const manifest = runtimeRoot === null
-    ? observed("unavailable")
+          ? observed("missing", "different_release" as const, "runtime_release_mismatch")
+          : observed<"same" | "different_matching_release" | "different_release">(
+              "unavailable",
+              undefined,
+              "runtime_cache_not_comparable",
+            );
+  const manifest: CodexDiagnosticObservation<string> = runtimeRoot === null
+    ? observed<string>("unavailable", undefined, "runtime_root_unavailable")
     : facts.runtimeManifestAvailable === true
-      ? observed("present")
+      ? observed<string>("present")
       : facts.runtimeManifestAvailable === false
-        ? observed("missing")
-        : observed("unavailable");
+        ? observed<string>("missing", undefined, "runtime_manifest_missing")
+        : observed<string>("unavailable", undefined, "runtime_manifest_unavailable");
   const hooks = manifest.state === "missing" || manifest.state === "not_applicable"
-    ? observed<string[]>("not_applicable")
+    ? observed<string[]>("not_applicable", undefined, "runtime_manifest_missing")
     : manifest.state === "unavailable"
-      ? observed<string[]>("unavailable")
+      ? observed<string[]>("unavailable", undefined, manifest.reason ?? "runtime_root_unavailable")
       : missingHooks.length > 0
-        ? observed("missing", missingHooks)
+        ? observed("missing", missingHooks, "runtime_hooks_missing")
         : observed("present", registeredHooks);
-  const sessionHooksLoaded = enabledValue === false
-    ? observed<boolean>("not_applicable")
-    : pluginListState === "missing" && enabledValue === null
-      ? observed<boolean>("not_applicable")
+  const sessionHooksLoaded = installed === false || pluginListState === "missing"
+      ? observed<boolean>("not_applicable", undefined, absentReason)
+    : enabledValue === false
+      ? observed<boolean>("not_applicable", undefined, "plugin_disabled")
     : facts.sessionHooksLoaded === true
       ? observed("present", true)
       : facts.sessionHooksLoaded === false
-        ? observed("missing", false)
-        : observed<boolean>("unavailable");
+        ? observed("missing", false, "host_session_hooks_not_loaded")
+        : observed<boolean>(
+            "unavailable",
+            undefined,
+            "host_session_observation_unavailable",
+          );
 
   return {
     channel: enabled === true || (pluginListState === "present" && facts.pluginId !== undefined)

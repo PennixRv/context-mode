@@ -1590,6 +1590,26 @@ Restricted execution is a separate server policy. Its operating-system isolation
 
 Reviewing the prompt: compatibility titles identify arbitrary code execution and use `readOnlyHint: false`, `destructiveHint: true`, and `openWorldHint: true`. Restricted titles identify project read-only code execution and use the inverse read-only metadata. The default compatibility mode still inherits the server process's ordinary filesystem and network access, so treat its execution tools as arbitrary code and keep host-level sandboxing enabled.
 
+### Codex Doctor observations
+
+CLI `doctor` and MCP `ctx_doctor` collect one Codex Plugin fact snapshot per
+invocation. `codex plugin list` supplies Plugin identity, version, installation,
+enablement, source root, and cache root; the running package supplies the
+runtime root; filesystem checks independently report cache/runtime manifests
+and runtime Hook declarations. The structured `Codex Plugin diagnostic (JSON)`
+line uses the same field values and check states in both entry points when
+those processes receive the same Codex discovery environment.
+
+`missing` means direct evidence confirms absence, disablement, corruption, or
+version drift. `unavailable` means the current process could not observe the
+fact and includes a stable `reason`; it is not an installation failure.
+`not_applicable` means a dependent check has no meaning, for example cache or
+current-session Hook state when the Plugin is confirmed absent. Runtime Hook
+files prove package contents, not that the already-running Codex host loaded
+those Hooks, so `session_hooks_loaded` remains
+`host_session_observation_unavailable` until Codex exposes direct host-session
+evidence.
+
 ### MCP response presentation
 
 Execution source remains directly visible for the audit and inspection contracts established by upstream [Issue #717](https://github.com/mksglu/context-mode/issues/717) and [Issue #736](https://github.com/mksglu/context-mode/issues/736), but one shared policy bounds duplicate MCP result content. An execution proof shows the language, bounded source, original/shown/omitted character semantics, truncation state, and SHA-256 without repeating a five-field ledger. Truncation counts Unicode code points and chooses a Markdown fence longer than any backtick run in the preview.
@@ -1614,12 +1634,15 @@ Checkpoint and RecoveryBrief state uses compact JSON text plus an identical MCP 
 
 Values are read at server startup. Small or excessive integers clamp to the stated range; absent, empty, negative, fractional, unsafe, or otherwise invalid values use the default. A zero code or command preview is intentionally not supported because it would bypass the direct source visibility required by #717/#736.
 
-The Codex Plugin manifest forwards only these five variable names from the
-parent Codex process through its stdio MCP `env_vars` allowlist. It does not
-embed their values, forward credentials, or inherit a broader environment;
-`CONTEXT_MODE_PLATFORM=codex` remains a fixed manifest value. When a parent
-variable is unset, the MCP process receives no override and uses the defaults
-above.
+The Codex Plugin manifest forwards these five presentation variables plus the
+read-only discovery variables `PATH`, `HOME`, and `CODEX_HOME` from the parent
+Codex process through its stdio MCP `env_vars` allowlist. Discovery variables
+let CLI Doctor and MCP `ctx_doctor` inspect the same Codex executable and
+profile without embedding a machine-specific root. The manifest does not
+forward credentials or inherit a broader environment;
+`CONTEXT_MODE_PLATFORM=codex` remains a fixed manifest value. When a
+presentation variable is unset, the MCP process receives no override and uses
+the defaults above.
 
 These settings control only context-mode MCP result content. Codex renders the tool input in its host-owned `Called` block before the server returns a result; context-mode cannot shorten, suppress, or claim to have fixed that display.
 

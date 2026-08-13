@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/codex-diagnostics-and-test-routing.md","reason":"Check field semantics, availability reasons, one-snapshot behavior, and manifest environment parity."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check the source manifest, generated marketplace, installed fixture, adapter, CLI, and MCP path end to end."}
+{"file":".trellis/spec/guides/repository-maintenance-thinking-guide.md","reason":"Check deterministic builds, version synchronization, release provenance, and clean repository state."}
+{"file":".trellis/tasks/08-13-context-mode-009-doctor-runtime-facts/research/root-issue-009-v1.0.188-evidence.md","reason":"Check the fix against the exact real-world split and retain root-only final acceptance."}

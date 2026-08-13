@@ -30,6 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "..", "..");
+const CODEX_DISCOVERY_ENV_VARS = ["PATH", "HOME", "CODEX_HOME"] as const;
 const PRESENTATION_ENV_VARS = [
   "CONTEXT_MODE_CODE_ECHO_MAX",
   "CONTEXT_MODE_COMMAND_ECHO_MAX",
@@ -82,14 +83,17 @@ describe(".codex-plugin/mcp.json", () => {
     expect(entry.env?.CONTEXT_MODE_PLATFORM).toBe("codex");
   });
 
-  it("forwards exactly the five non-sensitive presentation variables", () => {
+  it("forwards only Codex discovery capabilities and presentation variables", () => {
     const servers = mcp.mcpServers as Record<string, {
       env?: Record<string, string>;
       env_vars?: string[];
     }>;
     const entry = servers["context-mode"];
 
-    expect(entry.env_vars).toEqual(PRESENTATION_ENV_VARS);
+    expect(entry.env_vars).toEqual([
+      ...CODEX_DISCOVERY_ENV_VARS,
+      ...PRESENTATION_ENV_VARS,
+    ]);
     expect(entry.env).toEqual({ CONTEXT_MODE_PLATFORM: "codex" });
     expect(JSON.stringify(entry.env_vars)).not.toMatch(/API_KEY|TOKEN|SECRET|PASSWORD|WINDSURF/i);
   });

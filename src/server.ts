@@ -4444,7 +4444,7 @@ server.registerTool(
     },
     description:
       "Diagnose context-mode installation. Runs all checks server-side and " +
-      "returns a plain-text status report with [OK]/[FAIL]/[WARN] prefixes " +
+      "returns a plain-text status report with [OK]/[FAIL]/[WARN]/[UNAVAILABLE] prefixes " +
       "(renderer-safe across MCP clients). No CLI execution needed.",
     inputSchema: z.object({}),
   },
@@ -4455,7 +4455,7 @@ server.registerTool(
     // a missing `client` context, throwing `ReferenceError: client is not
     // defined`. We avoid both task-list syntax AND `## ` h2 headings to stay
     // safe across all MCP renderers — using plain-text status prefixes
-    // (`[OK]` / `[FAIL]` / `[WARN]`) instead.
+    // (`[OK]` / `[FAIL]` / `[WARN]` / `[UNAVAILABLE]`) instead.
     const lines: string[] = ["context-mode doctor", ""];
     let currentPlatform: PlatformId | undefined;
     try {
@@ -4529,23 +4529,34 @@ server.registerTool(
     // Hooks
     const diagnosticAdapter = await getDiagnosticAdapter();
     if (diagnosticAdapter) {
-      for (const result of diagnosticAdapter.validateHooks(pluginRoot)) {
-        const prefix = result.status === "pass" ? "[OK]" : result.status === "warn" ? "[WARN]" : "[FAIL]";
+      const diagnosticReport = diagnosticAdapter.getDiagnosticReport?.(pluginRoot);
+      for (const result of diagnosticReport?.hookResults ?? diagnosticAdapter.validateHooks(pluginRoot)) {
+        const prefix = result.status === "pass"
+          ? "[OK]"
+          : result.status === "warn"
+            ? "[WARN]"
+            : result.status === "unavailable"
+              ? "[UNAVAILABLE]"
+              : "[FAIL]";
         const fix = result.fix ? ` — fix: ${result.fix}` : "";
         lines.push(`${prefix} ${result.check}: ${result.message}${fix}`);
       }
 
-      const structuredDiagnostic = diagnosticAdapter.getStructuredDiagnosticSummary?.(pluginRoot);
+      const structuredDiagnostic = diagnosticReport?.structuredSummary
+        ?? diagnosticAdapter.getStructuredDiagnosticSummary?.(pluginRoot);
       if (structuredDiagnostic) {
         lines.push(`[OK] Codex Plugin diagnostic (JSON): ${structuredDiagnostic}`);
       }
 
-      const registration = diagnosticAdapter.checkPluginRegistration(pluginRoot);
+      const registration = diagnosticReport?.registration
+        ?? diagnosticAdapter.checkPluginRegistration(pluginRoot);
       const registrationPrefix = registration.status === "pass"
         ? "[OK]"
         : registration.status === "warn"
           ? "[WARN]"
-          : "[FAIL]";
+          : registration.status === "unavailable"
+            ? "[UNAVAILABLE]"
+            : "[FAIL]";
       const registrationFix = registration.fix ? ` — fix: ${registration.fix}` : "";
       lines.push(`${registrationPrefix} ${registration.check}: ${registration.message}${registrationFix}`);
 
@@ -4617,11 +4628,13 @@ server.registerTool(
       line.includes("Codex RecoveryBrief identity bridge"),
     );
     const groupedSuccess = successful.filter((line) => !standaloneSuccess.includes(line));
+    const unavailable = lines.filter((line) => line.startsWith("[UNAVAILABLE] "));
     const findings = lines.filter((line) => line.startsWith("[WARN] ") || line.startsWith("[FAIL] "));
     const compact = [
       "context-mode doctor",
       `[OK] ${groupedSuccess.length} checks: ${groupedSuccess.map((line) => line.slice(5)).join(" | ")}`,
       ...standaloneSuccess,
+      ...unavailable,
       ...findings,
     ];
     return trackResponse("ctx_doctor", {

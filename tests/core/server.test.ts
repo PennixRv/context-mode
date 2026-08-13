@@ -4065,10 +4065,10 @@ describe("ctx_doctor — resource cleanup regression (#247)", () => {
 // when it parses GitHub-flavored markdown task-list syntax (`- [x]`, `- [ ]`,
 // `- [-]`). To stay safe across all MCP clients (including renderers that mount
 // custom React components for task lists or h2 headers), ctx_doctor MUST emit
-// plain-text status prefixes (`[OK]`, `[FAIL]`, `[WARN]`) and avoid `##`
-// headings.
+// plain-text status prefixes (`[OK]`, `[FAIL]`, `[WARN]`, `[UNAVAILABLE]`)
+// and avoid `##` headings.
 describe("ctx_doctor — renderer-safe output (Z.ai compat)", () => {
-  test("output uses [OK]/[FAIL]/[WARN] prefixes and no markdown task-list syntax", async () => {
+  test("output uses plain status prefixes and no markdown task-list syntax", async () => {
     const proc = startMcpServer();
     const responses = await initAndCallDoctor(proc, 1);
     const call = responses.find((r) => r.id === 100);
@@ -4086,6 +4086,8 @@ describe("ctx_doctor — renderer-safe output (Z.ai compat)", () => {
 
     // Must use plain-text status prefixes
     expect(text).toMatch(/\[OK\]/);
+    expect(readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8"))
+      .toContain("[OK]/[FAIL]/[WARN]/[UNAVAILABLE] prefixes");
     // Header is plain text, no markdown
     expect(text).toMatch(/^context-mode doctor/m);
   }, 30_000);
