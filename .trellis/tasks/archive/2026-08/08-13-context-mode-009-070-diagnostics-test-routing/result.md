@@ -12,6 +12,14 @@ Date: 2026-08-13
   the remote `origin/devel` fast-forward integration; record the exact hash below
   before release tagging.
 
+The first integrated candidate `a781ca4e619c9a843d76289b032a939f771e07c3`
+was not released. Remote CI run `31676419914` found two test-infrastructure
+defects: a POSIX-only fake Codex executable in the new Doctor entry-point test,
+and an in-process SQLite store left open before temporary-root cleanup. Product
+behavior passed on Linux and macOS. The corrected final candidate adds a shared
+Node fixture with POSIX/Windows launchers and closes the store through the
+existing project purge contract; release remains gated on its remote CI.
+
 ## Issue 009
 
 Root cause was a conflation of the Codex Plugin-manager cache path with the
@@ -69,6 +77,9 @@ build, assert-bundle, assert-asymmetric-drift: PASS
 two consecutive full builds: identical bundle SHA-256 values
 two consecutive marketplace archives: identical SHA-256
 offline Codex marketplace install, manifest and stdio MCP boot: PASS
+corrected combined 009/070 matrix: 8 files, 874 passed
+corrected fixture regression: 2 files, 11 passed
+corrected full candidate suite: 243 files, 5170 passed, 41 skipped
 ```
 
 The repository has no `lint` or `format:check` package script; those named gates

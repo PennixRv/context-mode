@@ -11,7 +11,6 @@
   "creator": "penn",
   "assignee": "penn",
   "createdAt": "2026-08-13",
-  "completedAt": "2026-08-13",
   "branch": "fix/issue-009-070-diagnostics-test-routing",
   "base_branch": "devel",
   "worktree_path": null,
@@ -33,6 +32,7 @@
     "tests/core/test-command-routing.test.ts",
     ".trellis/spec/backend/codex-diagnostics-and-test-routing.md"
   ],
-  "notes": "Implementation and validation are complete on the maintenance branch. Release source, native evidence, tag, CI, and GitHub Release remain to be recorded after version synchronization.",
-  "meta": {}
+  "notes": "Implementation reached devel, but the exact source candidate exposed a Windows CI fixture failure before release. The same task is resumed to repair the cross-platform Doctor fixture and close its test-owned SQLite handle before rerunning release gates.",
+  "meta": {},
+  "completedAt": "2026-08-13"
 }
