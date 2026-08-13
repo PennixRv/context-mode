@@ -90,7 +90,10 @@ output is response evidence only.
 
 - Projection unit tests assert every observation state and stable check ID.
 - Built CLI/MCP fixture test parses both entry points and compares all shared
-  fields byte-for-byte, with an unobservable current-session state.
+  fields byte-for-byte, with an unobservable current-session state. A fake
+  `codex` executable must provide both POSIX and Windows launchers around one
+  implementation and preserve the host command-interpreter/runtime search
+  path; otherwise the fixture tests shell discovery rather than diagnostics.
 - Routing tests cover command families, wrappers, paths, prefixes, arguments,
   compounds, first/repeated calls, host tool aliases, and false positives.
 - Batch tests assert success, non-zero, timeout, cap, exit codes, and

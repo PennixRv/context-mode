@@ -36,13 +36,22 @@ describe("execution persistence and verified provenance", () => {
     vi.resetModules();
   });
 
-  afterAll(() => {
-    for (const [key, value] of Object.entries(original)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+  afterAll(async () => {
+    try {
+      const { REGISTERED_CTX_TOOLS, withProjectDirOverride } = await import("../src/server.js");
+      const purge = REGISTERED_CTX_TOOLS.find((tool) => tool.name === "ctx_purge")!;
+      await withProjectDirOverride(project, async () => purge.handler({
+        confirm: true,
+        scope: "project",
+      }));
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      vi.resetModules();
+      rmSync(root, { recursive: true, force: true });
     }
-    vi.resetModules();
-    rmSync(root, { recursive: true, force: true });
   });
 
   test("default output stays request-local; verified success is searchable and purgeable", async () => {

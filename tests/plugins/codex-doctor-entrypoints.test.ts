@@ -22,7 +22,21 @@ interface RpcResponse {
 
 function scrubEnvironment(temporaryRoot: string, fakeBin: string): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
-  for (const key of ["LANG", "LC_ALL", "SHELL", "TERM", "TMPDIR"]) {
+  for (const key of [
+    "LANG",
+    "LC_ALL",
+    "SHELL",
+    "TERM",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "ComSpec",
+    "COMSPEC",
+    "PATHEXT",
+    "WINDIR",
+  ]) {
     if (process.env[key]) environment[key] = process.env[key];
   }
   return {
@@ -34,7 +48,7 @@ function scrubEnvironment(temporaryRoot: string, fakeBin: string): NodeJS.Proces
     CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
     CONTEXT_MODE_DIR: join(temporaryRoot, "context-mode-state"),
     CONTEXT_MODE_PROJECT_DIR: join(temporaryRoot, "project"),
-    PATH: `${fakeBin}${delimiter}/usr/local/bin${delimiter}/usr/bin${delimiter}/bin`,
+    PATH: [fakeBin, process.env.PATH].filter(Boolean).join(delimiter),
   };
 }
 
@@ -81,20 +95,38 @@ function writeFixture(temporaryRoot: string): {
     }],
     available: [],
   });
-  const fakeCodex = join(fakeBin, "codex");
-  writeFileSync(fakeCodex, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf '%s\\n' 'codex-cli 0.116.0'
-elif [ "$1" = "plugin" ] && [ "$2" = "list" ] && [ "$3" = "--json" ]; then
-  printf '%s\\n' '${json}'
-elif [ "$1" = "plugin" ] && [ "$2" = "list" ]; then
-  printf '%s\\n' 'context-mode@context-mode  installed, enabled  ${packageVersion}  ${cacheRoot}'
-else
-  exit 2
-fi
+  const fixtureScript = join(fakeBin, "codex-fixture.cjs");
+  writeFileSync(fixtureScript, `const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  process.stdout.write("codex-cli 0.116.0\\n");
+} else if (args[0] === "plugin" && args[1] === "list" && args[2] === "--json") {
+  process.stdout.write(${JSON.stringify(json)} + "\\n");
+} else if (args[0] === "plugin" && args[1] === "list") {
+  process.stdout.write(${JSON.stringify(`context-mode@context-mode  installed, enabled  ${packageVersion}  ${cacheRoot}\n`)});
+} else {
+  process.exitCode = 2;
+}
 `);
-  chmodSync(fakeCodex, 0o755);
+  const fakeCodex = join(fakeBin, "codex");
+  writeFileSync(
+    fakeCodex,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fixtureScript)} "$@"\n`,
+  );
+  writeFileSync(
+    `${fakeCodex}.cmd`,
+    `@echo off\r\n"${process.execPath}" "${fixtureScript}" %*\r\n`,
+  );
+  if (process.platform !== "win32") chmodSync(fakeCodex, 0o755);
   return { cacheRoot, fakeBin, packageVersion };
+}
+
+async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  const exited = new Promise<void>((resolvePromise) => {
+    child.once("exit", () => resolvePromise());
+  });
+  child.kill("SIGTERM");
+  await exited;
 }
 
 function extractDiagnostic(text: string): Record<string, unknown> {
@@ -235,7 +267,7 @@ describe("Issue 009 built Doctor entry points", () => {
         "codex.plugin.session_hooks_loaded"
       ]?.state).toBe("unavailable");
     } finally {
-      child.kill("SIGTERM");
+      await stopChild(child);
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 40_000);
