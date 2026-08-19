@@ -131,7 +131,8 @@ equivalents.
 
 - Version: `1.0.191`
 - Release branch: `devel`
-- Implementation commit: `e4523b80dfa4d2dbcb4bdbc7258bc7c5117bc4e5`
+- Core implementation commit: `e4523b80dfa4d2dbcb4bdbc7258bc7c5117bc4e5`
+- Final source-candidate test portability commit: `d09d8ebd616d91ff49e0e67f8fb8545d23b5f311`
 - Source candidate: `d09d8ebd616d91ff49e0e67f8fb8545d23b5f311`
 - Evidence commit: `6ab1349ad9d0bfe77c8ed2f571671eebed6cd522`
 - Evidence parent: `d09d8ebd616d91ff49e0e67f8fb8545d23b5f311`
