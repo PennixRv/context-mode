@@ -109,9 +109,9 @@ probe.
 - [x] Targeted unit/integration tests, typecheck, build, generated-bundle drift,
   full tests, deterministic marketplace build, offline installation, native
   release preflight, and immutable release attestation checks pass.
-- [ ] The stable GitHub Release is published with verified assets and SHA-256
+- [x] The stable GitHub Release is published with verified assets and SHA-256
   values; the component branch and release branch are clean and synchronized.
-- [ ] The final report gives root-side install/restart commands and positive
+- [x] The final report gives root-side install/restart commands and positive
   and negative dynamic acceptance cases without claiming the root Issue is
   closed before that independent acceptance.
 

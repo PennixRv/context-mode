@@ -4,9 +4,12 @@ Date: 2026-08-19
 
 ## Status
 
-Implementation and local release gates are complete for the `v1.0.191`
-candidate. Source/evidence commits, annotated tag, CI, GitHub Release assets,
-and root-side dynamic acceptance remain to be recorded after publication.
+Component implementation, verification, and publication are complete as
+`v1.0.191`. The source candidate, direct-child evidence commit, annotated tag,
+three-platform CI, GitHub Release workflow, downloaded assets, and offline
+installation were independently checked. ROOT-ISSUE-119 remains root-owned
+until the integration workflow installs this release, fully restarts Codex,
+and completes positive and negative dynamic acceptance.
 
 ## Root Cause
 
@@ -123,3 +126,68 @@ equivalents.
   positive and negative status/update probes against the new process.
 - No root repository file, `/home/penn/.codex`, active Plugin cache, or root
   Issue status is modified by this task.
+
+## Published Release Evidence
+
+- Version: `1.0.191`
+- Release branch: `devel`
+- Implementation commit: `e4523b80dfa4d2dbcb4bdbc7258bc7c5117bc4e5`
+- Source candidate: `d09d8ebd616d91ff49e0e67f8fb8545d23b5f311`
+- Evidence commit: `6ab1349ad9d0bfe77c8ed2f571671eebed6cd522`
+- Evidence parent: `d09d8ebd616d91ff49e0e67f8fb8545d23b5f311`
+- Annotated tag: `v1.0.191`
+- Tag object: `e25c0b70842fa73a438da6df2efdfdec87a6fbb2`
+- Peeled commit: `6ab1349ad9d0bfe77c8ed2f571671eebed6cd522`
+- Release workflow: `32230149051`, passed
+- Source CI: `32228724532`, passed on Ubuntu, macOS, Windows, and the Codex
+  offline marketplace job
+- Evidence CI: `32229565535`, passed on Ubuntu, macOS, Windows, and the Codex
+  offline marketplace job
+- Evidence OpenClaw E2E: `32229565524`, passed
+- Native preflight: Node `26.6.0`, Codex CLI `0.146.0`, manual and automatic
+  checkpoints each reached `pending -> confirmed -> claimed`
+
+Downloaded GitHub Release assets:
+
+```text
+CONTENT-MANIFEST.json
+  078907878fd66f433910c52e6cedeafb6e8e540f6ed69f3e2e200bde250a15be
+context-mode-1.0.191.tgz
+  d0e2986188d133f075a9f5565aabac383fc202ec0bd8606ddfc1fa53d3ac4ac3
+context-mode-codex-marketplace-v1.0.191.tar.gz
+  4b9c5e3a8b9acef73f2104a65d5d1cff41685a15f4341b395c838cfcb39e35b8
+context-mode-codex-marketplace-v1.0.191.tar.gz.sha256
+  a250ebf948bd7f84f1ada6508b0503ef3146fbcf52a4c535d94e314e5b1481c8
+```
+
+The downloaded checksum sidecar passed `sha256sum -c`; the downloaded
+marketplace archive passed `verify-codex-release-asset.mjs`, initialized the
+real stdio MCP process, and reported 125 content-manifest entries. The npm
+registry remains at `1.0.169`; this release workflow publishes GitHub and Codex
+marketplace assets, not npm.
+
+## Root Acceptance Handoff
+
+1. In the root integration workflow, use `$codex-plugin-update` to install the
+   `context-mode@context-mode` Plugin at `1.0.191`. The Hook-aware installation
+   transaction must be the old session's final tool call.
+2. Fully exit and restart the Codex host. Do not continue acceptance in the
+   process that performed the update.
+3. Confirm the installed Plugin and MCP runtime both report `1.0.191`, and
+   confirm the installed `hooks/checkpoint.bundle.mjs` SHA-256 matches the
+   release content manifest.
+4. For canonical direct-child tasks with `status=planning` and
+   `status=in_progress`, call provider status and perform an initial plus
+   repeated controlled CAS update. Expect `provider=trellis`,
+   `health=available`, `task=active`, `errorCode=NONE`, stable source binding,
+   and valid expected-SHA behavior.
+5. In disposable root-owned fixtures, repeat status and update for
+   `completed`, `archived`, `cancelled`, `blocked`, missing, empty, unknown,
+   and non-string status values. Expect `TRELLIS_TASK_INACTIVE`, no fabricated
+   Brief path/source digest, no file creation, and no overwrite.
+6. Repeat with archive, nested, non-task, direct-manifest, missing,
+   non-directory, task-symlink, and external-symlink pointer targets. Expect
+   `TRELLIS_TASK_INVALID`, no project-provider fallback, and no write.
+7. Preserve and compare exact existing Brief bytes and SHA-256 around every
+   rejected update. Only after these installed-process checks pass should the
+   root workflow update its Gitlink or close ROOT-ISSUE-119.

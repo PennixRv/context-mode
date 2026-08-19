@@ -64,27 +64,27 @@
 
 ## 6. Commit And Release
 
-- [ ] Commit the source candidate on the issue branch with a clean worktree.
-- [ ] Integrate the source candidate into the latest `devel` using the
+- [x] Commit the source candidate on the issue branch with a clean worktree.
+- [x] Integrate the source candidate into the latest `devel` using the
   repository's existing non-destructive branch flow and rerun required gates.
-- [ ] Reconfirm `v1.0.191` and the remote tag are unused.
-- [ ] Run the Codex native release preflight with the approved local provider
+- [x] Reconfirm `v1.0.191` and the remote tag are unused.
+- [x] Run the Codex native release preflight with the approved local provider
   projection outside the repository and no credential output.
-- [ ] Commit only `docs/releases/attestations/v1.0.191.json` as the direct-child
+- [x] Commit only `docs/releases/attestations/v1.0.191.json` as the direct-child
   evidence commit.
-- [ ] Create and verify the annotated tag with content-manifest and native
+- [x] Create and verify the annotated tag with content-manifest and native
   attestation metadata.
-- [ ] Push the release branch before the tag, wait for Release CI, and download
+- [x] Push the release branch before the tag, wait for Release CI, and download
   every asset for independent SHA-256 verification.
-- [ ] Do not claim npm registry publication unless the existing workflow
+- [x] Do not claim npm registry publication unless the existing workflow
   actually publishes it.
 
 ## 7. Root Handoff
 
-- [ ] Report task path, baseline, source/evidence commits, tag object, peeled
+- [x] Report task path, baseline, source/evidence commits, tag object, peeled
   commit, version, asset hashes, tests, runtime versions, and clean status.
-- [ ] Provide Hook-aware installation and full-restart requirements without
+- [x] Provide Hook-aware installation and full-restart requirements without
   performing them in this component session.
-- [ ] Provide root-side positive `planning`/`in_progress` and negative
+- [x] Provide root-side positive `planning`/`in_progress` and negative
   completed/archive/path probes for both status and update.
-- [ ] State that ROOT-ISSUE-119 remains root-owned until dynamic acceptance.
+- [x] State that ROOT-ISSUE-119 remains root-owned until dynamic acceptance.
