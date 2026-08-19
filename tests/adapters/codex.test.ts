@@ -394,7 +394,7 @@ describe("CodexAdapter", () => {
       mkdirSync(home);
       const runner = (_file: string, args: string[], options: { cwd?: string }): string => {
         calls.push({ args, cwd: options.cwd });
-        return args[0] === "--version"
+        return args.includes("--version") || args.includes("codex --version")
           ? "codex-cli 0.1.0\n"
           : JSON.stringify({ installed: [], available: [] });
       };
