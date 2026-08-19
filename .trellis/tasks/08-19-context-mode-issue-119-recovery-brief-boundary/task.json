@@ -1,0 +1,40 @@
+{
+  "id": "context-mode-issue-119-recovery-brief-boundary",
+  "name": "context-mode-issue-119-recovery-brief-boundary",
+  "title": "Harden RecoveryBrief Trellis task boundary",
+  "description": "Fix ROOT-ISSUE-119 by rejecting non-canonical or inactive Trellis tasks at every RecoveryBrief provider read and CAS write boundary, while preserving active-task behavior and publishing a verified patch release.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "context-mode RecoveryBrief provider path/status/CAS boundary, tests, docs, and patch release",
+  "package": null,
+  "priority": "P1",
+  "creator": "penn",
+  "assignee": "penn",
+  "createdAt": "2026-08-19",
+  "completedAt": null,
+  "branch": "fix/issue-119-recovery-brief-boundary",
+  "base_branch": "devel",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/checkpoint/runtime.ts",
+    "src/checkpoint/types.ts",
+    "tests/checkpoint/recovery-brief-provider.test.ts",
+    "tests/checkpoint/runtime.test.ts",
+    "tests/hooks/codex-recovery-identity.test.ts",
+    ".trellis/spec/backend/codex-trellis-recovery-boundaries.md",
+    "docs/releases/codex-v1.0.191.md"
+  ],
+  "notes": "Root integration repository owns final installation, restart, and Issue 119 closure.",
+  "meta": {
+    "external_issue": "ROOT-ISSUE-119",
+    "source_handoff": "context-mode-issue-119-component-handoff-prompt.md",
+    "baseline_commit": "384cb779574812d4aea7883d5b2d20cdc5918e8a",
+    "baseline_release": "v1.0.190",
+    "target_release": "v1.0.191"
+  }
+}

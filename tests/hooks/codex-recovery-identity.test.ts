@@ -23,7 +23,7 @@ function makeProject(root: string, sessionId: string): string {
   const runtimeDir = join(project, ".trellis", ".runtime", "sessions");
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
-  writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: "task-1", status: "implement" }), "utf8");
+  writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: "task-1", status: "in_progress" }), "utf8");
   writeFileSync(join(runtimeDir, `codex_${sessionId}.json`), JSON.stringify({ current_task: "tasks/task-1" }), "utf8");
   return project;
 }

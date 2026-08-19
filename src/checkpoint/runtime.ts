@@ -71,6 +71,7 @@ const PROJECT_RECOVERY_SOURCE_TOP_LEVEL_KEYS = new Set(["path", "sha256"]);
 const PROJECT_RECOVERY_DIRECTORY_NAME = ".context-mode";
 const PROJECT_RECOVERY_PROVIDER_FILE_NAME = "recovery-provider.json";
 const PROJECT_RECOVERY_BRIEF_FILE_NAME = "recovery-brief.json";
+const ACTIVE_TRELLIS_TASK_STATUSES = new Set(["planning", "in_progress"] as const);
 const CHECKPOINT_STATES = new Set<CheckpointState>([
   "pending",
   "confirmed",
@@ -177,6 +178,20 @@ interface RecoveryBriefContextProjection {
   next_action: RecoveryBriefContextFact | null;
   project_state: RecoveryBriefContextFact | null;
 }
+
+type ActiveTrellisTaskStatus = "planning" | "in_progress";
+
+type ActiveTrellisTaskResolution =
+  | {
+      ok: true;
+      taskDir: string;
+      task: Record<string, unknown>;
+      status: ActiveTrellisTaskStatus;
+    }
+  | {
+      ok: false;
+      errorCode: "TRELLIS_TASK_INVALID" | "TRELLIS_TASK_INACTIVE";
+    };
 
 interface ReadonlyCheckpointDatabase {
   prepare(sql: string): PreparedStatement;
@@ -343,19 +358,6 @@ function trellisContextKey(sessionId: string): string {
   return `codex_${safeSessionId || sha256(sessionId).slice(0, 24)}`;
 }
 
-function safeTaskPath(projectRoot: string, trellisRoot: string, pointer: string): string | null {
-  if (!pointer || pointer.includes("\0")) return null;
-  const normalized = pointer.replace(/\\/g, "/").replace(/^\.\//, "");
-  const candidate = isAbsolute(pointer)
-    ? safeRealpath(pointer)
-    : normalized.startsWith(".trellis/")
-      ? safeRealpath(resolve(projectRoot, normalized))
-      : normalized.startsWith("tasks/")
-        ? safeRealpath(resolve(trellisRoot, normalized))
-        : safeRealpath(resolve(trellisRoot, "tasks", normalized));
-  return isPathInside(trellisRoot, candidate) ? candidate : null;
-}
-
 function getPointerValue(runtime: Record<string, unknown>): string | null {
   const currentTask = runtime.current_task;
   if (typeof currentTask === "string") return currentTask;
@@ -364,6 +366,71 @@ function getPointerValue(runtime: Record<string, unknown>): string | null {
     return stringField(pointer.path) ?? stringField(pointer.task_path) ?? stringField(pointer.id);
   }
   return null;
+}
+
+function resolveCanonicalTrellisTaskDirectory(
+  projectRoot: string,
+  trellisRoot: string,
+  pointer: string,
+): string | null {
+  if (!pointer || pointer.length > 4_096 || /[\0-\x1f\x7f]/.test(pointer)) return null;
+
+  const pointerPath = pointer.replace(/\\/g, "/");
+  const relativePointer = pointerPath.replace(/^\.\//, "");
+  const pointerSegments = relativePointer.split("/");
+  if (pointerSegments.some((segment, index) => {
+    if (segment === "." || segment === "..") return true;
+    if (segment !== "") return false;
+    return index !== 0 && index !== pointerSegments.length - 1;
+  })) return null;
+
+  const canonicalTrellisRoot = trustedProjectDirectory(projectRoot, trellisRoot);
+  if (!canonicalTrellisRoot) return null;
+  const tasksRoot = join(canonicalTrellisRoot, "tasks");
+  const canonicalTasksRoot = trustedProjectDirectory(canonicalTrellisRoot, tasksRoot);
+  if (!canonicalTasksRoot) return null;
+
+  const candidate = isAbsolute(pointer)
+    ? resolve(pointer)
+    : relativePointer.startsWith(".trellis/")
+      ? resolve(projectRoot, relativePointer)
+      : relativePointer.startsWith("tasks/")
+        ? resolve(canonicalTrellisRoot, relativePointer)
+        : resolve(canonicalTasksRoot, relativePointer);
+  const canonicalCandidate = trustedProjectDirectory(canonicalTasksRoot, candidate);
+  if (!canonicalCandidate) return null;
+
+  const taskRelative = relative(canonicalTasksRoot, canonicalCandidate);
+  if (!taskRelative || isAbsolute(taskRelative) || taskRelative === "archive") return null;
+  if (taskRelative === ".." || taskRelative.startsWith(`..${sep}`)) return null;
+  return taskRelative.split(sep).length === 1 ? canonicalCandidate : null;
+}
+
+function resolveActiveTrellisTask(
+  projectRoot: string,
+  trellisRoot: string,
+  pointer: string,
+): ActiveTrellisTaskResolution {
+  const taskDir = resolveCanonicalTrellisTaskDirectory(projectRoot, trellisRoot, pointer);
+  if (!taskDir) return { ok: false, errorCode: "TRELLIS_TASK_INVALID" };
+
+  const taskJsonPath = trustedRegularFile(taskDir, join(taskDir, "task.json"));
+  if (!taskJsonPath) return { ok: false, errorCode: "TRELLIS_TASK_INVALID" };
+
+  let task: Record<string, unknown>;
+  try {
+    const parsedTask = JSON.parse(readFileSync(taskJsonPath, "utf8"));
+    if (!isRecord(parsedTask)) return { ok: false, errorCode: "TRELLIS_TASK_INVALID" };
+    task = parsedTask;
+  } catch {
+    return { ok: false, errorCode: "TRELLIS_TASK_INVALID" };
+  }
+
+  const status = task.status;
+  if (typeof status !== "string" || !ACTIVE_TRELLIS_TASK_STATUSES.has(status as ActiveTrellisTaskStatus)) {
+    return { ok: false, errorCode: "TRELLIS_TASK_INACTIVE" };
+  }
+  return { ok: true, taskDir, task, status: status as ActiveTrellisTaskStatus };
 }
 
 function allowedTaskField(task: Record<string, unknown>, names: string[]): string | null {
@@ -437,35 +504,41 @@ export function readTrellisEvidence(projectRoot: string, sessionId: string): Tre
     return { bridgeStatus: "runtime_missing", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
   }
 
+  const resolvedRuntimePath = trustedRegularFile(trellisRoot, runtimePath);
+  if (!resolvedRuntimePath) {
+    return { bridgeStatus: "invalid", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
+  }
+
+  let parsedRuntime: unknown;
   try {
-    const runtime = JSON.parse(readFileSync(runtimePath, "utf8")) as Record<string, unknown>;
-    const pointer = getPointerValue(runtime);
-    const taskPath = pointer ? safeTaskPath(canonicalProjectRoot, trellisRoot, pointer) : null;
-    if (!taskPath) {
-      return { bridgeStatus: "stale", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
-    }
-
-    const taskJsonPath = basename(taskPath) === "task.json" ? taskPath : join(taskPath, "task.json");
-    const resolvedTaskJsonPath = safeRealpath(taskJsonPath);
-    if (!isPathInside(trellisRoot, resolvedTaskJsonPath) || !existsSync(resolvedTaskJsonPath)) {
-      return { bridgeStatus: "stale", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
-    }
-
-    const task = JSON.parse(readFileSync(resolvedTaskJsonPath, "utf8")) as Record<string, unknown>;
-    const artifacts = taskArtifacts(resolve(resolvedTaskJsonPath, ".."), trellisRoot);
-    return {
-      bridgeStatus: "active",
-      task: "active",
-      taskId: allowedTaskField(task, ["id", "task_id"]) ?? allowedTaskField(runtime, ["task_id", "id"]),
-      taskStatus: allowedTaskField(task, ["status", "state"]),
-      taskPhase: allowedTaskField(task, ["phase", "stage"]),
-      updatedAt: allowedTaskField(task, ["updated_at", "updatedAt"]),
-      artifacts: artifacts.artifacts,
-      omittedArtifactCount: artifacts.omitted,
-    };
+    parsedRuntime = JSON.parse(readFileSync(resolvedRuntimePath, "utf8"));
   } catch {
     return { bridgeStatus: "invalid", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
   }
+  if (!isRecord(parsedRuntime)) {
+    return { bridgeStatus: "invalid", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
+  }
+  const runtime = parsedRuntime;
+
+  const pointer = getPointerValue(runtime);
+  const resolution = pointer
+    ? resolveActiveTrellisTask(canonicalProjectRoot, trellisRoot, pointer)
+    : { ok: false as const, errorCode: "TRELLIS_TASK_INVALID" as const };
+  if (!resolution.ok) {
+    return { bridgeStatus: "stale", task: "absent", taskId: null, taskStatus: null, taskPhase: null, updatedAt: null, artifacts: [], omittedArtifactCount: 0 };
+  }
+
+  const artifacts = taskArtifacts(resolution.taskDir, trellisRoot);
+  return {
+    bridgeStatus: "active",
+    task: "active",
+    taskId: allowedTaskField(resolution.task, ["id", "task_id"]) ?? allowedTaskField(runtime, ["task_id", "id"]),
+    taskStatus: resolution.status,
+    taskPhase: allowedTaskField(resolution.task, ["phase", "stage"]),
+    updatedAt: allowedTaskField(resolution.task, ["updated_at", "updatedAt"]),
+    artifacts: artifacts.artifacts,
+    omittedArtifactCount: artifacts.omitted,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -981,31 +1054,34 @@ function trellisProviderResolution(
   });
 
   try {
-    const trellisEntry = lstatSync(trellisRoot);
-    if (!trellisEntry.isDirectory() || trellisEntry.isSymbolicLink()) {
+    if (!trustedProjectDirectory(canonicalProjectRoot, trellisRoot)) {
       return invalid("TRELLIS_RUNTIME_INVALID");
     }
     const resolvedRuntimePath = trustedRegularFile(trellisRoot, runtimePath);
     if (!resolvedRuntimePath) return invalid("TRELLIS_RUNTIME_INVALID");
-    const runtime = JSON.parse(readFileSync(resolvedRuntimePath, "utf8")) as Record<string, unknown>;
+
+    let runtime: Record<string, unknown>;
+    try {
+      const parsedRuntime = JSON.parse(readFileSync(resolvedRuntimePath, "utf8"));
+      if (!isRecord(parsedRuntime)) return invalid("TRELLIS_RUNTIME_INVALID");
+      runtime = parsedRuntime;
+    } catch {
+      return invalid("TRELLIS_RUNTIME_INVALID");
+    }
+
     const pointer = getPointerValue(runtime);
-    const taskPath = pointer ? safeTaskPath(canonicalProjectRoot, trellisRoot, pointer) : null;
-    if (!taskPath) return invalid("TRELLIS_TASK_INVALID");
+    if (!pointer) return invalid("TRELLIS_TASK_INVALID");
+    const taskResolution = resolveActiveTrellisTask(canonicalProjectRoot, trellisRoot, pointer);
+    if (!taskResolution.ok) return invalid(taskResolution.errorCode);
 
-    const taskJsonPath = basename(taskPath) === "task.json" ? taskPath : join(taskPath, "task.json");
-    const resolvedTaskJsonPath = trustedRegularFile(trellisRoot, taskJsonPath);
-    if (!resolvedTaskJsonPath) return invalid("TRELLIS_TASK_INVALID");
-
-    const task = JSON.parse(readFileSync(resolvedTaskJsonPath, "utf8")) as Record<string, unknown>;
-    const taskDir = resolve(resolvedTaskJsonPath, "..");
-    const taskArtifactSummary = taskArtifacts(taskDir, trellisRoot);
+    const taskArtifactSummary = taskArtifacts(taskResolution.taskDir, trellisRoot);
     const trellisSourceSha256 = canonicalTrellisSourceSha256(
-      taskDir,
+      taskResolution.taskDir,
       trellisRoot,
-      task,
+      taskResolution.task,
       taskArtifactSummary.artifacts,
     );
-    const recoveryPath = join(resolve(resolvedTaskJsonPath, ".."), PROJECT_RECOVERY_BRIEF_FILE_NAME);
+    const recoveryPath = join(taskResolution.taskDir, PROJECT_RECOVERY_BRIEF_FILE_NAME);
     const read = readRecoveryBriefFile(trellisRoot, recoveryPath, "trellis", trustedRegularFile);
     if (read.snapshot.status === "invalid") {
       return {
@@ -1382,6 +1458,27 @@ export function updateRecoveryBriefProvider(
     const paths = projectRecoveryPaths(canonicalProjectRoot);
     if (!writeAtomically(canonicalProjectRoot, paths.providerPath, `${JSON.stringify(projectConfig, null, 2)}\n`)) {
       return failed("WRITE_FAILED", resolution);
+    }
+  }
+  if (resolution.kind === "trellis") {
+    const latestResolution = trellisProviderResolution(canonicalProjectRoot, sessionId);
+    if (!latestResolution) return failed("TRELLIS_RUNTIME_INVALID", resolution);
+    if (!latestResolution.briefPath) return failed(latestResolution.errorCode, latestResolution);
+    if (latestResolution.briefPath !== resolution.briefPath
+      || latestResolution.trellisSourceSha256 !== resolution.trellisSourceSha256) {
+      return failed("TRELLIS_SOURCE_DRIFT", latestResolution);
+    }
+
+    const latestBriefPath = resolve(canonicalProjectRoot, latestResolution.briefPath);
+    const latest = readRecoveryBriefFile(
+      join(canonicalProjectRoot, ".trellis"),
+      latestBriefPath,
+      "trellis",
+      trustedRegularFile,
+    );
+    if (latest.snapshot.status === "invalid") return failed("INVALID_RECOVERY_BRIEF", latestResolution);
+    if (!expectedRecoveryBriefShaMatches(latest.snapshot, options.expectedSha256)) {
+      return failed("CAS_CONFLICT", latestResolution);
     }
   }
   const writeRoot = resolution.kind === "trellis"

@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-08-19T07:20:11.141Z",
+  "objective": {
+    "value": "Publish context-mode v1.0.191 with the ROOT-ISSUE-119 RecoveryBrief task boundary fix.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+    "valid_at": "2026-08-19T07:20:11.141Z"
+  },
+  "hard_constraints": [
+    {
+      "value": "Only canonical direct-child Trellis tasks with planning or in_progress status may be RecoveryBrief providers.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Do not modify the parent repository, /home/penn/.codex, installed Plugin caches, or root Issue state.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Release through the existing source commit, direct-child attestation commit, annotated tag, and GitHub Release workflow.",
+      "priority": "critical",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    }
+  ],
+  "decisions": [
+    {
+      "value": "Provider status, checkpoint evidence, and CAS updates share one active-task resolver.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Noncanonical paths use TRELLIS_TASK_INVALID; trusted non-active task manifests use TRELLIS_TASK_INACTIVE.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "A present invalid Trellis pointer fails closed and never falls through to a project provider.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Trellis writes re-resolve task activity, source identity, Brief path, and expected SHA immediately before atomic write.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    }
+  ],
+  "completed_work": [
+    {
+      "value": "Baseline defect reproduced and red tests captured 12 failures across 53 focused tests.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Implementation, typed error, tests, code-spec, release notes, version manifests, and generated bundles are complete.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Focused regression passes 62 tests; expanded integration/release matrix passes 141 tests.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Build, typecheck, Hook syntax, deterministic marketplace build, offline install, and stdio MCP initialization pass.",
+      "priority": "optional",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    }
+  ],
+  "open_work": [
+    {
+      "value": "Rerun the full suite after final fixture additions and complete Trellis task validation.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Create the source commit, run provider-authorized native preflight, and add the attestation-only evidence commit.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    },
+    {
+      "value": "Tag and publish v1.0.191, verify CI and downloaded asset SHA-256 values, then prepare root acceptance handoff.",
+      "priority": "important",
+      "source_kind": "trellis_task",
+      "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+      "valid_at": "2026-08-19T07:20:11.141Z"
+    }
+  ],
+  "latest_blocker": null,
+  "next_action": {
+    "value": "Run the final full suite and Trellis validation, then create the source candidate commit.",
+    "priority": "critical",
+    "source_kind": "trellis_task",
+    "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+    "valid_at": "2026-08-19T07:20:11.141Z"
+  },
+  "project_state": {
+    "value": "Branch fix/issue-119-recovery-brief-boundary is based on 384cb779; target v1.0.191 is unused.",
+    "priority": "important",
+    "source_kind": "trellis_task",
+    "source_sha256": "55b9b96ee848cffa6548e14ffa8ed7d4d21819b726723964f959ece94cec0a17",
+    "valid_at": "2026-08-19T07:20:11.141Z"
+  }
+}

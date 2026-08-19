@@ -528,8 +528,8 @@ describe("confirmed Codex compaction checkpoints", () => {
       artifacts: [],
     });
 
-    const longSegments = Array.from({ length: 8 }, () => "x".repeat(48));
-    const taskRelativePath = join("tasks", ...longSegments);
+    const longTaskName = Array.from({ length: 4 }, () => "x".repeat(48)).join("-");
+    const taskRelativePath = join("tasks", longTaskName);
     const taskDir = join(trellisRoot, taskRelativePath);
     mkdirSync(taskDir, { recursive: true });
     writeFileSync(join(runtimeDir, `codex_${sessionId}.json`), JSON.stringify({
@@ -583,6 +583,53 @@ describe("confirmed Codex compaction checkpoints", () => {
       taskStatus: "in_progress",
       taskPhase: "implement",
     });
+  });
+
+  it("withholds Trellis evidence and checkpoint recovery for an inactive task", () => {
+    const fixture = createFixture();
+    const sessionId = "session-inactive-trellis-task";
+    const taskDir = createActiveTrellisTask(fixture, sessionId, "task-inactive");
+    writeFileSync(join(taskDir, "task.json"), JSON.stringify({
+      id: "task-inactive",
+      status: "completed",
+      phase: "done",
+    }), "utf8");
+    const status = getRecoveryBriefProviderStatus(fixture.projectDir, sessionId);
+    writeFileSync(join(taskDir, "recovery-brief.json"), JSON.stringify(
+      recoveryBrief({
+        objective: {
+          ...recoveryFact("INACTIVE-TASK-SECRET", "critical"),
+          source_sha256: status.trellisSourceSha256 ?? "a".repeat(64),
+        },
+      }),
+    ), "utf8");
+
+    expect(status).toMatchObject({
+      provider: "trellis",
+      health: "invalid",
+      task: "absent",
+      briefPath: null,
+      trellisSourceSha256: null,
+      errorCode: "TRELLIS_TASK_INACTIVE",
+    });
+    expect(readTrellisEvidence(fixture.projectDir, sessionId)).toMatchObject({
+      bridgeStatus: "stale",
+      task: "absent",
+      taskStatus: null,
+      artifacts: [],
+    });
+
+    const row = createPendingCheckpoint(
+      hookInput(fixture.projectDir, sessionId, "turn-inactive-trellis-task"),
+      { configDir: fixture.configDir, now: at(0) },
+    )!;
+    expect(row).toMatchObject({
+      recovery_status: "invalid",
+      recovery_origin: "trellis",
+      recovery_json: null,
+      recovery_sha256: null,
+    });
+    expect(row.payload_json).not.toContain("INACTIVE-TASK-SECRET");
   });
 
   it("snapshots a valid active-task RecoveryBrief without changing CheckpointPayload", () => {

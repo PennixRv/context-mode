@@ -318,3 +318,103 @@ if (!validation.ok) {
   };
 }
 ```
+
+## Scenario: Active Trellis Task Provider Boundary
+
+### 1. Scope / Trigger
+
+Use this contract whenever Trellis runtime pointers are resolved for checkpoint
+evidence or RecoveryBrief status/update operations. A task path being inside
+`.trellis` is not sufficient: provider authority exists only for a canonical,
+active task.
+
+### 2. Signatures
+
+```typescript
+getRecoveryBriefProviderStatus(projectRoot, sessionId)
+updateRecoveryBriefProvider(projectRoot, sessionId, {
+  expectedSha256,
+  brief,
+})
+```
+
+The shared internal resolution returns either an ordinary direct-child task
+directory plus its parsed manifest, or one of:
+
+```text
+TRELLIS_TASK_INVALID
+TRELLIS_TASK_INACTIVE
+```
+
+### 3. Contracts
+
+- The runtime pointer must resolve to one ordinary direct child of the
+  canonical `.trellis/tasks` directory. Bare task names, `tasks/<task>`,
+  `.trellis/tasks/<task>`, and equivalent absolute/project-alias paths may
+  identify that same directory.
+- `archive`, archive descendants, nested task directories, direct
+  `task.json` pointers, non-task `.trellis` paths, missing/non-directory
+  targets, traversal segments, and symbolic-link task directories are invalid.
+- The selected directory must contain a trusted regular `task.json` object
+  whose `status` is exactly `planning` or `in_progress`.
+- Provider status, Trellis checkpoint evidence, and CAS update use the same
+  resolver. Invalid or inactive Trellis state exposes no Brief path, Brief
+  digest, source digest, or active-task claim and never falls through to an
+  explicit project provider.
+- CAS preserves the existing canonical Brief digest and source-bound facts.
+  Immediately before writing, it resolves the Trellis task again and checks
+  task activity, task/Brief path identity, source digest, and expected Brief
+  SHA so a state transition or retarget cannot reuse an earlier decision.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Direct task with `planning` or `in_progress` | `provider=trellis`, `task=active`, `errorCode=NONE`; valid CAS may write |
+| Trusted task with missing, empty, unknown, non-string, or non-active status | `TRELLIS_TASK_INACTIVE`; no path/digest/write |
+| Missing, malformed, or non-object `task.json` | `TRELLIS_TASK_INVALID`; no path/digest/write |
+| Archive, nested, non-task, direct-file, missing, non-directory, traversal, or symlink target | `TRELLIS_TASK_INVALID`; no path/digest/write |
+| Invalid/inactive Trellis pointer plus project provider | Trellis failure; no project fallback or mutation |
+| Task becomes inactive or retargeted before write | Stable Trellis error or source drift/CAS conflict; existing Brief unchanged |
+| Inactive task read for checkpoint evidence | `bridgeStatus=stale`, `task=absent`; no RecoveryBrief body in the checkpoint |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an `in_progress` task is resolved through the shared boundary, its
+  source digest is captured, and a matching expected SHA produces an atomic
+  Brief update.
+- Base: a valid `planning` task has no Brief yet; status is available with an
+  absent Brief, and the first source-bound CAS succeeds.
+- Bad: accept every path under `.trellis`, infer activity from a parseable
+  manifest, treat `phase=implement` as task status, or trust a caller-provided
+  path/read-only claim instead of the provider resolver.
+
+### 6. Tests Required
+
+- Provider tests call both public status and update functions for both active
+  statuses and every invalid/inactive matrix row.
+- Positive tests retain first-write and repeated-CAS behavior plus canonical
+  project/pointer aliases.
+- Negative tests assert no Brief creation, no path/source digest, no fallback,
+  and exact byte/SHA preservation for an existing Brief.
+- Runtime tests assert inactive tasks do not contribute Trellis evidence or a
+  checkpoint RecoveryBrief snapshot.
+- Hook/MCP identity tests use a real active status (`in_progress`), then prove
+  capability binding and CAS routing against the same provider implementation.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```typescript
+const task = JSON.parse(readFileSync(taskJson));
+if (isPathInside(trellisRoot, taskDir)) writeRecoveryBrief(taskDir);
+```
+
+#### Correct
+
+```typescript
+const task = resolveActiveTrellisTask(projectRoot, trellisRoot, pointer);
+if (!task.ok) return failClosed(task.errorCode);
+// Re-resolve activity, source identity, and expected SHA before atomic write.
+```

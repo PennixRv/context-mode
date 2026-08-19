@@ -38,6 +38,8 @@ interface InvalidTrellisPointerCase {
   invalidate: (projectDir: string, sessionId: string, taskDir: string) => void;
 }
 
+type ActiveTrellisTaskStatus = "planning" | "in_progress";
+
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -100,14 +102,31 @@ function providerSourceHash(projectDir: string): string {
   return config.source_paths[0]!.sha256;
 }
 
-function createActiveTrellisTask(projectDir: string, sessionId: string): string {
-  const taskDir = join(projectDir, ".trellis", "tasks", "task-1");
+function createActiveTrellisTask(
+  projectDir: string,
+  sessionId: string,
+  status: ActiveTrellisTaskStatus = "in_progress",
+  taskName = "task-1",
+): string {
+  const taskDir = join(projectDir, ".trellis", "tasks", taskName);
   const runtimeDir = join(projectDir, ".trellis", ".runtime", "sessions");
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(runtimeDir, { recursive: true });
-  writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: "task-1" }), "utf8");
-  writeFileSync(trellisRuntimePath(projectDir, sessionId), JSON.stringify({ current_task: "tasks/task-1" }), "utf8");
+  writeFileSync(join(taskDir, "task.json"), JSON.stringify({ id: taskName, status }), "utf8");
+  writeFileSync(
+    trellisRuntimePath(projectDir, sessionId),
+    JSON.stringify({ current_task: `tasks/${taskName}` }),
+    "utf8",
+  );
   return taskDir;
+}
+
+function writeTrellisTaskStatus(taskDir: string, status: unknown, includeStatus = true): void {
+  writeFileSync(
+    join(taskDir, "task.json"),
+    JSON.stringify(includeStatus ? { id: "task-1", status } : { id: "task-1" }),
+    "utf8",
+  );
 }
 
 function currentTrellisSourceSha256(projectDir: string, sessionId: string): string {
@@ -237,6 +256,13 @@ const INVALID_TRELLIS_POINTER_CASES: InvalidTrellisPointerCase[] = [
     },
   },
   {
+    name: "the active task manifest is malformed",
+    errorCode: "TRELLIS_TASK_INVALID",
+    invalidate: (_projectDir, _sessionId, taskDir) => {
+      writeFileSync(join(taskDir, "task.json"), "{", "utf8");
+    },
+  },
+  {
     name: "the Trellis RecoveryBrief is malformed",
     errorCode: "TRELLIS_BRIEF_INVALID",
     invalidate: (_projectDir, _sessionId, taskDir) => {
@@ -245,6 +271,19 @@ const INVALID_TRELLIS_POINTER_CASES: InvalidTrellisPointerCase[] = [
   },
 ];
 
+if (process.platform !== "win32") {
+  INVALID_TRELLIS_POINTER_CASES.push({
+    name: "the active task manifest is a symbolic link",
+    errorCode: "TRELLIS_TASK_INVALID",
+    invalidate: (projectDir, _sessionId, taskDir) => {
+      const linkedManifest = join(projectDir, "linked-task.json");
+      writeFileSync(linkedManifest, JSON.stringify({ id: "task-1", status: "in_progress" }), "utf8");
+      rmSync(join(taskDir, "task.json"));
+      symlinkSync(linkedManifest, join(taskDir, "task.json"));
+    },
+  });
+}
+
 afterEach(() => {
   while (CLEANUP_DIRECTORIES.length > 0) {
     rmSync(CLEANUP_DIRECTORIES.pop()!, { recursive: true, force: true });
@@ -252,6 +291,308 @@ afterEach(() => {
 });
 
 describe("RecoveryBrief providers", () => {
+  for (const activeStatus of ["planning", "in_progress"] as const) {
+    it(`preserves source-bound CAS updates for an active ${activeStatus} task`, () => {
+      const current = fixture();
+      const sessionId = `session-active-${activeStatus}`;
+      const taskDir = createActiveTrellisTask(current.projectDir, sessionId, activeStatus);
+      const firstSourceSha256 = currentTrellisSourceSha256(current.projectDir, sessionId);
+
+      expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId)).toMatchObject({
+        provider: "trellis",
+        health: "available",
+        recoveryStatus: "absent",
+        task: "active",
+        errorCode: "NONE",
+      });
+      const first = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+        expectedSha256: "absent",
+        brief: brief("trellis_task", firstSourceSha256),
+      });
+      expect(first).toMatchObject({ ok: true, provider: "trellis", errorCode: "NONE" });
+
+      const second = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+        expectedSha256: first.briefSha256!,
+        brief: brief("trellis_task", firstSourceSha256, timestamp(1)),
+      });
+      expect(second).toMatchObject({ ok: true, provider: "trellis", errorCode: "NONE" });
+      expect(second.briefBytes).toBe(statSync(join(taskDir, "recovery-brief.json")).size);
+    });
+  }
+
+  it("preserves canonical pointer aliases for an active task directory", () => {
+    const current = fixture();
+    const sessionId = "session-active-pointer-aliases";
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+    const runtimePath = trellisRuntimePath(current.projectDir, sessionId);
+
+    for (const pointer of [
+      "task-1",
+      ".trellis/tasks/task-1",
+      "./.trellis/tasks/task-1",
+      taskDir,
+    ]) {
+      writeFileSync(runtimePath, JSON.stringify({ current_task: pointer }), "utf8");
+      expect(getRecoveryBriefProviderStatus(current.projectDir, sessionId), pointer).toMatchObject({
+        provider: "trellis",
+        health: "available",
+        recoveryStatus: "absent",
+        task: "active",
+        errorCode: "NONE",
+      });
+    }
+  });
+
+  const inactiveStatuses: Array<{
+    name: string;
+    value: unknown;
+    includeStatus?: boolean;
+  }> = [
+    { name: "completed", value: "completed" },
+    { name: "archived", value: "archived" },
+    { name: "cancelled", value: "cancelled" },
+    { name: "blocked", value: "blocked" },
+    { name: "missing", value: undefined, includeStatus: false },
+    { name: "empty", value: "" },
+    { name: "unknown", value: "reviewing" },
+    { name: "non-string", value: 1 },
+  ];
+
+  for (const inactiveStatus of inactiveStatuses) {
+    it(`rejects a canonical task whose status is ${inactiveStatus.name}`, () => {
+      const current = fixture();
+      const sessionId = `session-inactive-${inactiveStatus.name}`;
+      const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+      writeTrellisTaskStatus(taskDir, inactiveStatus.value, inactiveStatus.includeStatus ?? true);
+
+      const status = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+      expect(status).toMatchObject({
+        provider: "trellis",
+        health: "invalid",
+        recoveryStatus: "invalid",
+        origin: "trellis",
+        task: "absent",
+        briefPath: null,
+        briefSha256: null,
+        trellisSourceSha256: null,
+        errorCode: "TRELLIS_TASK_INACTIVE",
+      });
+      const result = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+        expectedSha256: "absent",
+        brief: brief("trellis_task", status.trellisSourceSha256 ?? "a".repeat(64)),
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        provider: "trellis",
+        origin: "trellis",
+        errorCode: "TRELLIS_TASK_INACTIVE",
+      });
+      expect(existsSync(join(taskDir, "recovery-brief.json"))).toBe(false);
+    });
+  }
+
+  it("rejects non-canonical Trellis task paths through status and update", () => {
+    const pathCases: Array<{
+      name: string;
+      setup: (current: Fixture, sessionId: string) => string;
+    }> = [
+      {
+        name: "archive descendant",
+        setup: (current, sessionId) => {
+          const taskDir = join(current.projectDir, ".trellis", "tasks", "archive", "task-1");
+          mkdirSync(taskDir, { recursive: true });
+          writeTrellisTaskStatus(taskDir, "in_progress");
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/archive/task-1",
+          }));
+          return taskDir;
+        },
+      },
+      {
+        name: "nested task directory",
+        setup: (current, sessionId) => {
+          const taskDir = join(current.projectDir, ".trellis", "tasks", "task-1", "nested");
+          mkdirSync(taskDir, { recursive: true });
+          writeTrellisTaskStatus(taskDir, "in_progress");
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/task-1/nested",
+          }));
+          return taskDir;
+        },
+      },
+      {
+        name: "non-task Trellis directory",
+        setup: (current, sessionId) => {
+          const taskDir = join(current.projectDir, ".trellis", "evidence", "task-1");
+          mkdirSync(taskDir, { recursive: true });
+          writeTrellisTaskStatus(taskDir, "in_progress");
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: ".trellis/evidence/task-1",
+          }));
+          return taskDir;
+        },
+      },
+      {
+        name: "direct task manifest",
+        setup: (current, sessionId) => {
+          const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/task-1/task.json",
+          }));
+          return taskDir;
+        },
+      },
+      {
+        name: "missing task directory",
+        setup: (current, sessionId) => {
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/task-missing",
+          }));
+          return join(current.projectDir, ".trellis", "tasks", "task-missing");
+        },
+      },
+      {
+        name: "non-directory task target",
+        setup: (current, sessionId) => {
+          const taskPath = join(current.projectDir, ".trellis", "tasks", "task-file");
+          mkdirSync(join(current.projectDir, ".trellis", "tasks"), { recursive: true });
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(taskPath, "not a task directory", "utf8");
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/task-file",
+          }));
+          return taskPath;
+        },
+      },
+    ];
+
+    if (process.platform !== "win32") {
+      pathCases.push({
+        name: "symbolic-link task directory",
+        setup: (current, sessionId) => {
+          const realTaskDir = join(current.projectDir, ".trellis", "tasks", "task-real");
+          const linkedTaskDir = join(current.projectDir, ".trellis", "tasks", "task-link");
+          mkdirSync(realTaskDir, { recursive: true });
+          writeTrellisTaskStatus(realTaskDir, "in_progress");
+          symlinkSync(realTaskDir, linkedTaskDir, "dir");
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/task-link",
+          }));
+          return realTaskDir;
+        },
+      });
+      pathCases.push({
+        name: "symbolic-link task directory escaping the Trellis root",
+        setup: (current, sessionId) => {
+          const outsideTaskDir = `${current.projectDir}-outside-task`;
+          CLEANUP_DIRECTORIES.push(outsideTaskDir);
+          const linkedTaskDir = join(current.projectDir, ".trellis", "tasks", "task-external-link");
+          mkdirSync(outsideTaskDir, { recursive: true });
+          writeTrellisTaskStatus(outsideTaskDir, "in_progress");
+          mkdirSync(join(current.projectDir, ".trellis", "tasks"), { recursive: true });
+          symlinkSync(outsideTaskDir, linkedTaskDir, "dir");
+          mkdirSync(join(current.projectDir, ".trellis", ".runtime", "sessions"), { recursive: true });
+          writeFileSync(trellisRuntimePath(current.projectDir, sessionId), JSON.stringify({
+            current_task: "tasks/task-external-link",
+          }));
+          return outsideTaskDir;
+        },
+      });
+    }
+
+    for (const [index, pathCase] of pathCases.entries()) {
+      const current = fixture();
+      const sessionId = `session-path-${index}`;
+      const taskPath = pathCase.setup(current, sessionId);
+      const status = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+      expect(status, pathCase.name).toMatchObject({
+        provider: "trellis",
+        health: "invalid",
+        recoveryStatus: "invalid",
+        origin: "trellis",
+        task: "absent",
+        briefPath: null,
+        trellisSourceSha256: null,
+        errorCode: "TRELLIS_TASK_INVALID",
+      });
+      const update = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+        expectedSha256: "absent",
+        brief: brief("trellis_task", status.trellisSourceSha256 ?? "a".repeat(64)),
+      });
+      expect(update, pathCase.name).toMatchObject({
+        ok: false,
+        provider: "trellis",
+        errorCode: "TRELLIS_TASK_INVALID",
+      });
+      if (existsSync(taskPath) && statSync(taskPath).isDirectory()) {
+        expect(existsSync(join(taskPath, "recovery-brief.json")), pathCase.name).toBe(false);
+      }
+    }
+  });
+
+  it("preserves an existing Brief when its task becomes inactive", () => {
+    const current = fixture();
+    const sessionId = "session-inactive-existing-brief";
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+    const first = updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("trellis_task", currentTrellisSourceSha256(current.projectDir, sessionId)),
+    });
+    expect(first.ok).toBe(true);
+    const briefPath = join(taskDir, "recovery-brief.json");
+    const before = readFileSync(briefPath);
+    const beforeSha256 = sha256(before);
+
+    writeTrellisTaskStatus(taskDir, "completed");
+    const status = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+    expect(status).toMatchObject({
+      provider: "trellis",
+      task: "absent",
+      briefPath: null,
+      errorCode: "TRELLIS_TASK_INACTIVE",
+    });
+    expect(updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: first.briefSha256!,
+      brief: brief("trellis_task", status.trellisSourceSha256 ?? "a".repeat(64), timestamp(1)),
+    })).toMatchObject({ ok: false, errorCode: "TRELLIS_TASK_INACTIVE" });
+    const after = readFileSync(briefPath);
+    expect(after).toEqual(before);
+    expect(sha256(after)).toBe(beforeSha256);
+  });
+
+  it("does not bypass an inactive Trellis task with a configured project provider", () => {
+    const current = fixture();
+    const sessionId = "session-inactive-no-project-fallback";
+    configureProjectRecoveryProvider(current, sessionId);
+    const projectBriefPath = join(current.projectDir, ".context-mode", "recovery-brief.json");
+    const projectBriefBefore = readFileSync(projectBriefPath);
+    const taskDir = createActiveTrellisTask(current.projectDir, sessionId);
+    writeTrellisTaskStatus(taskDir, "completed");
+
+    const status = getRecoveryBriefProviderStatus(current.projectDir, sessionId);
+    expect(status).toMatchObject({
+      provider: "trellis",
+      health: "invalid",
+      task: "absent",
+      errorCode: "TRELLIS_TASK_INACTIVE",
+    });
+    expect(updateRecoveryBriefProvider(current.projectDir, sessionId, {
+      expectedSha256: "absent",
+      brief: brief("trellis_task", status.trellisSourceSha256 ?? "a".repeat(64)),
+    })).toMatchObject({
+      ok: false,
+      provider: "trellis",
+      errorCode: "TRELLIS_TASK_INACTIVE",
+    });
+    expect(readFileSync(projectBriefPath)).toEqual(projectBriefBefore);
+    expect(existsSync(join(taskDir, "recovery-brief.json"))).toBe(false);
+  });
+
   it("returns deterministic content-free diagnostics for invalid update Briefs", () => {
     const current = fixture();
     const valid = brief("trellis_task", "a".repeat(64));
