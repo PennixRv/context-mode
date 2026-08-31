@@ -1,6 +1,6 @@
 # context-mode is active
 Use `ctx_*` tools. The extension injects routing rules — follow them.
-Keep lifecycle, wait, interactive, bounded structured, Trellis/Governance,
+Keep lifecycle, wait, interactive, bounded structured, and Trellis channel
 CodeGraph, and Fast Context protocols direct. Use context-mode for unbounded
 local text; analyze original-tool file artifacts with `ctx_execute_file`.
 Keep unverified external candidates non-persistent, and never use `ctx_index`

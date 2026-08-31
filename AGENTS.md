@@ -28,8 +28,8 @@ future `trellis update`.
 - This repository owns `context-mode` source, tests, package metadata, release assets, and its local
   Trellis configuration.
 - A task started here may modify only this repository unless its approved PRD names another target.
-- The parent `codex-workflow-optimization` repository, `/home/penn/.codex`, Governance Plugin, and
-  sibling components are read-only integration context. Do not update their files or Gitlinks here.
+- The parent `codex-workflow-optimization` repository, `/home/penn/.codex`, and sibling components
+  are read-only integration context. Do not update their files or Gitlinks here.
 - Cross-repository requirements must be copied into the local task so implementation does not depend
   on reading mutable files outside this repository.
 

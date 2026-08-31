@@ -8,7 +8,7 @@ Analyze/count/filter/compare/search/parse/transform data: **write code** via `ct
 
 ## Protocol passthrough
 
-Call lifecycle control, event waits, interactive actions, bounded structured results, and tools with dedicated status/error protocols directly. Never wrap Trellis/Governance, CodeGraph, Fast Context, or another bounded MCP call in context-mode execution. With an approved `.codegraph/`, use CodeGraph first for symbols, architecture, call paths, and impact. For a large structured result, have the original tool write a file and analyze it with `ctx_execute_file`; keep unverified external candidates non-persistent.
+Call lifecycle control, event waits, interactive actions, bounded structured results, and tools with dedicated status/error protocols directly. Never wrap Trellis channel, CodeGraph, Fast Context, or another bounded MCP call in context-mode execution. With an approved `.codegraph/`, use CodeGraph first for symbols, architecture, call paths, and impact. For a large structured result, have the original tool write a file and analyze it with `ctx_execute_file`; keep unverified external candidates non-persistent.
 
 ## BLOCKED — do NOT use
 
