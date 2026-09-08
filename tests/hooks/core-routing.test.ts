@@ -97,6 +97,8 @@ describe("routePreToolUse", () => {
       const cmd = (result!.updatedInput as Record<string, string>).command;
       expect(cmd).toContain("curl/wget redirected");
       expect(cmd).not.toContain("curl/wget blocked");
+      expect(cmd).toContain("call its callable direct MCP/API tool");
+      expect(cmd).toContain("report that capability gap");
       expect(cmd).toContain("project-configured external retrieval path");
     });
 
@@ -219,6 +221,8 @@ describe("routePreToolUse", () => {
       const cmd = (result!.updatedInput as Record<string, string>).command;
       expect(cmd).toContain("Inline HTTP redirected");
       expect(cmd).not.toContain("Inline HTTP blocked");
+      expect(cmd).toContain("call its callable direct MCP/API tool");
+      expect(cmd).toContain("report that capability gap");
       expect(cmd).toContain("project-configured external retrieval path");
     });
 

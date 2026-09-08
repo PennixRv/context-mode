@@ -910,7 +910,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         return {
           action: "modify",
           updatedInput: {
-            command: `echo "context-mode: curl/wget redirected. For public web information, use the project-configured external retrieval path. Use ${t("ctx_execute")}(language, code) only when the user explicitly asks to inspect a direct HTTP/API response; derive and print bounded findings."`,
+            command: `echo "context-mode: curl/wget redirected. For a configured service, call its callable direct MCP/API tool; if it is unavailable, report that capability gap. For public web information, use the project-configured external retrieval path. Use ${t("ctx_execute")}(language, code) only for explicit HTTP/API response inspection when no applicable direct protocol exists."`,
           },
           // D2 PRD Phase 3.1: marker payload for PostToolUse byte accounting.
           redirectMeta: {
@@ -941,7 +941,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       return {
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: Inline HTTP redirected. For public web information, use the project-configured external retrieval path. Use ${t("ctx_execute")}(language, code) only when the user explicitly asks to inspect a direct HTTP/API response; derive and print bounded findings."`,
+          command: `echo "context-mode: Inline HTTP redirected. For a configured service, call its callable direct MCP/API tool; if it is unavailable, report that capability gap. For public web information, use the project-configured external retrieval path. Use ${t("ctx_execute")}(language, code) only for explicit HTTP/API response inspection when no applicable direct protocol exists."`,
         },
       };
     }

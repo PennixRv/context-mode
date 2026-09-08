@@ -9,7 +9,7 @@ description: |
   "accessibility tree", "Playwright snapshot",
   "run tests", "test output", "coverage report", "git log", "recent commits",
   "diff between branches", "list containers", "pod status", "disk usage",
-  "call API", "check response", "query results",
+  "inspect an explicit HTTP/API response without a direct protocol", "query results",
   "find TODOs", "count lines", "codebase statistics", "security audit",
   "outdated packages", "dependency tree", "cloud resources", "CI/CD output".
   Use only for operations whose main risk is unbounded local output. Preserve
@@ -95,7 +95,7 @@ About to call a tool, run a command, or analyze a file?
 
 | Situation | Tool | Example |
 |-----------|------|---------|
-| Hit an API endpoint | `ctx_execute` | `fetch('http://localhost:3000/api/orders')` |
+| Inspect an explicit HTTP/API response with no applicable direct protocol | `ctx_execute` | `fetch('http://localhost:3000/api/orders')` |
 | Run CLI that returns data | `ctx_execute` | `gh pr list`, `aws s3 ls`, `kubectl get pods` |
 | Run tests | `ctx_execute` | `npm test`, `pytest`, `go test ./...` |
 | Git operations | `ctx_execute` | `git log --oneline -50`, `git diff HEAD~5` |
@@ -116,7 +116,7 @@ About to call a tool, run a command, or analyze a file?
 Use context-mode for these when their output is unbounded and no dedicated
 structured protocol already solves the request:
 
-- **API debugging**: "hit this endpoint", "call the API", "check the response", "find the bug in the response"
+- **API debugging**: "inspect this HTTP/API response", "find the bug in this direct response" — only when no callable direct MCP/API protocol applies
 - **Log analysis**: "check the logs", "what errors", "read access.log", "debug the 500s"
 - **Test runs**: "run the tests", "check if tests pass", "test suite output"
 - **Git history**: "show recent commits", "git log", "what changed", "diff between branches"
