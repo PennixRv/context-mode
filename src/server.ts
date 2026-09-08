@@ -4266,7 +4266,7 @@ WHEN NOT:
 - You need checkpoint payload content, semantic recovery scoring, or a cross-project report.
 
 RETURNS:
-- Local JSON aggregates for one to thirty days, including content-free compact SessionStart diagnostic counts. It never returns checkpoint payloads, prompts, tool input, tool output, or Trellis artifact contents. A diagnostic code of DELIVERED means only that the handler emitted additionalContext; it does not acknowledge host persistence or model consumption.
+- Local JSON aggregates for one to thirty days, including content-free PreCompact/PostCompact checkpoint audit counts. It never returns checkpoint payloads, prompts, tool input, tool output, or Trellis artifact contents.
 
 EXAMPLE:
 ctx_checkpoint_report({ "window_days": 7 })`,
@@ -4591,14 +4591,14 @@ server.registerTool(
       const hookEntries = codexHooks.hooks ?? {};
       const hookContains = (event: string, marker: string): boolean =>
         JSON.stringify(hookEntries[event] ?? []).includes(marker);
-      const sessionStartEntries = JSON.stringify(hookEntries.SessionStart ?? []);
       const preCompact = hookContains("PreCompact", "checkpoint-precompact");
       const postCompact = hookContains("PostCompact", "checkpoint-postcompact");
-      const sessionStart = sessionStartEntries.includes("checkpoint-sessionstart")
-        && sessionStartEntries.includes("compact");
+      const compactSessionStartEntries = JSON.stringify(hookEntries.SessionStart ?? []);
+      const compactSessionStart = compactSessionStartEntries.includes("checkpoint-sessionstart")
+        && compactSessionStartEntries.includes("compact");
       lines.push(`${preCompact ? "[OK]" : "[FAIL]"} Codex PreCompact checkpoint hook: ${preCompact ? "registered" : "missing"}`);
       lines.push(`${postCompact ? "[OK]" : "[FAIL]"} Codex PostCompact checkpoint hook: ${postCompact ? "registered" : "missing"}`);
-      lines.push(`${sessionStart ? "[OK]" : "[FAIL]"} Codex SessionStart(compact) checkpoint hook: ${sessionStart ? "registered" : "missing"}`);
+      lines.push(`${!compactSessionStart ? "[OK]" : "[FAIL]"} Codex SessionStart(compact) checkpoint hook: ${compactSessionStart ? "unexpected registration" : "not registered"}`);
       const recoveryBriefMatcher = Array.isArray(hookEntries.PreToolUse)
         && JSON.stringify(hookEntries.PreToolUse).includes(CODEX_RECOVERY_BRIEF_TOOL_MATCHER);
       if (currentPlatform === "codex") {

@@ -97,7 +97,7 @@ describe("routePreToolUse", () => {
       const cmd = (result!.updatedInput as Record<string, string>).command;
       expect(cmd).toContain("curl/wget redirected");
       expect(cmd).not.toContain("curl/wget blocked");
-      expect(cmd).toMatch(/retry/i);
+      expect(cmd).toContain("project-configured external retrieval path");
     });
 
     it("denies Codex exec_command cmd payloads like Bash command payloads", () => {
@@ -219,7 +219,7 @@ describe("routePreToolUse", () => {
       const cmd = (result!.updatedInput as Record<string, string>).command;
       expect(cmd).toContain("Inline HTTP redirected");
       expect(cmd).not.toContain("Inline HTTP blocked");
-      expect(cmd).toMatch(/retry/i);
+      expect(cmd).toContain("project-configured external retrieval path");
     });
 
     it("denies requests.get() with modify action", () => {
@@ -335,27 +335,23 @@ describe("routePreToolUse", () => {
   // ─── WebFetch routing ──────────────────────────────────
 
   describe("WebFetch tool", () => {
-    it("returns deny action with redirect message", () => {
+    it("returns deny action for the project external retrieval boundary", () => {
       const result = routePreToolUse("WebFetch", {
         url: "https://docs.example.com",
         prompt: "Get the docs",
       });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      // PR #654 substitute: imperative-positive framing, no "blocked" wording,
-      // explicit retry hint to keep Haiku-tier agents from capitulating to
-      // training data on transient DNS errors (audit Probe 3).
-      expect(result!.reason).toContain("WebFetch redirected");
-      expect(result!.reason).not.toContain("WebFetch blocked");
-      expect(result!.reason).toContain("fetch_and_index");
-      expect(result!.reason).toMatch(/retry/i);
+      expect(result!.reason).toContain("project-configured external retrieval path");
+      expect(result!.reason).toContain("ctx_execute");
+      expect(result!.reason).not.toContain("fetch_and_index");
     });
 
-    it("includes the URL in deny reason", () => {
+    it("explains the public-web boundary in the deny reason", () => {
       const url = "https://api.github.com/repos/test";
       const result = routePreToolUse("WebFetch", { url });
       expect(result).not.toBeNull();
-      expect(result!.reason).toContain(url);
+      expect(result!.reason).toContain("public web information");
     });
 
     it("treats agy read_url_content URL payloads as WebFetch", () => {
@@ -369,10 +365,8 @@ describe("routePreToolUse", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain(url);
-      // agy's call surface is context-mode/<tool> (see hooks/core/tool-naming.mjs),
-      // not Claude's mcp__context-mode__<tool> form.
-      expect(result!.reason).toContain("context-mode/ctx_fetch_and_index");
+      expect(result!.reason).toContain("project-configured external retrieval path");
+      expect(result!.reason).toContain("context-mode/ctx_execute");
     });
 
     it("treats mcp_web_fetch as WebFetch and blocks it", () => {
@@ -380,9 +374,8 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("mcp_web_fetch", { url });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch redirected");
-      expect(result!.reason).toContain("fetch_and_index");
-      expect(result!.reason).toContain("ctx_search");
+      expect(result!.reason).toContain("project-configured external retrieval path");
+      expect(result!.reason).toContain("ctx_execute");
     });
 
     it("treats mcp_fetch_tool as WebFetch and blocks it", () => {
@@ -390,25 +383,24 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("mcp_fetch_tool", { url });
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch redirected");
-      expect(result!.reason).toContain("fetch_and_index");
-      expect(result!.reason).toContain("ctx_search");
+      expect(result!.reason).toContain("project-configured external retrieval path");
+      expect(result!.reason).toContain("ctx_execute");
     });
 
-    it("allows WebFetch when MCP server not ready (#230)", () => {
+    it("keeps WebFetch outside the native path when MCP is not ready", () => {
       // Remove sentinel to simulate MCP not started
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("WebFetch", { url: "https://example.com" });
-      expect(result).toBeNull();
+      expect(result?.action).toBe("deny");
     });
 
-    it("allows mcp_web_fetch alias when MCP server not ready (#230)", () => {
+    it("keeps mcp_web_fetch outside the native path when MCP is not ready", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("mcp_web_fetch", { url: "https://example.com" });
-      expect(result).toBeNull();
+      expect(result?.action).toBe("deny");
     });
 
-    it("passes WebFetch through when the caller context cannot invoke ctx_* tools (#794)", () => {
+    it("keeps WebFetch outside the native path when the caller cannot invoke ctx_* tools", () => {
       const result = routePreToolUse(
         "WebFetch",
         { url: "https://example.com" },
@@ -417,10 +409,10 @@ describe("routePreToolUse", () => {
         "subagent-webfetch",
         { mcpToolsAvailable: false },
       );
-      expect(result).toBeNull();
+      expect(result?.action).toBe("deny");
     });
 
-    it("keeps WebFetch redirected when options are omitted", () => {
+    it("keeps WebFetch outside the native path without adapter options", () => {
       const result = routePreToolUse(
         "WebFetch",
         { url: "https://example.com" },
@@ -430,10 +422,10 @@ describe("routePreToolUse", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("ctx_fetch_and_index");
+      expect(result!.reason).toContain("project-configured external retrieval path");
     });
 
-    it("Claude Code pretooluse treats subagent hook payloads as ctx_* unavailable (#794)", async () => {
+    it("Claude Code pretooluse preserves the external retrieval boundary for subagents", async () => {
       const main = await spawnPreToolUseHook({
         tool_name: "WebFetch",
         tool_input: { url: "https://example.com" },
@@ -441,7 +433,7 @@ describe("routePreToolUse", () => {
       });
       expect(main.status).toBe(0);
       expect(main.parsed?.hookSpecificOutput?.permissionDecision).toBe("deny");
-      expect(main.parsed?.hookSpecificOutput?.permissionDecisionReason).toContain("ctx_fetch_and_index");
+      expect(main.parsed?.hookSpecificOutput?.permissionDecisionReason).toContain("project-configured external retrieval path");
 
       const subagent = await spawnPreToolUseHook({
         tool_name: "WebFetch",
@@ -451,23 +443,24 @@ describe("routePreToolUse", () => {
         agent_type: "claude-code-guide",
       });
       expect(subagent.status).toBe(0);
-      expect(subagent.stdout).toBe("");
+      expect(subagent.parsed?.hookSpecificOutput?.permissionDecision).toBe("deny");
+      expect(subagent.parsed?.hookSpecificOutput?.permissionDecisionReason).toContain("project-configured external retrieval path");
     });
   });
 
-  // ─── MCP readiness: all redirects degrade gracefully (#230) ───
+  // ─── MCP readiness: web boundaries do not depend on context-mode MCP ───
 
-  describe("MCP readiness graceful degradation (#230)", () => {
-    it("allows curl when MCP server not ready", () => {
+  describe("MCP readiness", () => {
+    it("keeps curl outside native retrieval when MCP server is not ready", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("Bash", { command: "curl https://example.com" });
-      expect(result).toBeNull();
+      expect(result?.action).toBe("modify");
     });
 
-    it("allows inline HTTP when MCP server not ready", () => {
+    it("keeps inline HTTP outside native retrieval when MCP server is not ready", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("Bash", { command: "node -e \"fetch('https://example.com')\"" });
-      expect(result).toBeNull();
+      expect(result?.action).toBe("modify");
     });
 
     it("allows build tools when MCP server not ready", () => {
@@ -476,35 +469,23 @@ describe("routePreToolUse", () => {
       expect(result).toBeNull();
     });
 
-    it("allows MCP-backed redirects when the caller context cannot invoke ctx_* tools", () => {
-      const cases = [
-        ["Bash", { command: "curl https://example.com" }],
-        ["Bash", { command: "node -e \"fetch('https://example.com')\"" }],
-        ["Bash", { command: "./gradlew build" }],
-        ["WebFetch", { url: "https://example.com" }],
-      ] as const;
+    it("does not weaken public-web routing when the caller cannot invoke ctx_* tools", () => {
+      const curl = routePreToolUse("Bash", { command: "curl https://example.com" }, undefined, "claude-code", "subagent-curl", { mcpToolsAvailable: false });
+      const inline = routePreToolUse("Bash", { command: "node -e \"fetch('https://example.com')\"" }, undefined, "claude-code", "subagent-inline", { mcpToolsAvailable: false });
+      const webFetch = routePreToolUse("WebFetch", { url: "https://example.com" }, undefined, "claude-code", "subagent-webfetch", { mcpToolsAvailable: false });
 
-      for (const [tool, input] of cases) {
-        const result = routePreToolUse(
-          tool,
-          input,
-          undefined,
-          "claude-code",
-          `subagent-${tool}`,
-          { mcpToolsAvailable: false },
-        );
-        expect(result).toBeNull();
-      }
+      expect(curl?.action).toBe("modify");
+      expect(inline?.action).toBe("modify");
+      expect(webFetch?.action).toBe("deny");
     });
 
-    it("limits Codex redirect wording to the proven ctx_execute target", () => {
+    it("keeps Codex external retrieval distinct from context-mode tools", () => {
       const curl = routePreToolUse(
         "exec_command",
         { cmd: "curl https://example.com" },
         undefined,
         "codex",
         "codex-proven-session",
-        { mcpToolsAvailable: true, mcpRedirectTarget: "ctx_execute" },
       );
       const webFetch = routePreToolUse(
         "WebFetch",
@@ -512,7 +493,6 @@ describe("routePreToolUse", () => {
         undefined,
         "codex",
         "codex-proven-session",
-        { mcpToolsAvailable: true, mcpRedirectTarget: "ctx_execute" },
       );
 
       expect(curl?.action).toBe("modify");

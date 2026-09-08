@@ -118,7 +118,7 @@ describe("Cursor hooks", () => {
       expect(result.exitCode).toBe(0);
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(payload.permission).toBe("deny");
-      expect(String(payload.user_message)).toContain("WebFetch redirected");
+      expect(String(payload.user_message)).toContain("project-configured external retrieval path");
     });
 
     test("blocks mcp_web_fetch with the same sandbox redirect", () => {
@@ -132,9 +132,8 @@ describe("Cursor hooks", () => {
       expect(result.exitCode).toBe(0);
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(payload.permission).toBe("deny");
-      expect(String(payload.user_message)).toContain("WebFetch redirected");
-      expect(String(payload.user_message)).toContain("ctx_fetch_and_index");
-      expect(String(payload.user_message)).toContain("ctx_search");
+      expect(String(payload.user_message)).toContain("project-configured external retrieval path");
+      expect(String(payload.user_message)).toContain("ctx_execute");
     });
 
     test("blocks mcp_fetch_tool with the same sandbox redirect", () => {
@@ -148,9 +147,8 @@ describe("Cursor hooks", () => {
       expect(result.exitCode).toBe(0);
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(payload.permission).toBe("deny");
-      expect(String(payload.user_message)).toContain("WebFetch redirected");
-      expect(String(payload.user_message)).toContain("ctx_fetch_and_index");
-      expect(String(payload.user_message)).toContain("ctx_search");
+      expect(String(payload.user_message)).toContain("project-configured external retrieval path");
+      expect(String(payload.user_message)).toContain("ctx_execute");
     });
   });
 

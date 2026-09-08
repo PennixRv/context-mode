@@ -22,11 +22,6 @@ import { readStdin, parseStdin, getInputProjectDir, getSessionId, CODEX_OPTS } f
 import { routePreToolUse, initSecurity } from "../core/routing.mjs";
 import { formatDecision } from "../core/formatters.mjs";
 import { codexSupportsUpdatedInput } from "../core/codex-caps.mjs";
-import {
-  hasCodexMcpCapability,
-  isCodexCtxExecuteToolName,
-  recordCodexMcpCapability,
-} from "./mcp-capability.mjs";
 
 const __hookDir = dirname(fileURLToPath(import.meta.url));
 await initSecurity(resolve(__hookDir, "..", "..", "build"));
@@ -64,21 +59,12 @@ if (isCodexRecoveryBriefToolName(tool)) {
       },
     };
 } else {
-  // Codex does not provide a current-session MCP tool table to hooks. Only an
-  // observed exact owned ctx_execute event can prove this session has the
-  // redirect target. Never infer that from a global server sentinel or another
-  // session. External MCP names that resemble ctx_execute are not accepted.
-  if (isCodexCtxExecuteToolName(tool)) recordCodexMcpCapability(input.session_id);
   const decision = routePreToolUse(
     tool,
     toolInput,
     projectDir,
     "codex",
     getSessionId(input, CODEX_OPTS),
-    {
-      mcpToolsAvailable: hasCodexMcpCapability(input.session_id),
-      mcpRedirectTarget: "ctx_execute",
-    },
   );
   // #845: only modify/context depend on Codex's rewrite capability. Detection is
   // cached, but skip the probe entirely for deny / ask / passthrough decisions.

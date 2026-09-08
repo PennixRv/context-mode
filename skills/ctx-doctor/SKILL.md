@@ -23,7 +23,7 @@ Run diagnostics and display results directly in the conversation.
    non-present observation's stable `reason`. `unavailable` means the host or
    probe could not prove a fact; it must not be rewritten as `missing` or used
    by itself to recommend reinstalling or restarting.
-4. For Codex continuity diagnostics, inspect the passive `PreCompact`, `PostCompact`, `SessionStart(compact)`, checkpoint bundle, and provider-availability lines. Do not request RecoveryBrief content.
+4. For Codex continuity diagnostics, inspect the passive `PreCompact`, `PostCompact`, absence of compact `SessionStart`, checkpoint bundle, and provider-availability lines. Do not request RecoveryBrief content.
 5. **Fallback** (only if MCP tool call fails): Derive the **plugin root** from this skill's base directory (go up 2 levels — remove `/skills/ctx-doctor`), then run with Bash:
    ```
    CLI="<PLUGIN_ROOT>/cli.bundle.mjs"; [ ! -f "$CLI" ] && CLI="<PLUGIN_ROOT>/build/cli.js"; node "$CLI" doctor

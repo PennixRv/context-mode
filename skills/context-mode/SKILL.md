@@ -9,7 +9,6 @@ description: |
   "accessibility tree", "Playwright snapshot",
   "run tests", "test output", "coverage report", "git log", "recent commits",
   "diff between branches", "list containers", "pod status", "disk usage",
-  "fetch docs", "API reference", "index documentation",
   "call API", "check response", "query results",
   "find TODOs", "count lines", "codebase statistics", "security audit",
   "outdated packages", "dependency tree", "cloud resources", "CI/CD output".
@@ -30,9 +29,11 @@ description: |
 
 Use the original tool through its direct protocol when the call controls a
 lifecycle, waits for an event, is interactive, returns bounded structured data,
-or has dedicated status and error fields. This includes Trellis channel
-dispatch and wait operations, Fast Context retrieval, CodeGraph exploration,
-and other bounded MCP calls. Do not place them inside `ctx_execute`.
+or has dedicated status and error fields. This includes Trellis task, workflow,
+and Channel operations, formal handoff, Pennix Skill installation, Fast Context
+retrieval, CodeGraph exploration, and other bounded MCP calls. Do not place
+their calls or result protocols inside `ctx_execute`; after they produce a large
+local artifact, `ctx_execute_file` may analyze that artifact separately.
 
 When the project has an approved `.codegraph/` index, use CodeGraph first for
 symbols, architecture, call relationships, execution paths, and impact scope.
@@ -154,13 +155,17 @@ structured protocol already solves the request:
 
 ## Critical Rules
 
-For Trellis project-semantic continuity, use the project-local `trellis-recovery-brief-sync` skill at its approved semantic gates. Use low-level `ctx-recovery-brief` only through that coordinator protocol or for an explicit inspection, repair, force-refresh, or formal-handoff request. Ordinary large-output routing, compact events, and resumed sessions are not RecoveryBrief write triggers.
+For Trellis project-semantic continuity, the project workflow owns the approved
+RecoveryBrief semantic gates. Use low-level `ctx-recovery-brief` only through
+that workflow or for an explicit inspection, repair, force-refresh, or formal
+handoff request. Ordinary large-output routing, compact events, and resumed
+sessions are not RecoveryBrief write triggers.
 
 1. **Always console.log/print your findings.** stdout is all that enters context. No output = wasted call.
 2. **Write analysis code, not just data dumps.** Don't `console.log(JSON.stringify(data))` — analyze first, print findings.
 3. **Be specific in output.** Print bug details with IDs, line numbers, exact values — not just counts.
 4. **For files you need to EDIT**: Use the normal Read tool. context-mode is for analysis, not editing.
-5. **Route by semantics, not a whitelist**: Preserve direct lifecycle, wait, interactive, structured-result, CodeGraph, Fast Context, and Trellis channel protocols. Use context-mode for unbounded local textual output without an independent protocol.
+5. **Route by semantics, not a whitelist**: Preserve direct lifecycle, wait, interactive, structured-result, Trellis task/workflow/Channel, formal handoff, Skill installation, CodeGraph, and Fast Context protocols. Use context-mode for unbounded local textual output without an independent protocol.
 6. **Never use `ctx_index(content: large_data)`.** Use `ctx_index(path: ...)` to read files server-side. The `content` parameter sends data through context as a tool parameter — use it only for small inline text.
 7. **Always use `filename` parameter** on Playwright tools (`browser_snapshot`, `browser_console_messages`, `browser_network_requests`). Without it, the full output enters context.
 8. **Don't re-index data already in context.** If an MCP tool returned data in a previous response, it's already loaded — use it directly or save to file first.

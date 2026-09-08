@@ -169,9 +169,7 @@ describe(".codex-plugin/hooks.json", () => {
     expect(hooks.hooks.PreCompact?.[0]?.hooks[0]?.command).toContain("checkpoint-precompact.mjs");
     expect(hooks.hooks.PostCompact?.[0]?.matcher).toBe("^(manual|auto)$");
     expect(hooks.hooks.PostCompact?.[0]?.hooks[0]?.command).toContain("checkpoint-postcompact.mjs");
-    expect(hooks.hooks.SessionStart?.[0]?.matcher).toBe("^compact$");
-    expect(hooks.hooks.SessionStart?.[0]?.hooks[0]?.command).toContain("checkpoint-sessionstart.mjs");
-    expect(hooks.hooks.SessionStart?.[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
+    expect(hooks.hooks.SessionStart).toBeUndefined();
   });
 
   it("ships only the statically low-noise default hook profile", () => {
@@ -179,7 +177,6 @@ describe(".codex-plugin/hooks.json", () => {
       "PostCompact",
       "PreCompact",
       "PreToolUse",
-      "SessionStart",
     ]);
     expect(hooks.hooks.PostToolUse).toBeUndefined();
     expect(hooks.hooks.UserPromptSubmit).toBeUndefined();

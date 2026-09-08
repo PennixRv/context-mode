@@ -3132,7 +3132,6 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(codexBlock).toContain("checkpointposttooluse");
     expect(codexBlock).toContain("checkpointprecompact");
     expect(codexBlock).toContain("checkpointpostcompact");
-    expect(codexBlock).toContain("checkpointsessionstart");
     expect(codexBlock).toContain("checkpointuserpromptsubmit");
     expect(codexBlock).toContain("observabilityposttooluse");
     expect(codexBlock).toContain("observabilitycheckpointposttooluse");
@@ -3170,7 +3169,6 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(codexBlock).toContain("hooks/codex/checkpoint-posttooluse.mjs");
     expect(codexBlock).toContain("hooks/codex/checkpoint-precompact.mjs");
     expect(codexBlock).toContain("hooks/codex/checkpoint-postcompact.mjs");
-    expect(codexBlock).toContain("hooks/codex/checkpoint-sessionstart.mjs");
     expect(codexBlock).toContain("hooks/codex/checkpoint-userpromptsubmit.mjs");
   });
 
@@ -3191,7 +3189,6 @@ describe("Codex CLI hook dispatch (#225)", () => {
       "checkpoint-posttooluse.mjs",
       "checkpoint-precompact.mjs",
       "checkpoint-postcompact.mjs",
-      "checkpoint-sessionstart.mjs",
       "checkpoint-userpromptsubmit.mjs",
     ];
     for (const scriptName of checkpointScripts) {

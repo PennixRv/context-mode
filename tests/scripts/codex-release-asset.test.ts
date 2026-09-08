@@ -142,7 +142,7 @@ describe("Codex offline marketplace release asset", () => {
 
       const payloadRoot = join(extractionDirectory, "plugins", "context-mode");
       expect(existsSync(join(payloadRoot, "fetch-worker.bundle.cjs"))).toBe(true);
-      expect(existsSync(join(payloadRoot, "hooks", "checkpoint-diagnostics.mjs"))).toBe(true);
+      expect(existsSync(join(payloadRoot, "hooks", "checkpoint-diagnostics.mjs"))).toBe(false);
       expect(existsSync(join(payloadRoot, "hooks", "recovery-brief-capability.bundle.mjs"))).toBe(true);
 
       const sourceMcpPath = join(repositoryRoot, ".codex-plugin", "mcp.json");

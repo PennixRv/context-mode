@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   checkpointInternals,
-  claimConfirmedCheckpointContext,
   confirmPendingCheckpoint,
   createPendingCheckpoint,
   getCheckpointReliabilityReport,
@@ -210,12 +209,6 @@ function expectInvalidTrellisCheckpoint(
     configDir: current.configDir,
     now: new Date(BASE_TIME.getTime() + 1),
   })).toBe(true);
-  const context = claimConfirmedCheckpointContext(checkpointInput, {
-    configDir: current.configDir,
-    now: new Date(BASE_TIME.getTime() + 2),
-  });
-  expect(context).not.toContain("\"recovery_brief\"");
-  expect(context).not.toContain(PROJECT_PROVIDER_SENTINEL);
 }
 
 const INVALID_TRELLIS_POINTER_CASES: InvalidTrellisPointerCase[] = [

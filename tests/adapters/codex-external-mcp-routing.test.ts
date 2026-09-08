@@ -9,7 +9,6 @@ const DEFAULT_HOOK_EVENTS = [
   "PostCompact",
   "PreCompact",
   "PreToolUse",
-  "SessionStart",
 ];
 const RECOVERY_BRIEF_MATCHER =
   "^(mcp__context_mode__ctx_recovery_brief_status|mcp__context_mode__ctx_recovery_brief_update)$";

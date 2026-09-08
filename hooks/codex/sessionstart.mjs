@@ -64,9 +64,8 @@ try {
   const projectDir = getInputProjectDir(input, CODEX_OPTS);
 
   if (source === "compact") {
-    // Compact restore is handled only by checkpoint-sessionstart.mjs. Keeping
-    // this handler inert prevents legacy event directives from crossing the
-    // Layer 1 checkpoint boundary when it is invoked outside the manifest.
+    // Compact lifecycle does not inject context. Keeping this optional handler
+    // inert prevents legacy event directives from crossing that boundary.
     additionalContext = "";
   } else if (source === "resume") {
     const { SessionDB } = await loadSessionDB();

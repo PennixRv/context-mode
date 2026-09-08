@@ -182,7 +182,7 @@ describe("createRoutingBlock", () => {
     expect(block).toContain("mcp__context-mode__ctx_batch_execute");
     expect(block).toContain("mcp__context-mode__ctx_search");
     expect(block).toContain("mcp__context-mode__ctx_execute");
-    expect(block).toContain("mcp__context-mode__ctx_fetch_and_index");
+    expect(block).not.toContain("mcp__context-mode__ctx_fetch_and_index");
     // Must NOT contain claude-code prefix
     expect(block).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
@@ -314,7 +314,7 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result).not.toBeNull();
     expect(result!.action).toBe("modify");
     const cmd = (result!.updatedInput as Record<string, string>).command;
-    expect(cmd).toContain("mcp__context-mode__ctx_fetch_and_index");
+    expect(cmd).toContain("project-configured external retrieval path");
     expect(cmd).toContain("mcp__context-mode__ctx_execute");
     expect(cmd).not.toContain("mcp__plugin_context-mode_context-mode__");
   });
@@ -323,7 +323,8 @@ describe("routePreToolUse with platform parameter", () => {
     const result = routePreToolUse("Bash", { command: "curl https://example.com" }, "/tmp");
     expect(result).not.toBeNull();
     const cmd = (result!.updatedInput as Record<string, string>).command;
-    expect(cmd).toContain("mcp__plugin_context-mode_context-mode__ctx_fetch_and_index");
+    expect(cmd).toContain("project-configured external retrieval path");
+    expect(cmd).toContain("mcp__plugin_context-mode_context-mode__ctx_execute");
   });
 
   it("inline HTTP block uses cursor bare names when platform=cursor", () => {
@@ -333,11 +334,8 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result).not.toBeNull();
     const cmd = (result!.updatedInput as Record<string, string>).command;
     expect(cmd).toContain("ctx_execute");
-    // PR #683 follow-up (ADR-0003 amendment): "Think in Code" voice-of-trainer
-    // marker was folded into the imperative call instruction. The deny reason
-    // now opens with the affirmative redirect frame; assert on the explicit
-    // ctx_execute call instruction that survived the rewrite.
-    expect(cmd).toContain("Call ctx_execute");
+    expect(cmd).toContain("Use ctx_execute");
+    expect(cmd).toContain("project-configured external retrieval path");
     expect(cmd).not.toContain("mcp__");
   });
 
@@ -345,8 +343,8 @@ describe("routePreToolUse with platform parameter", () => {
     const result = routePreToolUse("WebFetch", { url: "https://example.com" }, "/tmp", "kiro");
     expect(result).not.toBeNull();
     expect(result!.action).toBe("deny");
-    expect(result!.reason).toContain("@context-mode/ctx_fetch_and_index");
-    expect(result!.reason).toContain("@context-mode/ctx_search");
+    expect(result!.reason).toContain("project-configured external retrieval path");
+    expect(result!.reason).toContain("@context-mode/ctx_execute");
   });
 
   it("Task is no longer routed — returns null (#241)", () => {
@@ -444,7 +442,7 @@ describe("routePreToolUse with platform parameter", () => {
       );
       expect(result).not.toBeNull();
       expect(result!.action).toBe("deny");
-      expect(result!.reason).toContain("WebFetch redirected");
+      expect(result!.reason).toContain("project-configured external retrieval path");
     });
 
     it("read_file routes as Read → context guidance", () => {

@@ -491,12 +491,10 @@ describe("CodexAdapter", () => {
       expect(config).toHaveProperty("PreToolUse");
       expect(config).toHaveProperty("PreCompact");
       expect(config).toHaveProperty("PostCompact");
-      expect(config).toHaveProperty("SessionStart");
       expect(Object.keys(config).sort()).toEqual([
         "PostCompact",
         "PreCompact",
         "PreToolUse",
-        "SessionStart",
       ]);
       expect(config.PreToolUse[0]?.matcher).toContain("apply_patch");
       expect(config.PreToolUse[0]?.matcher).toContain("Edit");
@@ -509,10 +507,7 @@ describe("CodexAdapter", () => {
       expect(config.PreCompact[0]?.matcher).toBe("^(manual|auto)$");
       expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(config.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
-      expect(config.SessionStart).toHaveLength(1);
-      expect(config.SessionStart[0]?.matcher).toBe("^compact$");
-      expect(config.SessionStart[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
-      expect(config.SessionStart[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
+      expect(config.SessionStart).toBeUndefined();
       expect(config).not.toHaveProperty("PostToolUse");
       expect(config).not.toHaveProperty("UserPromptSubmit");
       expect(config).not.toHaveProperty("Stop");
@@ -557,7 +552,6 @@ describe("CodexAdapter", () => {
           "PreToolUse (default)",
           "PreCompact (default)",
           "PostCompact (default)",
-          "SessionStart (default)",
         ],
       });
       expect(adapter.checkPluginRegistration()).toMatchObject({
@@ -778,7 +772,7 @@ describe("CodexAdapter", () => {
 
       const diagnostic = adapter.getCodexPluginDiagnostic(runtimeRoot);
       expect(diagnostic.hooksAvailable).toBe(false);
-      expect(diagnostic.missingHooks).toEqual(["PreCompact", "PostCompact", "SessionStart"]);
+      expect(diagnostic.missingHooks).toEqual(["PreCompact", "PostCompact"]);
       expect(adapter.checkPluginRegistration(runtimeRoot)).toMatchObject({ status: "fail" });
       expect(adapter.checkPluginRegistration(runtimeRoot).message).toContain("PostCompact");
       expect(adapter.validateHooks(runtimeRoot)).toEqual(expect.arrayContaining([
@@ -809,7 +803,7 @@ describe("CodexAdapter", () => {
       expect(written.hooks.PreToolUse[2]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointprecompact");
       expect(written.hooks.PostCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
-      expect(written.hooks.SessionStart[0]?.hooks[0]?.additionalContextLimit).toBe(1500);
+      expect(written.hooks.SessionStart).toBeUndefined();
       expect(written.hooks.PostToolUse).toBeUndefined();
       expect(written.hooks.UserPromptSubmit).toBeUndefined();
       expect(written.hooks.Stop).toBeUndefined();
@@ -847,9 +841,8 @@ describe("CodexAdapter", () => {
       expect(written.hooks.PreToolUse.some((entry) =>
         entry.matcher?.includes("mcp__context_mode__ctx_execute") && entry.matcher.includes("ctx_batch_execute"),
       )).toBe(true);
-      expect(written.hooks.SessionStart).toHaveLength(2);
+      expect(written.hooks.SessionStart).toHaveLength(1);
       expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
-      expect(written.hooks.SessionStart[1]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
     });
 
     it("creates ~/.codex/hooks.json when the parent directory is missing", () => {
@@ -866,7 +859,6 @@ describe("CodexAdapter", () => {
         "PostCompact",
         "PreCompact",
         "PreToolUse",
-        "SessionStart",
       ]);
     });
 
@@ -961,9 +953,7 @@ describe("CodexAdapter", () => {
       expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreToolUse[1]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
       expect(written.hooks.PreToolUse[2]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
-      expect(written.hooks.SessionStart).toHaveLength(1);
-      expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
-      expect(changes.some((c) => c.includes("Updated SessionStart hook"))).toBe(true);
+      expect(written.hooks.SessionStart).toBeUndefined();
     });
 
     it("dedups legacy-direct-node entry coexisting with canonical entry (#603)", () => {
@@ -1166,7 +1156,7 @@ trusted_hash = "sha256:stale"
       adapter.disableObservabilityProfile();
 
       const written = readFileSync(hooksPath, "utf-8");
-      expect(written).toContain("context-mode hook codex checkpointsessionstart");
+      expect(written).not.toContain("context-mode hook codex checkpointsessionstart");
       expect(written).toContain("node /opt/other-plugin/hook.mjs");
       expect(written).toContain("context-mode hook codex posttooluse");
       expect(written).not.toContain("context-mode hook codex observability");
@@ -1279,7 +1269,6 @@ trusted_hash = "sha256:stale"
       const configChecks = results.filter((r) => r.check !== "Codex CLI binary");
       expect(configChecks.every((result) => result.status === "pass")).toBe(true);
       expect(results.map((result) => result.check)).toContain("PreCompact hook");
-      expect(results.map((result) => result.check)).toContain("SessionStart hook");
       expect(results.map((result) => result.check)).toContain("Codex hook profile");
       expect(results.map((result) => result.check)).toContain("Codex optional observability capability");
       expect(results.map((result) => result.check)).toContain("Codex legacy hook registrations");
@@ -1306,7 +1295,6 @@ trusted_hash = "sha256:stale"
       const duplicate = results.find((result) => result.check === "PreToolUse plugin duplicate");
       expect(duplicate?.status).toBe("warn");
       expect(duplicate?.message).toMatch(/configured in both/);
-      expect(results.some((result) => result.check === "SessionStart hook" && result.status === "pass")).toBe(true);
       expect(results.some((result) => result.check === "Hooks config" && result.status === "fail")).toBe(false);
     });
 
@@ -1319,7 +1307,6 @@ trusted_hash = "sha256:stale"
       const results = adapter.validateHooks(pluginRoot);
 
       expect(results.some((result) => result.check === "Hooks config" && result.status === "fail")).toBe(false);
-      expect(results.some((result) => result.check === "SessionStart hook" && result.status === "pass")).toBe(true);
     });
 
     it("does not borrow hooks from the installed cache when the Doctor runtime is stale", () => {
@@ -1476,12 +1463,6 @@ args = ["-y", "context-mode"]
       expect(legacy?.message).toMatch(/PostToolUse \(2\).*context-mode upgrade/);
       expect(legacy?.fix).toBe("context-mode upgrade");
 
-      // Legacy lifecycle entries are surfaced as stale even when there is only
-      // one managed entry, because their matcher/command is no longer canonical.
-      expect(results.some((r) =>
-        r.check === "SessionStart duplicates"
-        && /Stale context-mode SessionStart entry/.test(r.message),
-      )).toBe(true);
       expect(results.some((r) =>
         r.check === "PreCompact duplicates"
         && /Stale context-mode PreCompact entry/.test(r.message),
@@ -1675,10 +1656,6 @@ describe("Codex matcher parity + config integrity", () => {
       hooks: {
         PostCompact?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
         PreCompact?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-        SessionStart?: Array<{
-          matcher: string;
-          hooks: Array<{ type: string; command: string; additionalContextLimit?: number }>;
-        }>;
       };
     };
     expect(parsed.hooks.PreCompact).toBeDefined();
@@ -1686,9 +1663,7 @@ describe("Codex matcher parity + config integrity", () => {
     expect(parsed.hooks.PreCompact?.[0]?.hooks?.[0]?.command).toBe("context-mode hook codex checkpointprecompact");
     expect(parsed.hooks.PostCompact?.[0]?.matcher).toBe("^(manual|auto)$");
     expect(parsed.hooks.PostCompact?.[0]?.hooks?.[0]?.command).toBe("context-mode hook codex checkpointpostcompact");
-    expect(parsed.hooks.SessionStart?.[0]?.matcher).toBe("^compact$");
-    expect(parsed.hooks.SessionStart?.[0]?.hooks?.[0]?.command).toBe("context-mode hook codex checkpointsessionstart");
-    expect(parsed.hooks.SessionStart?.[0]?.hooks?.[0]?.additionalContextLimit).toBe(1500);
+    expect(parsed.hooks.SessionStart).toBeUndefined();
   });
 
   it("README documents the same Codex PreToolUse matcher as the adapter", () => {

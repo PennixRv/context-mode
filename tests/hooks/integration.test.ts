@@ -244,29 +244,16 @@ describe("Bash: Allowed Commands", () => {
 });
 
 describe("WebFetch", () => {
-  test("WebFetch + any URL: denied with sandbox redirect", () => {
+  test("WebFetch + any URL: denied outside the project external retrieval path", () => {
     const result = runHook({
       tool_name: "WebFetch",
       tool_input: { url: "https://docs.example.com/api" },
     });
-    assertDeny(result, "fetch_and_index");
+    assertDeny(result, "project-configured external retrieval path");
     const parsed = JSON.parse(result.stdout);
     assert.ok(
-      parsed.hookSpecificOutput.permissionDecisionReason.includes("https://docs.example.com/api"),
-      "Expected original URL in reason",
-    );
-    // PR #683 follow-up (ADR-0003 amendment): the deny reason was reframed
-    // affirmatively. The negative "Do NOT retry with curl" hint was replaced
-    // by a positive imperative retry hint scoped to transient DNS errors and
-    // by the ctx_fetch_and_index call instruction. Assert on the affirmative
-    // wording instead of the dropped negation.
-    assert.ok(
-      /Retry the same call on a transient DNS error/.test(parsed.hookSpecificOutput.permissionDecisionReason),
-      "Expected positive transient-DNS retry hint in reason",
-    );
-    assert.ok(
-      /Call .*ctx_fetch_and_index/.test(parsed.hookSpecificOutput.permissionDecisionReason),
-      "Expected explicit ctx_fetch_and_index call instruction in reason",
+      parsed.hookSpecificOutput.permissionDecisionReason.includes("ctx_execute"),
+      "Expected explicit direct API-inspection boundary in reason",
     );
   });
 });
@@ -657,13 +644,13 @@ describe("Plugin Tool Name Format in ROUTING_BLOCK", () => {
     assert.ok(!ctx.includes(SHORT_PREFIX + "ctx_execute"), "Grep nudge must not contain short-form ctx_execute");
   });
 
-  test("WebFetch deny reason uses plugin-format fetch_and_index tool name", () => {
+  test("WebFetch deny reason keeps the plugin-format direct API-inspection tool name", () => {
     const result = runHook({ tool_name: "WebFetch", tool_input: { url: "https://example.com" } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const reason = parsed.hookSpecificOutput.permissionDecisionReason;
-    assert.ok(reason.includes(PLUGIN_PREFIX + "ctx_fetch_and_index"), "Expected plugin-format ctx_fetch_and_index in WebFetch deny");
-    assert.ok(!reason.includes(SHORT_PREFIX + "ctx_fetch_and_index"), "WebFetch deny must not contain short-form");
+    assert.ok(reason.includes(PLUGIN_PREFIX + "ctx_execute"), "Expected plugin-format ctx_execute in WebFetch deny");
+    assert.ok(!reason.includes(SHORT_PREFIX + "ctx_execute"), "WebFetch deny must not contain short-form");
   });
 
   test("Bash inline-HTTP redirect uses plugin-format execute tool name (in deny reason)", () => {

@@ -7,7 +7,6 @@ import { isRecoveryBriefIndexPath } from "../../src/store.js";
 
 const repositoryRoot = resolve(__dirname, "..", "..");
 const serverSource = readFileSync(resolve(repositoryRoot, "src", "server.ts"), "utf8");
-const workflowPath = resolve(repositoryRoot, ".trellis", "workflow.md");
 const providerSkillPath = resolve(repositoryRoot, "skills", "ctx-recovery-brief", "SKILL.md");
 const providerReferencePath = resolve(
   repositoryRoot,
@@ -15,13 +14,6 @@ const providerReferencePath = resolve(
   "ctx-recovery-brief",
   "references",
   "recovery-brief-v1.md",
-);
-const syncSkillPath = resolve(
-  repositoryRoot,
-  ".agents",
-  "skills",
-  "trellis-recovery-brief-sync",
-  "SKILL.md",
 );
 const packagePath = resolve(repositoryRoot, "package.json");
 const codexPluginPath = resolve(repositoryRoot, ".codex-plugin", "plugin.json");
@@ -82,15 +74,19 @@ describe("RecoveryBrief indexing and skill packaging", () => {
     expect(isRecoveryBriefIndexPath("/work/docs/recovery-brief.json")).toBe(false);
   });
 
-  it("ships a low-level provider skill and a Trellis coordinator skill", () => {
+  it("ships only the low-level provider skill; the project workflow owns semantic gates", () => {
     expect(existsSync(providerSkillPath)).toBe(true);
     expect(existsSync(providerReferencePath)).toBe(true);
-    expect(existsSync(syncSkillPath)).toBe(true);
+    expect(existsSync(resolve(
+      repositoryRoot,
+      ".agents",
+      "skills",
+      "trellis-recovery-brief-sync",
+      "SKILL.md",
+    ))).toBe(false);
     const skill = readFileSync(providerSkillPath, "utf8");
     const reference = readFileSync(providerReferencePath, "utf8");
-    const syncSkill = readFileSync(syncSkillPath, "utf8");
     const contextModeSkill = readFileSync(resolve(repositoryRoot, "skills", "context-mode", "SKILL.md"), "utf8");
-    const workflow = readFileSync(workflowPath, "utf8");
     const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { files: string[] };
     const codexPlugin = JSON.parse(readFileSync(codexPluginPath, "utf8")) as { skills: string };
 
@@ -100,50 +96,10 @@ describe("RecoveryBrief indexing and skill packaging", () => {
     expect(skill).toContain("Do not invoke this skill merely because a compact lifecycle ran");
     expect(skill).not.toContain("compaction preparation");
     expect(skill).toContain("references/recovery-brief-v1.md");
-    expect(syncSkill).toContain("name: trellis-recovery-brief-sync");
-    expect(syncSkill).toContain("Only the main coordinator may run this synchronization protocol");
-    expect(syncSkill).toContain("Immediately after an approved `task.py start`");
-    expect(syncSkill).toContain("After `trellis-check` confirms a material semantic change");
-    expect(syncSkill).toContain("Before an explicit handoff, pause preparation, finish, or archive");
-    expect(syncSkill).toContain("Do not invoke this skill for ordinary edits");
-    for (const excludedTrigger of [
-      /regular compact\s+events/,
-      /`PreCompact`/,
-      /`PostCompact`/,
-      /`SessionStart\(compact\)`/,
-      /checkpoint\s+`claimed`/,
-      /ordinary resumed session/,
-    ]) {
-      expect(syncSkill).toMatch(excludedTrigger);
-    }
-    expect(syncSkill).toContain("SessionStart(compact)");
-    expect(syncSkill).toContain("`claimed`");
-    for (const excludedSource of [
-      "transcript",
-      "FTS result",
-      "raw tool I/O",
-      "full artifact body",
-      "task-body copies",
-    ]) {
-      expect(syncSkill).toContain(excludedSource);
-    }
-    expect(contextModeSkill).toContain("trellis-recovery-brief-sync");
+    expect(contextModeSkill).toContain("project workflow owns the approved");
     expect(contextModeSkill).toContain("compact events");
-    expect(contextModeSkill).toContain("resumed sessions");
+    expect(contextModeSkill).toContain("resumed");
     expect(contextModeSkill).toContain("not RecoveryBrief write triggers");
-    expect(workflow).toContain("### RecoveryBrief Synchronization");
-    expect(workflow).toContain("Workers report evidence but never write a RecoveryBrief.");
-    expect(workflow).toContain("Do not synchronize for ordinary edits");
-    for (const excludedTrigger of [
-      "compaction",
-      "PreCompact",
-      "PostCompact",
-      "SessionStart(compact)",
-      "claimed checkpoints",
-      "ordinary resume",
-    ]) {
-      expect(workflow).toContain(excludedTrigger);
-    }
     expect(packageJson.files).toContain("skills");
     expect(codexPlugin.skills).toBe("./skills/");
     expect(reference).toContain("fails closed");

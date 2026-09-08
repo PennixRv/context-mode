@@ -4,7 +4,7 @@
  * Implements HookAdapter for Codex CLI's JSON stdin/stdout paradigm.
  *
  * Codex CLI hook specifics:
- *   - Default hooks: PreToolUse, PreCompact, PostCompact, SessionStart(compact)
+ *   - Default hooks: PreToolUse, PreCompact, PostCompact
  *   - Optional observability: PostToolUse, ordinary SessionStart,
  *     UserPromptSubmit, and Stop
  *   - Same wire protocol as Claude Code (JSON stdin → stdout)
@@ -104,7 +104,6 @@ const DEFAULT_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",
   PreCompact: "context-mode hook codex checkpointprecompact",
   PostCompact: "context-mode hook codex checkpointpostcompact",
-  SessionStart: "context-mode hook codex checkpointsessionstart",
 } as const;
 
 const OPTIONAL_OBSERVABILITY_HOOK_COMMANDS = {
@@ -515,8 +514,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     }
     if (response.decision === "context" && response.additionalContext) {
       // Codex does not support additionalContext in PreToolUse (fails open).
-      // Context injection works through compact SessionStart; PostToolUse is
-      // available only in the explicit optional observability profile.
+      // PostToolUse is available only in the explicit optional observability
+      // profile; compact lifecycle hooks are audit-only.
       return {};
     }
     // "allow" — return empty object for passthrough
@@ -536,9 +535,8 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   formatPreCompactResponse(response: PreCompactResponse): unknown {
-    // Codex PreCompact currently accepts only universal hook fields.
-    // The hook script stores snapshots in context-mode's DB; SessionStart
-    // injects them after compaction.
+    // Codex PreCompact currently accepts only universal hook fields. The hook
+    // script records a local audit snapshot and never injects compact context.
     return {};
   }
 
@@ -654,18 +652,6 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             {
               type: "command",
               command: DEFAULT_HOOK_COMMANDS.PostCompact,
-            },
-          ],
-        },
-      ],
-      SessionStart: [
-        {
-          matcher: "^compact$",
-          hooks: [
-            {
-              type: "command",
-              command: DEFAULT_HOOK_COMMANDS.SessionStart,
-              additionalContextLimit: 1500,
             },
           ],
         },
@@ -817,7 +803,6 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       "PreToolUse (default)",
       "PreCompact (default)",
       "PostCompact (default)",
-      "SessionStart (default)",
     ];
   }
 
@@ -1502,7 +1487,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           check: "Codex active context-mode hooks",
           status: pluginHooksAvailable ? "pass" : "warn",
           message: pluginHooksAvailable
-            ? `PreToolUse, PreCompact, PostCompact, and SessionStart(compact) from ${source}`
+            ? `PreToolUse, PreCompact, and PostCompact from ${source}`
             : "No active context-mode user hooks could be inspected",
         },
         {
@@ -1522,7 +1507,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       this.getHookRegistration(hookConfig.config),
     );
     const defaultHooks = pluginHooksAvailable
-      ? ["PreToolUse (default)", "PreCompact (default)", "PostCompact (default)", "SessionStart (default)"]
+      ? ["PreToolUse (default)", "PreCompact (default)", "PostCompact (default)"]
       : status.activeHooks.filter((hook) => hook.endsWith("(default)"));
     const activeHooks = [...new Set([...defaultHooks, ...status.optionalHooks])];
     const profileStatus = status.profile === "partial" ? "warn" : "pass";

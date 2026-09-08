@@ -15,21 +15,8 @@ import {
   createRoutingBlock, createReadGuidance, createGrepGuidance, createBashGuidance,
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
-import { isMCPReady } from "./mcp-ready.mjs";
 import { isContextModeMcpToolName, isExternalMcpToolName } from "./external-mcp.mjs";
 import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, statSync, constants as fsConstants } from "node:fs";
-
-/**
- * Guard for actions that redirect to MCP tools (#230).
- * If MCP server isn't ready, returns null (passthrough) instead of the
- * redirect action — prevents agent from getting stuck when MCP tools
- * are unavailable. Applies to deny and modify actions that mention MCP alternatives.
- */
-function mcpRedirect(result, mcpToolsAvailable = true) {
-  if (!mcpToolsAvailable) return null;
-  if (!isMCPReady()) return null;
-  return result;
-}
 import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -809,16 +796,8 @@ function getPlatformSettingsPath(platform) {
  * @param {string} [sessionId] - Stable session identifier from hook payload. When
  *   provided, the guidance throttle uses it to scope marker files across hook
  *   invocations even when process.ppid shifts (Windows/Git Bash — see #298).
- * @param {object} [options] - Runtime routing context from the adapter.
- * @param {boolean} [options.mcpToolsAvailable=true] - False when the current
- *   caller context cannot invoke ctx_* MCP tools even though an MCP server is
- *   live on the machine (Claude Code fixed-tool subagents — #794).
- * @param {"ctx_execute"} [options.mcpRedirectTarget] - Limit redirect wording
- *   to a capability proven by the adapter. Codex proves ctx_execute only.
  */
-export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId, options = {}) {
-  const mcpToolsAvailable = options.mcpToolsAvailable !== false;
-  const redirectsToExecuteOnly = options.mcpRedirectTarget === "ctx_execute";
+export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId) {
 
   // External MCP servers own their output, semantics, and lifecycle. Keep
   // this before context-mode's security/routing gates so no fail-closed
@@ -928,12 +907,10 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       });
 
       if (hasDangerousSegment) {
-        return mcpRedirect({
+        return {
           action: "modify",
           updatedInput: {
-            command: redirectsToExecuteOnly
-              ? `echo "context-mode: curl/wget redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw HTTP body stays in the sandbox instead of entering your conversation. Full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH)."`
-              : `echo "context-mode: curl/wget redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw HTTP body stays in the sandbox instead of entering your conversation. Or call ${t("ctx_fetch_and_index")}(url, source) when you want to query the response later via ${t("ctx_search")}. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH)."`,
+            command: `echo "context-mode: curl/wget redirected. For public web information, use the project-configured external retrieval path. Use ${t("ctx_execute")}(language, code) only when the user explicitly asks to inspect a direct HTTP/API response; derive and print bounded findings."`,
           },
           // D2 PRD Phase 3.1: marker payload for PostToolUse byte accounting.
           redirectMeta: {
@@ -944,7 +921,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
             bytesAvoided: 8192,
             commandSummary: command.slice(0, 200),
           },
-        }, mcpToolsAvailable);
+        };
       }
       // All segments safe → allow through
       return null;
@@ -961,12 +938,12 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       /requests\.(get|post|put)\s*\(/i.test(noHeredoc) ||
       /http\.(get|request)\s*\(/i.test(noHeredoc)
     ) {
-      return mcpRedirect({
+      return {
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: Inline HTTP redirected. Call ${t("ctx_execute")}(language, code) to fetch, derive your answer in code, and console.log() only the result — the raw response body stays in the sandbox instead of entering your conversation. Full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH)."`,
+          command: `echo "context-mode: Inline HTTP redirected. For public web information, use the project-configured external retrieval path. Use ${t("ctx_execute")}(language, code) only when the user explicitly asks to inspect a direct HTTP/API response; derive and print bounded findings."`,
         },
-      }, mcpToolsAvailable);
+      };
     }
 
     // Bounded commands and commands outside the managed data-read/search
@@ -1015,14 +992,12 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     return guidanceOnce("grep", grepGuidance, sessionId);
   }
 
-  // ─── WebFetch: deny + redirect to sandbox ───
+  // ─── WebFetch: preserve the project external-retrieval boundary ───
   if (canonical === "WebFetch") {
     const url = getWebFetchUrl(toolInput);
-    return mcpRedirect({
+    return {
       action: "deny",
-      reason: redirectsToExecuteOnly
-        ? `context-mode: WebFetch redirected. Call ${t("ctx_execute")}(language, code) to fetch the URL, derive your answer in code, and print only the result — the raw page bytes stay in the sandbox instead of entering your conversation. Full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`
-        : `context-mode: Raw WebFetch redirected. Call ${t("ctx_execute")}(language, code) to fetch and derive the answer in one request without persisting the response. Use ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") only when the user explicitly selected this trusted source for persistent recall via ${t("ctx_search")}. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).`,
+      reason: `context-mode: Native WebFetch is not the project external retrieval path. Use the project-configured external retrieval path for public web information. Use ${t("ctx_execute")}(language, code) only when the user explicitly asks to inspect a direct HTTP/API response; derive and print bounded findings.`,
       // D2 PRD Phase 4.1: marker payload for PostToolUse byte accounting.
       redirectMeta: {
         tool: "WebFetch",
@@ -1032,7 +1007,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         bytesAvoided: 16384,
         commandSummary: String(url).slice(0, 200),
       },
-    }, mcpToolsAvailable);
+    };
   }
 
   // ─── Agent: inject context-mode routing into subagent prompts ───

@@ -663,15 +663,14 @@ The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
          { "matcher": "^(ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__context_mode__ctx_execute|mcp__context_mode__ctx_execute_file|mcp__context_mode__ctx_batch_execute|mcp__context_mode__ctx_fetch_and_index|mcp__context_mode__ctx_search|mcp__context_mode__ctx_index|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute|mcp__plugin_context-mode_context-mode__ctx_fetch_and_index|mcp__plugin_context-mode_context-mode__ctx_search|mcp__plugin_context-mode_context-mode__ctx_index)$", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }
        ],
        "PreCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointprecompact" }] }],
-       "PostCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointpostcompact" }] }],
-       "SessionStart": [{ "matcher": "^compact$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointsessionstart", "additionalContextLimit": 1500 }] }]
+       "PostCompact": [{ "matcher": "^(manual|auto)$", "hooks": [{ "type": "command", "command": "context-mode hook codex checkpointpostcompact" }] }]
      }
    }
    ```
 
-   `PreToolUse` enforces deny/block routing today and is prepared for input rewrites once Codex supports them. `PreCompact`, `PostCompact`, and `SessionStart(compact)` retain same-session checkpoint recovery. The default profile does not intercept external MCP tools or register generic `PostToolUse`, ordinary `SessionStart`, `UserPromptSubmit`, or `Stop` hooks. Use `context-mode observability enable` only when additional local session capture is needed; it adds hook-panel entries and local state writes.
+   `PreToolUse` enforces deny/block routing today and is prepared for input rewrites once Codex supports them. `PreCompact` and `PostCompact` retain a local, content-free compact audit; Codex Remote Compaction v2 owns live continuity. The default profile does not intercept external MCP tools or register `SessionStart(compact)`, generic `PostToolUse`, ordinary `SessionStart`, `UserPromptSubmit`, or `Stop` hooks. Use `context-mode observability enable` only when additional local session capture is needed; it adds hook-panel entries and local state writes.
 
-   > **Note:** Codex PreToolUse routing currently supports deny rules only (blocks dangerous commands). It still needs upstream `updatedInput` support before context-mode can rewrite tool input; track [openai/codex#18491](https://github.com/openai/codex/issues/18491). Context injection (`additionalContext`) is not supported in Codex PreToolUse. The default profile restores checkpoint state through `SessionStart(compact)`; optional observability also enables PostToolUse capture.
+   > **Note:** Codex PreToolUse routing currently supports deny rules only (blocks dangerous commands). It still needs upstream `updatedInput` support before context-mode can rewrite tool input; track [openai/codex#18491](https://github.com/openai/codex/issues/18491). Context injection (`additionalContext`) is not supported in Codex PreToolUse. The default profile does not inject compact checkpoint state; optional observability also enables PostToolUse capture.
    >
    > `PreCompact` support is runtime-gated: it is present in Codex CLI 0.130.0, while the public Codex hooks docs may lag the shipped hook-event list. Older Codex builds that do not emit `PreCompact` will not create pre-compaction snapshots.
 
@@ -1170,7 +1169,7 @@ npm install -g context-mode
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
 | `ctx_fetch_and_index` | Fetch URL, chunk and index. Cache reuses content within TTL (default 24h, override per-call with `ttl: <ms>`). `ttl: 0` or `force: true` to bypass. Pass `requests: [{url, source}, ...]` + `concurrency: 1-8` for parallel multi-URL. | 60 KB → 40 B |
 | `ctx_stats` | Show context savings, call counts, and session statistics. | — |
-| `ctx_checkpoint_report` | Report local Codex checkpoint delivery and confirmation reliability. | — |
+| `ctx_checkpoint_report` | Report local Codex checkpoint audit and confirmation reliability. | — |
 | `ctx_recovery_brief_init` | Initialize controlled task recovery state from bounded source evidence. | — |
 | `ctx_recovery_brief_status` | Read controlled RecoveryBrief provider health and state metadata. | — |
 | `ctx_recovery_brief_update` | Compare-and-swap a controlled RecoveryBrief update. | — |
@@ -1375,7 +1374,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 
 **OpenClaw / Pi Agent** — High coverage. All tool lifecycle hooks (`after_tool_call`, `before_compaction`, `session_start`) fire via the native gateway plugin. User decisions aren't captured but file edits, git ops, errors, and tasks are fully tracked. Falls back to DB snapshot reconstruction if compaction hooks fail on older gateway versions. See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md).
 
-**Codex CLI** — MCP active, hooks require `[features].hooks = true`. The default profile keeps native routing plus `PreCompact`, `PostCompact`, and `SessionStart(compact)` for same-session recovery. Optional observability enables additional session hooks. `PreCompact` remains runtime-gated on Codex builds that emit the event. PreToolUse deny routing works; input rewriting still depends on upstream `updatedInput` support ([openai/codex#18491](https://github.com/openai/codex/issues/18491)).
+**Codex CLI** — MCP active, hooks require `[features].hooks = true`. The default profile keeps native routing plus `PreCompact` and `PostCompact` for local compact audit; Codex Remote Compaction v2 owns live continuity. Optional observability enables additional session hooks. `PreCompact` remains runtime-gated on Codex builds that emit the event. PreToolUse deny routing works; input rewriting still depends on upstream `updatedInput` support ([openai/codex#18491](https://github.com/openai/codex/issues/18491)).
 
 **Antigravity** — No session support. No hooks, no event capture. Requires manually copying `GEMINI.md` to your project root. Auto-detected via MCP protocol handshake (`clientInfo.name`).
 

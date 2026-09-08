@@ -252,7 +252,7 @@ confirmed from filesystem inspection alone.
 **Known Issues / Caveats:**
 - PreToolUse `additionalContext` is unsupported — context injection works via PostToolUse and SessionStart instead. The codex formatter handles this automatically (deny works, context is dropped). Source: `codex-rs/hooks/src/engine/output_parser.rs:267`.
 - PreToolUse input rewriting still needs upstream `updatedInput` support. Track: [openai/codex#18491](https://github.com/openai/codex/issues/18491).
-- The confirmed-checkpoint protocol requires `PreCompact`, `PostCompact`, and `SessionStart(compact)`. A missing or failed `PostCompact` intentionally prevents checkpoint injection rather than restoring an unconfirmed snapshot.
+- The local compact audit requires `PreCompact` and `PostCompact`. A missing or failed `PostCompact` leaves the record pending and never creates a recovery or injection path.
 - Codex emits structured tool names such as `Bash` and `apply_patch`; context-mode only normalizes legacy shell aliases.
 - updatedInput and updatedMCPToolOutput are in the schema but NOT implemented
 - Default hook timeout: 600 seconds

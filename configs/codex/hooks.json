@@ -35,18 +35,6 @@
           { "type": "command", "command": "context-mode hook codex checkpointpostcompact" }
         ]
       }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "^compact$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "context-mode hook codex checkpointsessionstart",
-            "additionalContextLimit": 1500
-          }
-        ]
-      }
     ]
   }
 }

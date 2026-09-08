@@ -2,8 +2,6 @@ export type CheckpointState = "pending" | "confirmed" | "claimed" | "expired" | 
 
 export type CompactionTrigger = "manual" | "auto";
 
-export type CheckpointProjectionMode = "full" | "pruned" | "id_only";
-
 export type RecoveryBriefStatus = "absent" | "invalid" | "available";
 
 /**
@@ -243,22 +241,12 @@ export interface CheckpointTriggerReliability {
   checkpointCount: number;
   stateCounts: CheckpointStateCounts;
   confirmationRate: number | null;
-  claimRate: number | null;
 }
 
 export interface CheckpointLatencySummary {
   sampleCount: number;
   p50Ms: number | null;
   p95Ms: number | null;
-}
-
-export interface CheckpointDeliverySummary {
-  full: number;
-  pruned: number;
-  idOnly: number;
-  unknown: number;
-  emittedBytesTotal: number;
-  emittedBytesAverage: number | null;
 }
 
 export interface RecoveryBriefSnapshotCounts {
@@ -275,20 +263,9 @@ export interface RecoveryBriefOriginCounts {
   legacyUnknown: number;
 }
 
-export interface RecoveryBriefProjectionSummary {
-  snapshots: RecoveryBriefSnapshotCounts;
-  origins: RecoveryBriefOriginCounts;
-}
-
 export interface RecoveryBriefReliabilitySummary {
   snapshots: RecoveryBriefSnapshotCounts;
   origins: RecoveryBriefOriginCounts;
-  byProjection: {
-    full: RecoveryBriefProjectionSummary;
-    pruned: RecoveryBriefProjectionSummary;
-    idOnly: RecoveryBriefProjectionSummary;
-    unknown: RecoveryBriefProjectionSummary;
-  };
 }
 
 export interface CheckpointReliabilityReport {
@@ -306,36 +283,10 @@ export interface CheckpointReliabilityReport {
   byTrigger: Record<CompactionTrigger, CheckpointTriggerReliability>;
   latencyMs: {
     createdToConfirmed: CheckpointLatencySummary;
-    confirmedToClaimed: CheckpointLatencySummary;
   };
-  delivery: CheckpointDeliverySummary;
   recoveryBrief: RecoveryBriefReliabilitySummary;
-  diagnostics: CheckpointSessionStartDiagnosticSummary;
   overduePendingCount: number;
   warnings: string[];
-}
-
-export type CheckpointSessionStartDiagnosticOutcome = "delivered" | "expected_empty" | "failed";
-
-export type CheckpointSessionStartDiagnosticCode =
-  | "DELIVERED"
-  | "EMPTY_NO_CONFIRMED_CHECKPOINT"
-  | "DEPENDENCY_UNAVAILABLE"
-  | "CHECKPOINT_DB_UNAVAILABLE"
-  | "PAYLOAD_INVALID"
-  | "PROJECTION_FAILED";
-
-/** Content-free aggregate for compact SessionStart diagnostics only. */
-export interface CheckpointSessionStartDiagnosticSummary {
-  total: number;
-  byOutcome: Record<CheckpointSessionStartDiagnosticOutcome, number>;
-  byCode: Record<CheckpointSessionStartDiagnosticCode, number>;
-  latest: {
-    phase: "compact_session_start";
-    outcome: CheckpointSessionStartDiagnosticOutcome;
-    code: CheckpointSessionStartDiagnosticCode;
-    createdAt: string;
-  } | null;
 }
 
 export interface RecoveryBriefSourceSummary {

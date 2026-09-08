@@ -28,13 +28,13 @@ ${toolSearchBootstrap ? `
   </deferred_tool_bootstrap>
 ` : ''}
   <tool_selection_hierarchy>
-    0. MEMORY: ${t("ctx_search")}(sort: "timeline")
-       - On resume or compaction, query prior decisions, errors, plans, user prompts before asking the user — auto-captured session memory is searchable.
+    0. EXPLICIT RECALL: ${t("ctx_search")}(queries: [...])
+       - Query only intentionally persisted, known material when it is relevant to the current question. Do not query automatically on resume or compaction.
     1. GATHER: ${t("ctx_batch_execute")}(commands, queries)
        - Primary unbounded local-output tool. Runs commands in parallel and (when queries are passed) searches successful output in the same request. Output is not persistent unless verified persistence is explicitly requested.
        - Each command: {label: "section header", command: "shell command"}; descriptive labels improve same-request matches.
     2. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
-       - Multiple related questions about anything already indexed (your captures + session memory). Batch every question in one array; the ranking pipeline runs per-query and the round-trip cost is paid once.
+       - Multiple related questions about already indexed material. Batch every question in one array; the ranking pipeline runs per-query and the round-trip cost is paid once.
     3. PROCESSING: ${t("ctx_execute")}(language, code) | ${t("ctx_execute_file")}(path, language, code)
        - Derive answers FROM data: filter, count, aggregate, parse, transform. Only what you console.log() enters your conversation; the raw bytes stay in the sandbox.
   </tool_selection_hierarchy>
@@ -42,7 +42,7 @@ ${toolSearchBootstrap ? `
   <when_not_to_use>
     - You intend to PROCESS the output (filter, count, parse, aggregate) → use ${t("ctx_batch_execute")} or ${t("ctx_execute")}. Bash stays correct when you intend to OBSERVE a short fixed output (git status on a clean tree, whoami, pwd) or when you are mutating state (git, mkdir, rm, mv, navigation).
     - You want to analyze, summarize, or extract from a file → use ${t("ctx_execute_file")}. Read stays correct when you intend to Edit the file (Edit needs the exact bytes in your conversation to match against).
-    - Web/lifecycle/interactive/structured MCP calls keep their original protocol. For a large result, ask the original tool to write a file and analyze it with ${t("ctx_execute_file")}. Use ${t("ctx_fetch_and_index")} only for a trusted source the user explicitly wants to retain.
+    - Web retrieval, lifecycle, interactive, structured MCP, Trellis, Channel, formal handoff, and Skill-install calls keep their original direct protocol. For a large local artifact produced by one of them, analyze that artifact afterwards with ${t("ctx_execute_file")}.
     - ${t("ctx_execute")} and ${t("ctx_execute_file")} for file writes → these run code in a subprocess and discard the sandbox FS; they are for analysis, processing, and computation only.
   </when_not_to_use>
 

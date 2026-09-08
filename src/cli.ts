@@ -119,7 +119,6 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
     checkpointposttooluse: "hooks/codex/checkpoint-posttooluse.mjs",
     checkpointprecompact: "hooks/codex/checkpoint-precompact.mjs",
     checkpointpostcompact: "hooks/codex/checkpoint-postcompact.mjs",
-    checkpointsessionstart: "hooks/codex/checkpoint-sessionstart.mjs",
     checkpointuserpromptsubmit: "hooks/codex/checkpoint-userpromptsubmit.mjs",
     observabilityposttooluse: "hooks/codex/posttooluse.mjs",
     observabilitycheckpointposttooluse: "hooks/codex/checkpoint-posttooluse.mjs",

@@ -1,17 +1,16 @@
 ---
 name: ctx-recovery-brief
 description: |
-  Low-level controlled RecoveryBrief provider protocol for a Trellis coordinator, or for an explicit user request to inspect, repair, force-refresh, or formally hand off recovery state. Use status and CAS updates only with confirmed semantic evidence. Do not use for ordinary compaction, PreCompact, PostCompact, SessionStart(compact), claimed checkpoints, or ordinary session resume. Trigger: /context-mode:ctx-recovery-brief
+  Low-level controlled RecoveryBrief provider protocol for a Trellis project workflow, or for an explicit user request to inspect, repair, force-refresh, or formally hand off recovery state. Use status and CAS updates only with confirmed semantic evidence. Do not use for ordinary compaction, PreCompact, PostCompact, SessionStart(compact), historical claimed checkpoints, or ordinary session resume. Trigger: /context-mode:ctx-recovery-brief
 user-invocable: true
 ---
 
 # RecoveryBrief
 
 This is the low-level provider protocol. For a Trellis-managed project, the
-normal caller is the project-local `trellis-recovery-brief-sync` skill at an
-approved semantic workflow gate. Trellis owns task semantics and cross-session
-task state; context-mode owns only Brief validation, CAS persistence, and
-same-session checkpoint delivery.
+normal caller is the project workflow at an approved semantic gate. Trellis
+owns task semantics and cross-session task state; context-mode owns only Brief
+validation, CAS persistence, and local checkpoint snapshots.
 
 Do not invoke this skill merely because a compact lifecycle ran, a
 `SessionStart(compact)` occurred, a checkpoint was claimed, or a session
@@ -51,7 +50,7 @@ that evidence registration.
 - Never use `trellis_task` as a source kind for a project provider.
 - Never reread, alter, or recreate a historical checkpoint snapshot. Updates apply only to the selected live provider.
 - Never treat a transcript, FTS result, model memory, raw tool output, or Git diff as a substitute for confirmed project-semantic state.
-- Never make checkpoint creation, confirmation, or compact-session delivery depend on this skill.
+- Never make checkpoint creation, confirmation, or compact lifecycle auditing depend on this skill.
 - Never claim that a status or checkpoint report measures model understanding, semantic recall, or task-continuation quality.
 
 Read [the v1 reference](references/recovery-brief-v1.md) for field constraints,

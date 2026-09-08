@@ -5670,12 +5670,10 @@ describe("hook routing prompt-surface contract (#683 ADR-0002 + ADR-0003)", () =
 
     const caseAs = extractCaseAStrings(routingMjs);
 
-    test("at least 3 CASE A redirect strings present (sanity check on extractor)", () => {
-      // Current corpus: curl/wget, inline HTTP, WebFetch. Build-tool redirects
-      // are deliberately absent because workflow CLIs now pass through. If a
-      // contributor removes one remaining redirect, the count drops and
-      // this sanity check forces the test author to revisit the extractor.
-      expect(caseAs.length).toBeGreaterThanOrEqual(3);
+    test("at least 2 CASE A redirect strings present (sanity check on extractor)", () => {
+      // Current corpus: curl/wget and inline HTTP. Native WebFetch has a
+      // distinct external-retrieval boundary, not a ctx-tool redirect.
+      expect(caseAs.length).toBeGreaterThanOrEqual(2);
     });
 
     for (const cs of caseAs) {

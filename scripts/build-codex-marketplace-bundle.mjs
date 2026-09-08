@@ -143,7 +143,6 @@ function assertBuildInputs(packageJson) {
     ".codex-plugin/hooks.json",
     "hooks/checkpoint.bundle.mjs",
     "hooks/recovery-brief-capability.bundle.mjs",
-    "hooks/checkpoint-diagnostics.mjs",
   ];
   for (const relativePath of requiredPaths) {
     const absolutePath = resolve(repositoryRoot, relativePath);

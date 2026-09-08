@@ -81,7 +81,7 @@ describe("release workflow fork-ref contract", () => {
     expect(packageJson.engines).toBeUndefined();
   });
 
-  test("fetches and validates origin/devel before checkout and package work", () => {
+  test("fetches and validates origin/devel before checking out the tagged release", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     const fetchRefspec = "devel:refs/remotes/origin/devel";
     const annotationCheck = workflow.indexOf('git cat-file -t "refs/tags/$tag_name"');
@@ -89,9 +89,7 @@ describe("release workflow fork-ref contract", () => {
     const validatorInvocation = workflow.indexOf(
       'node scripts/validate-fork-release-tag.mjs "$tag_name"',
     );
-    const directChildCheck = workflow.indexOf('parents -n 1 "$evidence_commit"');
-    const evidenceDiffCheck = workflow.indexOf('name-status -r "$source_commit" "$evidence_commit"');
-    const detachedCheckout = workflow.indexOf('git checkout --detach "$evidence_commit"');
+    const detachedCheckout = workflow.indexOf('git checkout --detach "$release_commit"');
     const dependencyInstall = workflow.indexOf("Install dependencies");
     const archiveBuild = workflow.indexOf("Build and verify release assets");
 
@@ -104,29 +102,21 @@ describe("release workflow fork-ref contract", () => {
     expect(annotationCheck).toBeGreaterThanOrEqual(0);
     expect(annotationFailure).toBeGreaterThan(annotationCheck);
     expect(validatorInvocation).toBeGreaterThan(annotationFailure);
-    expect(directChildCheck).toBeGreaterThan(validatorInvocation);
-    expect(evidenceDiffCheck).toBeGreaterThan(directChildCheck);
     expect(detachedCheckout).toBeGreaterThan(validatorInvocation);
-    expect(detachedCheckout).toBeGreaterThan(evidenceDiffCheck);
     expect(dependencyInstall).toBeGreaterThan(validatorInvocation);
     expect(dependencyInstall).toBeGreaterThan(detachedCheckout);
     expect(archiveBuild).toBeGreaterThan(dependencyInstall);
   });
 
-  test("checks the tracked native attestation before creating a GitHub release", () => {
+  test("creates the GitHub release after the offline asset and tag-manifest checks", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     const archiveBuild = workflow.indexOf("Build and verify release assets");
-    const nativeCheck = workflow.indexOf("Verify immutable native compact attestation");
     const releaseCreate = workflow.indexOf("Create GitHub Release");
 
-    expect(nativeCheck).toBeGreaterThan(archiveBuild);
-    expect(releaseCreate).toBeGreaterThan(nativeCheck);
-    expect(workflow).toContain("scripts/verify-codex-native-release-attestation.mjs");
-    expect(workflow).toContain("--repository-root \"$GITHUB_WORKSPACE\"");
-    expect(workflow).toContain('--source-commit "${{ steps.release_tag.outputs.source_commit }}"');
-    expect(workflow).toContain('--evidence-commit "${{ steps.release_tag.outputs.evidence_commit }}"');
-    expect(workflow).not.toContain('git checkout --detach "$source_commit"');
-    expect(workflow).toContain("docs/releases/attestations/${{ steps.release_tag.outputs.tag_name }}.json");
+    expect(releaseCreate).toBeGreaterThan(archiveBuild);
+    expect(workflow).not.toContain("scripts/verify-codex-native-release-attestation.mjs");
+    expect(workflow).toContain("Codex-Content-Manifest-SHA256");
+    expect(workflow).not.toContain("docs/releases/attestations/");
     expect(workflow).not.toContain("run-codex-native-release-preflight.mjs");
   });
 });

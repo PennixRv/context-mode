@@ -4,9 +4,9 @@
  * Codex CLI hooks run behind the current `hooks` feature flag surface.
  * Prefer `[features].hooks`; the legacy `[features].codex_hooks` alias is still
  * accepted in current Codex builds.
- * The default profile uses only PreToolUse, PreCompact, PostCompact, and the
- * compact SessionStart event. Rich local capture remains available through
- * the explicit optional observability profile.
+ * The default profile uses only PreToolUse, PreCompact, and PostCompact.
+ * Rich local capture remains available through the explicit optional
+ * observability profile.
  * Same JSON stdin/stdout wire protocol as Claude Code.
  *
  * Config: $CODEX_HOME/hooks.json or ~/.codex/hooks.json.
