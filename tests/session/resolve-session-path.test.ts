@@ -2,20 +2,19 @@
  * resolveSessionPath — generalized variant of resolveSessionDbPath that
  * works for arbitrary file extensions (.db, -events.md, .cleanup, etc).
  *
- * Same case-fold + one-shot legacy migration semantics; the helper is the
+ * Same canonical hash semantics; the helper is the
  * single source of truth that both the TS server (db.ts internals) and the
  * .mjs hooks (hooks/session-helpers.mjs) consume — eliminating the
  * parallel JS implementation that drifted across rounds 5 and 6.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _resetWorktreeSuffixCacheForTests,
   hashProjectDirCanonical,
-  hashProjectDirLegacy,
   resolveSessionPath,
 } from "../../src/session/db.js";
 
@@ -69,75 +68,6 @@ describe("resolveSessionPath (generalized)", () => {
     const trimmed = (p: string, e: string) => p.slice(0, p.length - e.length);
     expect(trimmed(dbPath, ".db")).toBe(trimmed(eventsPath, "-events.md"));
     expect(trimmed(dbPath, ".db")).toBe(trimmed(cleanupPath, ".cleanup"));
-  });
-
-  it.skipIf(process.platform === "linux")(
-    "migrates legacy raw-casing FILE to canonical name for arbitrary ext",
-    () => {
-      const repo = makeRepo("migrate-events");
-      const sessionsDir = makeSessionsDir();
-      const legacyHash = hashProjectDirLegacy(repo);
-      const canonicalHash = hashProjectDirCanonical(repo);
-      if (legacyHash === canonicalHash) return;
-
-      // Pre-create a legacy events.md
-      const legacyEvents = join(sessionsDir, `${legacyHash}-events.md`);
-      writeFileSync(legacyEvents, "# legacy events\nhello");
-
-      const resolved = resolveSessionPath({
-        projectDir: repo,
-        sessionsDir,
-        ext: "-events.md",
-      });
-
-      expect(resolved).toBe(join(sessionsDir, `${canonicalHash}-events.md`));
-      expect(existsSync(resolved)).toBe(true);
-      expect(readFileSync(resolved, "utf8")).toBe("# legacy events\nhello");
-      expect(existsSync(legacyEvents)).toBe(false);
-    },
-  );
-
-  it.skipIf(process.platform === "linux")(
-    "data-loss safety: leaves legacy alone when canonical also exists",
-    () => {
-      const repo = makeRepo("both-cleanup");
-      const sessionsDir = makeSessionsDir();
-      const legacyHash = hashProjectDirLegacy(repo);
-      const canonicalHash = hashProjectDirCanonical(repo);
-      if (legacyHash === canonicalHash) return;
-
-      const legacyCleanup = join(sessionsDir, `${legacyHash}.cleanup`);
-      const canonicalCleanup = join(sessionsDir, `${canonicalHash}.cleanup`);
-      writeFileSync(legacyCleanup, "LEGACY-FLAG");
-      writeFileSync(canonicalCleanup, "CANONICAL-FLAG");
-
-      const resolved = resolveSessionPath({
-        projectDir: repo,
-        sessionsDir,
-        ext: ".cleanup",
-      });
-      expect(resolved).toBe(canonicalCleanup);
-      expect(readFileSync(canonicalCleanup, "utf8")).toBe("CANONICAL-FLAG");
-      expect(existsSync(legacyCleanup)).toBe(true);
-      expect(readFileSync(legacyCleanup, "utf8")).toBe("LEGACY-FLAG");
-    },
-  );
-
-  it("Linux: legacy === canonical so no migration ever runs", () => {
-    if (process.platform !== "linux") return;
-    const repo = makeRepo("linux-events");
-    const sessionsDir = makeSessionsDir();
-    const hash = hashProjectDirLegacy(repo);
-    expect(hash).toBe(hashProjectDirCanonical(repo));
-    const file = join(sessionsDir, `${hash}-events.md`);
-    writeFileSync(file, "# linux noop\n");
-    const resolved = resolveSessionPath({
-      projectDir: repo,
-      sessionsDir,
-      ext: "-events.md",
-    });
-    expect(resolved).toBe(file);
-    expect(readFileSync(file, "utf8")).toBe("# linux noop\n");
   });
 
   it("worktree suffix flows through (different worktrees → different paths)", () => {

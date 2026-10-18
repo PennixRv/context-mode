@@ -228,6 +228,8 @@ interface ExecuteFileOptions extends ExecuteOptions {
   path: string;
 }
 
+type ExecutionContext = { signal?: AbortSignal; codexThreadId?: string };
+
 export class PolyglotExecutor {
   #hardCapBytes: number;
   /**
@@ -238,6 +240,7 @@ export class PolyglotExecutor {
    * to preserve constructor backward compatibility.
    */
   #projectRootResolver: () => string;
+  #requestContext: () => ExecutionContext;
   #runtimes: RuntimeMap;
 
   /** PIDs of backgrounded processes — killed on cleanup to prevent zombies. */
@@ -247,6 +250,7 @@ export class PolyglotExecutor {
     hardCapBytes?: number;
     projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
+    requestContext?: () => ExecutionContext;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     const pr = opts?.projectRoot;
@@ -258,6 +262,7 @@ export class PolyglotExecutor {
       this.#projectRootResolver = () => process.cwd();
     }
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
+    this.#requestContext = opts?.requestContext ?? (() => ({}));
   }
 
   get #projectRoot(): string {
@@ -280,7 +285,14 @@ export class PolyglotExecutor {
   }
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
-    const { language, code, timeout, background = false, cwd: cwdOverride } = opts;
+    const { language, code, background = false, cwd: cwdOverride } = opts;
+    const context = this.#requestContext();
+    context.signal?.throwIfAborted();
+    if (context.codexThreadId && ["DSH_TRELLIS_CONTEXT_ID", "DSH_SHELL", "DSH_SESSION_ID", "TRELLIS_CONTEXT_ID"].some(name => process.env[name])) {
+      throw new Error("Inherited session identity override cannot be verified for this Codex request; use the host's native execution entry.");
+    }
+    if (context.codexThreadId && background) throw new Error("Codex background execution requires the host's native execution session.");
+    const timeout = context.codexThreadId ? Math.min(opts.timeout ?? 120_000, 120_000) : opts.timeout;
     const tmpDir = mkdtempSync(join(OS_TMPDIR, ".ctx-mode-"));
 
     try {
@@ -289,7 +301,7 @@ export class PolyglotExecutor {
 
       // Rust: compile then run
       if (cmd[0] === "__rust_compile_run__") {
-        return await this.#compileAndRun(filePath, tmpDir, timeout);
+        return await this.#compileAndRun(filePath, tmpDir, timeout, context, cwdOverride ?? this.#projectRoot);
       }
 
       // Every language runs in the project directory so git, relative paths,
@@ -304,7 +316,7 @@ export class PolyglotExecutor {
       // Issue #45 — `cwdOverride` lets per-call sites (Codex MCP handlers) pin
       // cwd without mutating process-wide state.
       const cwd = cwdOverride ?? this.#projectRoot;
-      const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background);
+      const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background, context);
 
       // Skip tmpDir cleanup if process was backgrounded — it may still need files
       if (!result.backgrounded) {
@@ -378,6 +390,8 @@ export class PolyglotExecutor {
     srcPath: string,
     cwd: string,
     timeout: number | undefined,
+    context: ExecutionContext,
+    projectDir: string,
   ): Promise<ExecResult> {
     const binSuffix = isWin ? ".exe" : "";
     const binPath = srcPath.replace(/\.rs$/, "") + binSuffix;
@@ -385,25 +399,17 @@ export class PolyglotExecutor {
     // Compile — cap rustc invocation at 60s when caller didn't bound the
     // overall timeout (a hung compile shouldn't run forever even if the
     // caller is fine with a long-running binary afterwards).
-    try {
-      execFileSync("rustc", [srcPath, "-o", binPath], {
-        cwd,
-        timeout: timeout === undefined ? 60_000 : Math.min(timeout, 60_000),
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? (err as any).stderr || err.message : String(err);
-      return {
-        stdout: "",
-        stderr: `Compilation failed:\n${message}`,
-        exitCode: 1,
-        timedOut: false,
-      };
+    const compile = await this.#spawn(["rustc", srcPath, "-o", binPath], cwd, cwd,
+      Math.min(timeout ?? 60_000, 60_000), false, context);
+    if (compile.exitCode !== 0) {
+      cleanupTmpDir(cwd);
+      return { ...compile, stderr: `Compilation failed:\n${compile.stderr}` };
     }
 
     // Run
-    return this.#spawn([binPath], cwd, cwd, timeout);
+    const result = await this.#spawn([binPath], projectDir, cwd, timeout, false, context);
+    cleanupTmpDir(cwd);
+    return result;
   }
 
   async #spawn(
@@ -412,7 +418,9 @@ export class PolyglotExecutor {
     sandboxTmpDir: string,
     timeout: number | undefined,
     background = false,
+    context: ExecutionContext = {},
   ): Promise<ExecResult> {
+    context.signal?.throwIfAborted();
     return new Promise((res) => {
       // Only .cmd/.bat shims need shell on Windows; real executables don't.
       // Using shell: true globally causes process-tree kill issues with MSYS2/Git Bash.
@@ -440,7 +448,10 @@ export class PolyglotExecutor {
       const commonOpts = {
         cwd,
         stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
-        env: this.#buildSafeEnv(sandboxTmpDir),
+        env: {
+          ...this.#buildSafeEnv(sandboxTmpDir),
+          ...(context.codexThreadId ? { CODEX_THREAD_ID: context.codexThreadId, PWD: cwd } : {}),
+        },
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
         // Hide the spawned-process console window on Windows. Without this,
@@ -467,6 +478,10 @@ export class PolyglotExecutor {
 
       let timedOut = false;
       let resolved = false;
+      let cancelled = false;
+      const cancel = () => { cancelled = true; killTree(proc); };
+      context.signal?.addEventListener("abort", cancel, { once: true });
+      if (context.signal?.aborted) cancel();
       // Issue #406 — if the caller didn't pass a timeout we don't fire one.
       // Timeout policy belongs to the MCP host/client (Claude Code, VSCode,
       // JetBrains all enforce their own RPC timeouts); imposing a second
@@ -538,6 +553,7 @@ export class PolyglotExecutor {
 
       proc.on("close", (exitCode) => {
         clearTimeout(timer);
+        context.signal?.removeEventListener("abort", cancel);
         if (resolved) return; // Already resolved by background timeout
         const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
         let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
@@ -547,18 +563,19 @@ export class PolyglotExecutor {
         }
 
         const stdout = rawStdout;
-        const stderr = rawStderr;
+        const stderr = rawStderr + (cancelled ? "\n[request cancelled — process group terminated]" : "");
 
         res({
           stdout,
           stderr,
-          exitCode: timedOut ? 1 : (exitCode ?? 1),
+          exitCode: timedOut || cancelled ? 1 : (exitCode ?? 1),
           timedOut,
         });
       });
 
       proc.on("error", (err) => {
         clearTimeout(timer);
+        context.signal?.removeEventListener("abort", cancel);
         if (resolved) return; // Already resolved by background timeout
         res({
           stdout: "",

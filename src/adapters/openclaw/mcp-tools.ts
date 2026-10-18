@@ -1,7 +1,7 @@
 /**
  * OpenClaw MCP tool registry.
  *
- * Catalogs the 11 ctx_* tools that OpenClaw plugin must register via
+ * Catalogs the 10 ctx_* tools that OpenClaw plugin must register via
  * api.registerTool(...) so the routing block (which nudges agents toward
  * ctx_execute, ctx_search, etc.) actually has tools to call. Without this,
  * Phase 7 audit (v1.0.107-adapter-openclaw.json) flagged severity=CRITICAL —
@@ -16,7 +16,7 @@
  *
  * Tool handlers are intentionally thin shims that delegate to the bundled CLI
  * (cli.bundle.mjs) — same fall-through pattern already used by ctx-doctor and
- * ctx-upgrade slash commands. This keeps the plugin's blast radius minimal:
+ * ctx-doctor slash command. This keeps the plugin's blast radius minimal:
  * we don't re-export the entire MCP server stack inside OpenClaw's process.
  *
  * The 11 tools mirror src/server.ts registerTool calls (lines 897, 1226, 1371,
@@ -192,16 +192,6 @@ export const OPENCLAW_TOOL_DEFS: readonly OpenClawToolDef[] = [
     execute: cliRedirect("ctx_doctor"),
   },
   {
-    name: "ctx_upgrade",
-    description: "Upgrade context-mode to the latest version.",
-    parameters: {
-      type: "object",
-      properties: {},
-      additionalProperties: true,
-    },
-    execute: cliRedirect("ctx_upgrade"),
-  },
-  {
     name: "ctx_purge",
     description:
       "DESTRUCTIVE — permanently delete indexed content. CANNOT be undone.\n\n" +
@@ -212,8 +202,8 @@ export const OPENCLAW_TOOL_DEFS: readonly OpenClawToolDef[] = [
       "  • confirm:false                              → 'purge cancelled'\n" +
       "  • sessionId AND scope:\"project\" together     → 'ambiguous — pick one'\n" +
       "  • scope:\"session\" without sessionId          → throws\n" +
-      "  • bare {confirm:true}                        → DEPRECATED: maps to scope:\"project\" with stderr warning\n\n" +
-      "Use sessionId for clearing one conversation. Use scope:\"project\" only when the user explicitly resets everything. NEVER call with bare {confirm:true}.",
+      "  • missing scope                               → rejected\n\n" +
+      "Use sessionId for clearing one conversation. Use scope:\"project\" only when the user explicitly resets everything.",
     parameters: {
       type: "object",
       properties: {},

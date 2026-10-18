@@ -6,7 +6,6 @@ import { join } from "node:path";
 import {
   _resetWorktreeSuffixCacheForTests,
   hashProjectDirCanonical,
-  hashProjectDirLegacy,
   getWorktreeSuffix,
 } from "../../src/session/db.js";
 import { purgeSession } from "../../src/session/purge.js";
@@ -57,7 +56,7 @@ describe("purgeSession — slice 1: session events DB (canonical)", () => {
     const dbPath = join(sessionsDir, `${canonicalHash}${suffix}.db`);
     touchSqliteTriple(dbPath);
 
-    const r = purgeSession({ projectDir, sessionsDir });
+    const r = purgeSession({ projectDir, sessionsDir, scope: "project" });
 
     expect(existsSync(dbPath)).toBe(false);
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
@@ -65,59 +64,6 @@ describe("purgeSession — slice 1: session events DB (canonical)", () => {
     expect(r.deleted).toContain("session events DB");
     expect(r.wipedPaths).toEqual(expect.arrayContaining([dbPath, `${dbPath}-wal`, `${dbPath}-shm`]));
   });
-});
-
-// ─────────────────────────────────────────────────────────
-// Slice 2 — session events DB at LEGACY raw-casing hash too
-// ─────────────────────────────────────────────────────────
-
-describe("purgeSession — slice 2: session events DB (legacy raw casing)", () => {
-  it.skipIf(process.platform === "linux")(
-    "wipes <legacyHash><suffix>.db when only the legacy file exists",
-    () => {
-      const projectDir = makeRepo("s2");
-      const sessionsDir = makeTmpDir("sess2");
-      const suffix = getWorktreeSuffix(projectDir);
-      const canonicalHash = hashProjectDirCanonical(projectDir);
-      const legacyHash = hashProjectDirLegacy(projectDir);
-      // realpath may already lowercase on some macOS configs; skip when the
-      // two hashes coincide and the slice has nothing to assert.
-      if (canonicalHash === legacyHash) return;
-
-      const legacyPath = join(sessionsDir, `${legacyHash}${suffix}.db`);
-      touchSqliteTriple(legacyPath);
-
-      const r = purgeSession({ projectDir, sessionsDir });
-
-      expect(existsSync(legacyPath)).toBe(false);
-      expect(existsSync(`${legacyPath}-wal`)).toBe(false);
-      expect(existsSync(`${legacyPath}-shm`)).toBe(false);
-      expect(r.deleted).toContain("session events DB");
-      expect(r.wipedPaths).toEqual(expect.arrayContaining([legacyPath]));
-    },
-  );
-
-  it.skipIf(process.platform === "linux")(
-    "wipes BOTH canonical and legacy DBs when both exist (case-fold drift)",
-    () => {
-      const projectDir = makeRepo("s2b");
-      const sessionsDir = makeTmpDir("sess2b");
-      const suffix = getWorktreeSuffix(projectDir);
-      const canonicalHash = hashProjectDirCanonical(projectDir);
-      const legacyHash = hashProjectDirLegacy(projectDir);
-      if (canonicalHash === legacyHash) return;
-
-      const canonicalPath = join(sessionsDir, `${canonicalHash}${suffix}.db`);
-      const legacyPath = join(sessionsDir, `${legacyHash}${suffix}.db`);
-      writeFileSync(canonicalPath, "C");
-      writeFileSync(legacyPath, "L");
-
-      purgeSession({ projectDir, sessionsDir });
-
-      expect(existsSync(canonicalPath)).toBe(false);
-      expect(existsSync(legacyPath)).toBe(false);
-    },
-  );
 });
 
 // ─────────────────────────────────────────────────────────
@@ -133,34 +79,12 @@ describe("purgeSession — slice 3: session events markdown", () => {
     const eventsPath = join(sessionsDir, `${canonicalHash}${suffix}-events.md`);
     writeFileSync(eventsPath, "# events\n");
 
-    const r = purgeSession({ projectDir, sessionsDir });
+    const r = purgeSession({ projectDir, sessionsDir, scope: "project" });
 
     expect(existsSync(eventsPath)).toBe(false);
     expect(r.deleted).toContain("session events markdown");
     expect(r.wipedPaths).toContain(eventsPath);
   });
-
-  it.skipIf(process.platform === "linux")(
-    "wipes events.md at BOTH canonical and legacy hashes",
-    () => {
-      const projectDir = makeRepo("s3b");
-      const sessionsDir = makeTmpDir("sess3b");
-      const suffix = getWorktreeSuffix(projectDir);
-      const canonicalHash = hashProjectDirCanonical(projectDir);
-      const legacyHash = hashProjectDirLegacy(projectDir);
-      if (canonicalHash === legacyHash) return;
-
-      const canonicalEvents = join(sessionsDir, `${canonicalHash}${suffix}-events.md`);
-      const legacyEvents = join(sessionsDir, `${legacyHash}${suffix}-events.md`);
-      writeFileSync(canonicalEvents, "C");
-      writeFileSync(legacyEvents, "L");
-
-      purgeSession({ projectDir, sessionsDir });
-
-      expect(existsSync(canonicalEvents)).toBe(false);
-      expect(existsSync(legacyEvents)).toBe(false);
-    },
-  );
 });
 
 // ─────────────────────────────────────────────────────────
@@ -176,33 +100,11 @@ describe("purgeSession — slice 4: cleanup flag", () => {
     const flag = join(sessionsDir, `${canonicalHash}${suffix}.cleanup`);
     writeFileSync(flag, "1");
 
-    const r = purgeSession({ projectDir, sessionsDir });
+    const r = purgeSession({ projectDir, sessionsDir, scope: "project" });
 
     expect(existsSync(flag)).toBe(false);
     expect(r.wipedPaths).toContain(flag);
   });
-
-  it.skipIf(process.platform === "linux")(
-    "wipes cleanup flag at BOTH canonical and legacy hashes",
-    () => {
-      const projectDir = makeRepo("s4b");
-      const sessionsDir = makeTmpDir("sess4b");
-      const suffix = getWorktreeSuffix(projectDir);
-      const canonicalHash = hashProjectDirCanonical(projectDir);
-      const legacyHash = hashProjectDirLegacy(projectDir);
-      if (canonicalHash === legacyHash) return;
-
-      const canonicalFlag = join(sessionsDir, `${canonicalHash}${suffix}.cleanup`);
-      const legacyFlag = join(sessionsDir, `${legacyHash}${suffix}.cleanup`);
-      writeFileSync(canonicalFlag, "1");
-      writeFileSync(legacyFlag, "1");
-
-      purgeSession({ projectDir, sessionsDir });
-
-      expect(existsSync(canonicalFlag)).toBe(false);
-      expect(existsSync(legacyFlag)).toBe(false);
-    },
-  );
 });
 
 // ─────────────────────────────────────────────────────────
@@ -217,7 +119,7 @@ describe("purgeSession — slice 5: knowledge base FTS5 store", () => {
     const storePath = join(contentDir, "abcdef0123456789.db");
     touchSqliteTriple(storePath);
 
-    const r = purgeSession({ projectDir, sessionsDir, storePath });
+    const r = purgeSession({ projectDir, sessionsDir, storePath, scope: "project" });
 
     expect(existsSync(storePath)).toBe(false);
     expect(existsSync(`${storePath}-wal`)).toBe(false);
@@ -230,37 +132,9 @@ describe("purgeSession — slice 5: knowledge base FTS5 store", () => {
     const projectDir = makeRepo("s5b");
     const sessionsDir = makeTmpDir("sess5b");
 
-    const r = purgeSession({ projectDir, sessionsDir });
+    const r = purgeSession({ projectDir, sessionsDir, scope: "project" });
 
     expect(r.deleted).not.toContain("knowledge base (FTS5)");
-  });
-});
-
-// ─────────────────────────────────────────────────────────
-// Slice 6 — legacy ~/.context-mode/content/<hash>.db store
-// ─────────────────────────────────────────────────────────
-
-describe("purgeSession — slice 6: legacy shared content store", () => {
-  it("wipes legacy content db + sidecars at legacyContentDir/<contentHash>.db", () => {
-    const projectDir = makeRepo("s6");
-    const sessionsDir = makeTmpDir("sess6");
-    const legacyContentDir = makeTmpDir("legacy6");
-    const contentHash = "deadbeefcafebabe";
-    const legacyDb = join(legacyContentDir, `${contentHash}.db`);
-    touchSqliteTriple(legacyDb);
-
-    purgeSession({ projectDir, sessionsDir, legacyContentDir, contentHash });
-
-    expect(existsSync(legacyDb)).toBe(false);
-    expect(existsSync(`${legacyDb}-wal`)).toBe(false);
-    expect(existsSync(`${legacyDb}-shm`)).toBe(false);
-  });
-
-  it("is a no-op when legacyContentDir not provided", () => {
-    const projectDir = makeRepo("s6b");
-    const sessionsDir = makeTmpDir("sess6b");
-    // no throw; result has no legacy path entries
-    expect(() => purgeSession({ projectDir, sessionsDir })).not.toThrow();
   });
 });
 
@@ -273,7 +147,7 @@ describe("purgeSession — slice 7: fresh install no-op", () => {
     const projectDir = makeRepo("s7");
     const sessionsDir = makeTmpDir("sess7");
 
-    const r = purgeSession({ projectDir, sessionsDir });
+    const r = purgeSession({ projectDir, sessionsDir, scope: "project" });
 
     expect(r.wipedPaths).toEqual([]);
     expect(r.deleted).toEqual([]);
@@ -283,8 +157,8 @@ describe("purgeSession — slice 7: fresh install no-op", () => {
     const projectDir = makeRepo("s7b");
     const sessionsDir = makeTmpDir("sess7b");
 
-    purgeSession({ projectDir, sessionsDir });
-    expect(() => purgeSession({ projectDir, sessionsDir })).not.toThrow();
+    purgeSession({ projectDir, sessionsDir, scope: "project" });
+    expect(() => purgeSession({ projectDir, sessionsDir, scope: "project" })).not.toThrow();
   });
 });
 
@@ -316,7 +190,7 @@ describe("purgeSession — slice 8: worktree separation", () => {
     writeFileSync(flag1, "1");
     writeFileSync(flag2, "2");
 
-    const r = purgeSession({ projectDir: wt1, sessionsDir });
+    const r = purgeSession({ projectDir: wt1, sessionsDir, scope: "project" });
 
     // wt1 — gone
     expect(existsSync(db1)).toBe(false);
@@ -336,67 +210,20 @@ describe("purgeSession — slice 8: worktree separation", () => {
 });
 
 // ─────────────────────────────────────────────────────────
-// Slice 9 — deleted labels match the legacy ctx_purge contract
+// Slice 9 — deleted labels match the ctx_purge contract
 // ─────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────
-// Slice 10 — FTS5 content store: dual-hash sweep via contentDir
+// Slice 10 — FTS5 store path is scoped to the requested project
 // ─────────────────────────────────────────────────────────
 
-describe("purgeSession — slice 10: FTS5 dual-hash sweep via contentDir", () => {
-  it.skipIf(process.platform === "linux")(
-    "wipes BOTH legacy raw-casing and canonical FTS5 store .db + sidecars",
-    () => {
-      const projectDir = makeRepo("s10");
-      const sessionsDir = makeTmpDir("sess10");
-      const contentDir = makeTmpDir("content10");
-      const canonicalHash = hashProjectDirCanonical(projectDir);
-      const legacyHash = hashProjectDirLegacy(projectDir);
-      // Cross-platform skip: if the test repo's path happens to be already
-      // lowercased (rare on macOS tmpdir but possible), the dual-sweep
-      // collapses to a single sweep — slice 5 already covers that.
-      if (canonicalHash === legacyHash) return;
-
-      const canonicalDb = join(contentDir, `${canonicalHash}.db`);
-      const legacyDb    = join(contentDir, `${legacyHash}.db`);
-      touchSqliteTriple(canonicalDb);
-      touchSqliteTriple(legacyDb);
-
-      const r = purgeSession({ projectDir, sessionsDir, contentDir });
-
-      for (const p of [canonicalDb, `${canonicalDb}-wal`, `${canonicalDb}-shm`,
-                       legacyDb, `${legacyDb}-wal`, `${legacyDb}-shm`]) {
-        expect(existsSync(p)).toBe(false);
-      }
-      expect(r.deleted).toContain("knowledge base (FTS5)");
-      // Label appears once even though both hashes were swept.
-      expect(r.deleted.filter((l) => l === "knowledge base (FTS5)")).toHaveLength(1);
-    },
-  );
-
-  it("contentDir triggers FTS5 sweep even when no FTS5 file exists (no-op safe)", () => {
+describe("purgeSession — slice 10: FTS5 project scope", () => {
+  it("is a no-op when the project store does not exist", () => {
     const projectDir = makeRepo("s10b");
     const sessionsDir = makeTmpDir("sess10b");
-    const contentDir = makeTmpDir("content10b");
-    const r = purgeSession({ projectDir, sessionsDir, contentDir });
+    const r = purgeSession({ projectDir, sessionsDir, scope: "project" });
     expect(r.deleted).not.toContain("knowledge base (FTS5)");
   });
-
-  it.skipIf(process.platform !== "linux")(
-    "Linux: legacyHash === canonicalHash so dual-sweep collapses to single pass",
-    () => {
-      const projectDir = makeRepo("s10c");
-      const sessionsDir = makeTmpDir("sess10c");
-      const contentDir = makeTmpDir("content10c");
-      expect(hashProjectDirCanonical(projectDir)).toBe(hashProjectDirLegacy(projectDir));
-      const dbPath = join(contentDir, `${hashProjectDirCanonical(projectDir)}.db`);
-      touchSqliteTriple(dbPath);
-      const r = purgeSession({ projectDir, sessionsDir, contentDir });
-      expect(existsSync(dbPath)).toBe(false);
-      expect(r.deleted).toContain("knowledge base (FTS5)");
-    },
-  );
-
   it("worktree separation: sibling project's FTS5 file at different hash is untouched", () => {
     const wt1 = makeRepo("s10wt1");
     const wt2 = makeRepo("s10wt2");
@@ -410,19 +237,19 @@ describe("purgeSession — slice 10: FTS5 dual-hash sweep via contentDir", () =>
     touchSqliteTriple(wt1Db);
     touchSqliteTriple(wt2Db);
 
-    purgeSession({ projectDir: wt1, sessionsDir, contentDir });
+    purgeSession({ projectDir: wt1, sessionsDir, storePath: wt1Db, scope: "project" });
 
     expect(existsSync(wt1Db)).toBe(false); // wiped
     expect(existsSync(wt2Db)).toBe(true);  // untouched
   });
 });
 
-describe("purgeSession — slice 9: backward-compatible labels", () => {
-  it("uses the exact legacy labels: 'knowledge base (FTS5)', 'session events DB', 'session events markdown'", () => {
+describe("purgeSession — slice 9: result labels", () => {
+  it("reports only the artifacts actually removed", () => {
     const projectDir = makeRepo("s9");
     const sessionsDir = makeTmpDir("sess9");
     const contentDir = makeTmpDir("content9");
-    const storePath = join(contentDir, "feedface00000000.db");
+    const storePath = join(contentDir, `${hashProjectDirCanonical(projectDir)}.db`);
     const suffix = getWorktreeSuffix(projectDir);
     const canonicalHash = hashProjectDirCanonical(projectDir);
 
@@ -430,7 +257,7 @@ describe("purgeSession — slice 9: backward-compatible labels", () => {
     touchSqliteTriple(join(sessionsDir, `${canonicalHash}${suffix}.db`));
     writeFileSync(join(sessionsDir, `${canonicalHash}${suffix}-events.md`), "x");
 
-    const r = purgeSession({ projectDir, sessionsDir, storePath });
+    const r = purgeSession({ projectDir, sessionsDir, storePath, scope: "project" });
 
     expect(r.deleted).toEqual(expect.arrayContaining([
       "knowledge base (FTS5)",
@@ -447,13 +274,11 @@ describe("purgeSession — slice 9: backward-compatible labels", () => {
 });
 
 // ─────────────────────────────────────────────────────────
-// Issue #520 — scoped purge slices
+// Explicitly scoped purge behavior
 // ─────────────────────────────────────────────────────────
 
-// Slice 1 — explicit scope discipline. Either provide sessionId, or
-// declare scope:"project". Bare scope:"session" with no sessionId is
-// a programmer bug and must throw immediately.
-describe("purgeSession — issue #520 slice 1: requires sessionId for scope:'session'", () => {
+// Session scope requires a session id.
+describe("purgeSession requires sessionId for scope:'session'", () => {
   it("throws TypeError when scope:'session' is passed without sessionId", () => {
     const projectDir = makeRepo("i520s1");
     const sessionsDir = makeTmpDir("sess-i520s1");

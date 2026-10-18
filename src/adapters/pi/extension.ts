@@ -468,7 +468,7 @@ export default function piExtension(pi: any): void {
     try {
       _sessionId = deriveSessionId(ctx ?? {});
       db.ensureSession(_sessionId, projectDir);
-      db.cleanupOldSessions(7);
+      db.cleanupOldSessions(30, _sessionId);
     } catch {
       // best effort — never break session start
       if (!_sessionId) {
@@ -659,7 +659,7 @@ export default function piExtension(pi: any): void {
         "context-mode active. Hierarchy: ctx_batch_execute > ctx_execute > ctx_execute_file > ctx_search. " +
         "Read/edit files → ctx_execute_file. Multi-command research → ctx_batch_execute. " +
         "Web pages → ctx_fetch_and_index then ctx_search. Index docs → ctx_index. " +
-        "Stats → ctx_stats. Doctor → ctx_doctor. Upgrade → ctx_upgrade. Purge → ctx_purge."
+        "Stats → ctx_stats. Doctor → ctx_doctor. Purge → ctx_purge."
       );
 
       // Pi-3 + Pi-4: Always build active_memory (not just post-compact),
@@ -858,7 +858,7 @@ export default function piExtension(pi: any): void {
   pi.on("session_shutdown", async () => {
     try {
       if (_db) {
-        _db.cleanupOldSessions(7);
+        _db.cleanupOldSessions(30, _sessionId);
       }
       _db = null;
       _dbPath = "";

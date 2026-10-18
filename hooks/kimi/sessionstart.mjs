@@ -92,14 +92,11 @@ try {
     const db = new SessionDB({ dbPath });
     try { unlinkSync(getSessionEventsPath(OPTS, projectDir)); } catch { /* no stale file */ }
 
-    db.cleanupOldSessions(7);
-    // Single source of truth lives in SessionDB. Reaching through `db.db.exec`
-    // duplicated schema knowledge in the hook and would silently drift if
-    // `session_events` ever renamed its FK column.
-    db.pruneOrphanedEvents();
-
     const sessionId = getSessionId(input, OPTS);
     db.ensureSession(sessionId, projectDir);
+    db.cleanupOldSessions(30, sessionId);
+    db.pruneOrphanedEvents(30, sessionId);
+
     captureKimiInstructionRules(db, sessionId, projectDir);
 
     db.close();

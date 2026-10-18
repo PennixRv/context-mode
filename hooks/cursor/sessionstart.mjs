@@ -79,11 +79,10 @@ try {
     const db = new SessionDB({ dbPath });
     try { unlinkSync(getSessionEventsPath(OPTS, projectDir)); } catch { /* no stale file */ }
 
-    db.cleanupOldSessions(7);
-    db.db.exec(`DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`);
-
     const sessionId = getSessionId(input, OPTS);
     db.ensureSession(sessionId, projectDir);
+    db.cleanupOldSessions(30, sessionId);
+    db.pruneOrphanedEvents(30, sessionId);
 
     db.close();
   }

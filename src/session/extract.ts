@@ -2782,6 +2782,18 @@ export function extractUserEvents(message: string): SessionEvent[] {
  * compute MCP integration counts and primary-model adoption per org.
  * mcp_servers list is truncated to first 8 names.
  */
+export function extractCodexEvents(input: HookInput): SessionEvent[] {
+  const name = input.tool_name ?? "";
+  if (/(?:^|__)ctx_[a-z_]+$/.test(name)) return [];
+  const args = JSON.stringify(input.tool_input ?? {});
+  const privateOperation = /windsurf-code-search|(?:pennix\s+(?:secrets?|credentials?)\b)|(?:\.ssh[/\\])|(?:auth\.json)|(?:secrets\.(?:toml|json))|(?:\.(?:env|npmrc|pypirc)\b)|(?:password|passwd|private[_-]?key|api[_-]?key|access[_-]?token|authorization)["']?\s*[=:]/i.test(args);
+  // Native orchestration and opaque MCP payloads can contain secrets or unverified candidates.
+  if (privateOperation || name.startsWith("mcp__") || ["functions.exec", "exec", "write_stdin", "request_user_input"].includes(name)) {
+    return [{ type: "tool_status", category: "tool", priority: 3, data: JSON.stringify({tool: name, failed: isToolError(input)}) }];
+  }
+  return extractEvents(input);
+}
+
 export function extractSessionSettings(input: unknown): SessionEvent[] {
   if (!input || typeof input !== "object") return [];
 

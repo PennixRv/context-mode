@@ -9,7 +9,7 @@
  */
 
 import type { Database as DatabaseInstance } from "better-sqlite3";
-import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError } from "./db-base.js";
+import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError, prepareDatabaseFile } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -173,93 +173,6 @@ const WHITESPACE_BREAK_RATIO = 0.5;
 // ContentStore
 // ─────────────────────────────────────────────────────────
 
-/**
- * Remove stale DB files from previous sessions whose processes no longer exist.
- */
-export function cleanupStaleDBs(): number {
-  const dir = tmpdir();
-  let cleaned = 0;
-  try {
-    const files = readdirSync(dir);
-    for (const file of files) {
-      const match = file.match(/^context-mode-(\d+)\.db$/);
-      if (!match) continue;
-      const pid = parseInt(match[1], 10);
-      if (pid === process.pid) continue;
-      try {
-        process.kill(pid, 0);
-      } catch {
-        const base = join(dir, file);
-        for (const suffix of ["", "-wal", "-shm"]) {
-          try { unlinkSync(base + suffix); } catch { /* ignore */ }
-        }
-        cleaned++;
-      }
-    }
-  } catch { /* ignore readdir errors */ }
-  return cleaned;
-}
-
-/**
- * Check if a PID is still alive (not a zombie holding a WAL lock).
- * Returns true if the process exists, false if it's dead.
- */
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Clean up stale per-project content store DBs older than maxAgeDays.
- * Scans the given directory for *.db files and checks mtime.
- * Also detects zombie processes holding WAL locks — if a WAL file exists
- * but the owning PID is dead, the DB files are cleaned up regardless of age.
- */
-export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): number {
-  let cleaned = 0;
-  try {
-    if (!existsSync(contentDir)) return 0;
-    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
-    const files = readdirSync(contentDir).filter(f => f.endsWith(".db"));
-    for (const file of files) {
-      try {
-        const filePath = join(contentDir, file);
-        const mtime = statSync(filePath).mtimeMs;
-        let shouldClean = mtime < cutoff;
-
-        // Detect zombie processes holding WAL locks:
-        // If a WAL file exists, try to read the WAL header to extract the PID.
-        // WAL files from dead processes can block new connections.
-        if (!shouldClean) {
-          const walPath = filePath + "-wal";
-          if (existsSync(walPath)) {
-            try {
-              const walStat = statSync(walPath);
-              // If WAL file is non-empty and DB hasn't been modified in >1 hour,
-              // the owning process may be dead — check via mtime staleness
-              if (walStat.size > 0 && (Date.now() - walStat.mtimeMs) > 3600_000) {
-                shouldClean = true;
-              }
-            } catch { /* ignore WAL check errors */ }
-          }
-        }
-
-        if (shouldClean) {
-          for (const suffix of ["", "-wal", "-shm"]) {
-            try { unlinkSync(filePath + suffix); } catch { /* ignore */ }
-          }
-          cleaned++;
-        }
-      } catch { /* ignore per-file errors */ }
-    }
-  } catch { /* ignore readdir errors */ }
-  return cleaned;
-}
-
 // ── Proximity helpers (pure functions) ──
 
 /** Find all positions of a term in text. */
@@ -399,9 +312,6 @@ export class ContentStore {
   #stmtSourceMeta!: PreparedStatement;
 
   // Cleanup path
-  #stmtCleanupChunks!: PreparedStatement;
-  #stmtCleanupChunksTrigram!: PreparedStatement;
-  #stmtCleanupSources!: PreparedStatement;
 
   // FTS5 optimization: track inserts and optimize periodically to defragment
   // the index. FTS5 b-trees fragment over many insert/delete cycles, degrading
@@ -421,6 +331,7 @@ export class ContentStore {
     const Database = loadDatabase();
     this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
+    prepareDatabaseFile(this.#dbPath);
     cleanOrphanedWALFiles(this.#dbPath);
     let db: DatabaseInstance;
     try {
@@ -572,13 +483,13 @@ export class ContentStore {
     // Dedup path: delete previous source with same label before re-indexing
     // Prevents stale outputs from accumulating in iterative workflows (build-fix-build)
     this.#stmtDeleteChunksByLabel = this.#db.prepare(
-      "DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE label = ?)",
+      "DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE label = ?) AND session_id = ?",
     );
     this.#stmtDeleteChunksTrigramByLabel = this.#db.prepare(
-      "DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE label = ?)",
+      "DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE label = ?) AND session_id = ?",
     );
     this.#stmtDeleteSourcesByLabel = this.#db.prepare(
-      "DELETE FROM sources WHERE label = ?",
+      "DELETE FROM sources WHERE label = ? AND id NOT IN (SELECT source_id FROM chunks)",
     );
 
     // Search path (hot)
@@ -809,16 +720,6 @@ export class ContentStore {
         (SELECT COUNT(*) FROM chunks WHERE content_type = 'code') AS codeChunks
     `);
 
-    // Cleanup path — cached to avoid recompiling SQL on each periodic call
-    this.#stmtCleanupChunks = this.#db.prepare(
-      "DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))",
-    );
-    this.#stmtCleanupChunksTrigram = this.#db.prepare(
-      "DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))",
-    );
-    this.#stmtCleanupSources = this.#db.prepare(
-      "DELETE FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days')",
-    );
   }
 
   // ── Deny Policy Hook ──
@@ -1047,8 +948,8 @@ export class ContentStore {
     // then insert new content — all within a single transaction.
     // Prevents stale results in iterative workflows. (See: GitHub issue #67)
     const transaction = this.#db.transaction(() => {
-      this.#stmtDeleteChunksByLabel.run(label);
-      this.#stmtDeleteChunksTrigramByLabel.run(label);
+      this.#stmtDeleteChunksByLabel.run(label, sessionIdCol);
+      this.#stmtDeleteChunksTrigramByLabel.run(label, sessionIdCol);
       this.#stmtDeleteSourcesByLabel.run(label);
 
       if (chunks.length === 0) {
@@ -1581,18 +1482,22 @@ export class ContentStore {
 
   // ── Cleanup ──
 
-  /**
-   * Delete sources (and their chunks) older than maxAgeDays.
-   * Returns count of deleted sources.
-   */
-  cleanupStaleSources(maxAgeDays: number): number {
-    const cleanup = this.#db.transaction((days: number) => {
-      this.#stmtCleanupChunks.run(days);
-      this.#stmtCleanupChunksTrigram.run(days);
-      return this.#stmtCleanupSources.run(days);
+  /** Delete old automatic session-event indexes, preserving user-indexed sources. */
+  cleanupStaleSessionSources(maxAgeDays: number, retainedSessionIds: string[] = []): number {
+    const retained = new Set(retainedSessionIds.map(id => `session-events:${id}`));
+    const cleanup = this.#db.transaction(() => {
+      const rows = this.#db.prepare("SELECT id, label FROM sources WHERE (label = 'session-events' OR label GLOB 'session-events:*') AND datetime(indexed_at) < datetime('now', '-' || ? || ' days')").all(maxAgeDays) as Array<{id: number; label: string}>;
+      let count = 0;
+      for (const row of rows) {
+        if (retained.has(row.label)) continue;
+        this.#db.prepare("DELETE FROM chunks WHERE source_id = ?").run(row.id);
+        this.#db.prepare("DELETE FROM chunks_trigram WHERE source_id = ?").run(row.id);
+        this.#db.prepare("DELETE FROM sources WHERE id = ?").run(row.id);
+        count++;
+      }
+      return count;
     });
-    const info = cleanup(maxAgeDays);
-    return info.changes;
+    return cleanup();
   }
 
   /** Get DB file size in bytes. */

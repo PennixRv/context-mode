@@ -45,9 +45,7 @@ Before writing, read these files and use ONLY verified numbers:
 
 | Data point | Source |
 |-----------|--------|
-| Total users | `stats.json` field `message` |
-| npm installs | `stats.json` field `npm` |
-| Marketplace installs | `stats.json` field `marketplace` |
+| Usage metrics | Query the relevant registry or repository for this fork; omit unavailable measurements |
 | Current version | `package.json` field `version` |
 | Platform count | `src/adapters/detect.ts` (count platforms in validPlatforms array) |
 | Adapter count | `tests/adapters/` (count test files) |

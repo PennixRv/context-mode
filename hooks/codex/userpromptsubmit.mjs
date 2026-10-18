@@ -22,20 +22,19 @@ try {
 
   const prompt = input.prompt ?? input.message ?? "";
   const trimmed = (prompt || "").trim();
+  const sessionId = getSessionId(input, OPTS);
 
   const isSystemMessage = trimmed.startsWith("<task-notification>")
     || trimmed.startsWith("<system-reminder>")
     || trimmed.startsWith("<context_guidance>")
     || trimmed.startsWith("<tool-result>");
 
-  if (trimmed.length > 0 && !isSystemMessage) {
+  if (trimmed.length > 0 && !isSystemMessage && sessionId) {
     const { SessionDB } = await loadSessionDB();
     const { extractUserEvents } = await loadExtract();
     const { resolveProjectAttributions } = await loadProjectAttribution();
     const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
-    const sessionId = getSessionId(input, OPTS);
-
     db.ensureSession(sessionId, projectDir);
 
     const promptEvent = {

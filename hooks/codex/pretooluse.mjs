@@ -25,7 +25,15 @@ const raw = await readStdin();
 const input = parseStdin(raw);
 const tool = input.tool_name ?? "";
 const toolInput = input.tool_input ?? {};
-const projectDir = getInputProjectDir(input, CODEX_OPTS);
+let projectDir;
+try { projectDir = getInputProjectDir(input, CODEX_OPTS); }
+catch (err) {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+    hookEventName: "PreToolUse", permissionDecision: "deny",
+    permissionDecisionReason: `Context Mode could not verify the native Codex context: ${err.message}`,
+  } }) + "\n");
+  process.exit(0);
+}
 
 const decision = routePreToolUse(tool, toolInput, projectDir, "codex", getSessionId(input, CODEX_OPTS));
 // #845: only modify/context depend on Codex's rewrite capability. Detection is

@@ -2192,131 +2192,6 @@ if (LIVE) {
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ctx_upgrade: inline fallback for missing CLI files
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
-  const serverSrc = readFileSync(
-    resolve(__dirname, "../../src/server.ts"),
-    "utf-8",
-  );
-  const packageJson = JSON.parse(
-    readFileSync(resolve(__dirname, "../../package.json"), "utf-8"),
-  );
-
-  test("tries cli.bundle.mjs first", () => {
-    expect(serverSrc).toContain("cli.bundle.mjs");
-    // The bundle path should be checked before fallback
-    expect(serverSrc).toMatch(/existsSync\(bundlePath\)/);
-  });
-
-  test("ctx_doctor and ctx_upgrade prefer the Codex plugin manager runtime root only for Codex", () => {
-    expect(serverSrc).toContain("parseCodexContextModePluginRoot");
-    expect(serverSrc).toContain("function resolveCodexRuntimePluginRoot");
-    expect(serverSrc).toContain("function getRuntimeAwarePackageRoot");
-
-    const helperBody = serverSrc.slice(
-      serverSrc.indexOf("function getRuntimeAwarePackageRoot"),
-      serverSrc.indexOf("// Prevent silent MCP server death"),
-    );
-    expect(helperBody).toContain('platformId === "codex"');
-    expect(helperBody).toContain("resolveCodexRuntimePluginRoot(packageRoot)");
-
-    const doctorBody = serverSrc.slice(
-      serverSrc.indexOf('server.registerTool(\n  "ctx_doctor"'),
-      serverSrc.indexOf('server.registerTool(\n  "ctx_upgrade"'),
-    );
-    const upgradeBody = serverSrc.slice(
-      serverSrc.indexOf('server.registerTool(\n  "ctx_upgrade"'),
-      serverSrc.indexOf("// ── ctx-purge"),
-    );
-
-    expect(doctorBody).toContain("getRuntimeAwarePackageRoot(currentPlatform)");
-    expect(upgradeBody).toContain("platformId = signal.platform");
-    expect(upgradeBody).toContain("getRuntimeAwarePackageRoot(platformId)");
-  });
-
-  test("tries build/cli.js second", () => {
-    expect(serverSrc).toContain('resolve(pluginRoot, "build", "cli.js")');
-  });
-
-  test("contains inline fallback with git clone when neither CLI file exists", () => {
-    // The fallback must generate an inline script with git clone via execFileSync
-    expect(serverSrc).toMatch(/git.*clone.*--depth.*1/);
-    // The inline script is written to a temp .mjs file
-    expect(serverSrc).toMatch(/\.ctx-upgrade-inline\.mjs/);
-  });
-
-  test("inline fallback copies package files to plugin root", () => {
-    // The inline script must copy the published package payload back, including
-    // newly added files such as the statusline bin directory.
-    expect(packageJson.files).toEqual(
-      expect.arrayContaining(["server.bundle.mjs", "cli.bundle.mjs", "bin"]),
-    );
-    expect(serverSrc).toContain('readFileSync(join(T,"package.json"),"utf8")');
-    expect(serverSrc).toContain("pkg.files");
-    expect(serverSrc).toContain("Array.isArray(pkg.files)");
-    // The inline cpSync passes `filter:noSymlink` to refuse copying symlinks
-    // back into the plugin tree. Anchor on this shape so future drift toward
-    // the unfiltered form is caught.
-    expect(serverSrc).toContain(
-      "cpSync(from,to,{recursive:true,force:true,filter:noSymlink})",
-    );
-    expect(serverSrc).toMatch(/npm.*install/);
-  });
-
-  test("fallback only triggers when neither CLI file exists", () => {
-    // There should be an else/fallback branch after checking both paths
-    expect(serverSrc).toMatch(/existsSync\(fallbackPath\)/);
-  });
-
-  // ── #469 follow-up: insight-cache cleanup must route through the shared
-  //    locale-independent helper, not the original inline `for /f`/`findstr`
-  //    block (which was the exact bug PR #469 fixed for ctx_insight). The
-  //    orphan call site at the top of the ctx_upgrade handler still carried
-  //    the broken pattern. Lock that down here.
-  describe("ctx_upgrade insight-cache cleanup uses killProcessOnPort (#469 follow-up)", () => {
-    // Scope assertions to the ctx_upgrade tool registration body so we don't
-    // accidentally match the shared killProcessOnPort helper definition or
-    // its tests below in the same file.
-    const upgradeMatch = serverSrc.match(
-      /server\.registerTool\(\s*"ctx_upgrade"[\s\S]*?^\);/m,
-    );
-    const upgradeBody = upgradeMatch ? upgradeMatch[0] : "";
-
-    test("ctx_upgrade tool block was located in source", () => {
-      expect(upgradeMatch).not.toBeNull();
-    });
-
-    test("ctx_upgrade does NOT contain the broken inline 'for /f' netstat parser", () => {
-      // The locale-broken Windows pattern PR #469 already removed from
-      // killProcessOnPort. Reintroducing it anywhere in ctx_upgrade is a
-      // regression on non-English Windows.
-      expect(upgradeBody).not.toMatch(/for\s+\/f\s+"tokens=5"/);
-      expect(upgradeBody).not.toMatch(/findstr\s+:4747/);
-    });
-
-    test("ctx_upgrade does NOT shell out to taskkill / lsof directly", () => {
-      // All port-cleanup must go through the shared helper. The handler
-      // itself must not hand-roll either Windows or POSIX kill commands.
-      expect(upgradeBody).not.toMatch(/taskkill/);
-      expect(upgradeBody).not.toMatch(/lsof\s+-ti:4747/);
-    });
-
-    test("ctx_upgrade routes insight-cache cleanup through killProcessOnPort(4747)", () => {
-      // Positive assertion: the handler must call the shared helper.
-      expect(upgradeBody).toMatch(/killProcessOnPort\(\s*4747\s*\)/);
-    });
-
-    test("ctx_upgrade preserves best-effort semantics (cleanup wrapped in try/catch)", () => {
-      // Cleanup failure must not block the upgrade — the try/catch at the
-      // top of the handler with the "best effort" comment must remain.
-      expect(upgradeBody).toMatch(/best effort/i);
-    });
-  });
-});
-
 // ─── ctx_purge is the ONLY reset mechanism ──────────────────────────────────
 
 describe("ctx_purge is the sole reset/wipe mechanism", () => {
@@ -2370,8 +2245,8 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     expect(purgeMatch).not.toBeNull();
     const purgeBody = purgeMatch![0];
     // 1. Closes the FTS5 knowledge base BEFORE wiping (releases Windows lock)
-    expect(purgeBody).toContain("_store.cleanup()");
-    expect(purgeBody).toContain("_store = null");
+    expect(purgeBody).toContain("stores.get(storePathForPurge)!.close()");
+    expect(purgeBody).toContain("stores.delete(storePathForPurge)");
     // 2. Delegates the on-disk wipe to the purgeSession deep module so all
     //    file-kind sweeps (session DB, events.md, cleanup flag, FTS5 store,
     //    legacy content) flow through ONE code path with uniform dual-hash.
@@ -2380,8 +2255,8 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     expect(purgeBody).toContain("sessionsDir: getSessionDir()");
     expect(purgeBody).toContain("storePath: storePathForPurge");
     // 3. Resets in-memory stats
-    expect(purgeBody).toContain("sessionStats.calls = {}");
-    expect(purgeBody).toContain("sessionStats.sessionStart = Date.now()");
+    expect(purgeBody).toContain("getSessionStats().calls = {}");
+    expect(purgeBody).toContain("getSessionStats().sessionStart = Date.now()");
     // 4. Confirms with list of deleted items
     expect(purgeBody).toContain("Purged:");
   });
@@ -2540,15 +2415,6 @@ describe("Project dir hash consistency", () => {
     expect(statsMatch).not.toBeNull();
     expect(statsMatch![0]).toContain("hashProjectDir");
     expect(statsMatch![0]).not.toContain("createHash");
-  });
-
-  test("ctx_purge uses hashProjectDir, not inline hashing", () => {
-    const purgeMatch = serverSrc.match(
-      /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
-    );
-    expect(purgeMatch).not.toBeNull();
-    expect(purgeMatch![0]).toContain("hashProjectDir");
-    expect(purgeMatch![0]).not.toContain("createHash");
   });
 
   // ── B3b Slice 3.1: ctx_stats must scope getLifetimeStats to the active
@@ -2716,16 +2582,16 @@ describe("ctx_purge scoped handler (issue #520)", () => {
   });
 
   // Slice 7 — schema accepts {confirm:true, sessionId:"<uuid>"}.
-  test("slice 7: schema declares optional sessionId and scope", () => {
+  test("slice 7: schema requires scope and declares optional sessionId", () => {
     expect(purgeBody).toMatch(/sessionId:\s*z\.string\(\)\.optional\(\)/);
-    expect(purgeBody).toMatch(/scope:\s*z\.enum\(\[["']session["'],\s*["']project["']\]\)\.optional\(\)/);
+    expect(purgeBody).toMatch(/scope:\s*z\.enum\(\[["']session["'],\s*["']project["']\]\)\.describe\(/);
   });
 
   // Slice 8 — bare {confirm:true} (no sessionId, no scope) emits a
   // deprecation warning to stderr exactly once. The warn lives in the
   // handler — not the deep module — to keep purge.ts pure.
-  test("slice 8: handler emits deprecation warning when scope+sessionId both omitted", () => {
-    expect(purgeBody).toMatch(/console\.warn\([^)]*deprecat/i);
+  test("slice 8: scope has no implicit default", () => {
+    expect(purgeBody).not.toMatch(/scope\s*\?\?\s*["']project/);
   });
 
   // Slice 9 (#563 regression — class-wide guard) — NO registered MCP tool
@@ -2890,48 +2756,6 @@ describe("ContentStore purge behavior", () => {
 
 // ─── Version outdated warning ────────────────────────────────────────────────
 
-describe("Version outdated warning in trackResponse", () => {
-  const serverSrc = readFileSync(
-    resolve(__dirname, "../../src/server.ts"),
-    "utf-8",
-  );
-
-  test("fetchLatestVersion function exists and uses npm registry", () => {
-    expect(serverSrc).toContain("function fetchLatestVersion");
-    expect(serverSrc).toContain("registry.npmjs.org/context-mode");
-  });
-
-  test("version check fires in main() after server.connect", () => {
-    const mainFn = serverSrc.slice(serverSrc.indexOf("async function main"));
-    expect(mainFn).toContain("fetchLatestVersion");
-  });
-
-  test("trackResponse prepends warning when outdated", () => {
-    const trackFn = serverSrc.slice(
-      serverSrc.indexOf("function trackResponse"),
-      serverSrc.indexOf("function trackIndexed"),
-    );
-    expect(trackFn).toContain("_latestVersion");
-    expect(trackFn).toContain("outdated");
-  });
-
-  test("warning uses burst cadence (3 calls then silent)", () => {
-    expect(serverSrc).toContain("VERSION_BURST_SIZE");
-    expect(serverSrc).toContain("VERSION_SILENT_MS");
-    expect(serverSrc).toContain("_warningBurstCount");
-  });
-
-  test("getUpgradeHint returns platform-specific command", () => {
-    expect(serverSrc).toContain("function getUpgradeHint");
-    // Claude Code gets slash command
-    expect(serverSrc).toMatch(/claude.code.*ctx.upgrade|ctx.upgrade.*claude.code/i);
-    // npm platforms get npm update
-    expect(serverSrc).toContain("npm update -g context-mode");
-    // OpenClaw gets its own command
-    expect(serverSrc).toContain("npm run install:openclaw");
-  });
-});
-
 // ═══════════════════════════════════════════════════════════════════════════
 // FS read instrumentation (mirrors network interceptor pattern)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2958,7 +2782,7 @@ describe("FS read instrumentation", () => {
 
   test("parses __CM_FS__ from stderr and adds to bytesSandboxed", () => {
     expect(serverSrc).toContain("__CM_FS__:(\\d+)");
-    expect(serverSrc).toContain("sessionStats.bytesSandboxed += parseInt(fsMatch[1])");
+    expect(serverSrc).toContain("getSessionStats().bytesSandboxed += parseInt(fsMatch[1])");
   });
 
   test("cleans __CM_FS__ marker from stderr output", () => {
@@ -2991,7 +2815,7 @@ describe("batch_execute FS read tracking", () => {
   test("parses __CM_FS__ from batch output and updates bytesSandboxed", () => {
     expect(serverSrc).toContain("/__CM_FS__:(\\d+)/g");
     // Handler wires the FS-bytes callback to sessionStats; the runner strips/parses.
-    expect(serverSrc).toContain("sessionStats.bytesSandboxed += bytes");
+    expect(serverSrc).toContain("getSessionStats().bytesSandboxed += bytes");
     expect(serverSrc).toContain("onFsBytes?.(cmdFsBytes)");
   });
 
@@ -4235,7 +4059,7 @@ describe("ctx_doctor hook script checks", () => {
   );
 
   test("resolves relative hook script paths against pluginRoot", () => {
-    const doctorSection = serverSrc.slice(serverSrc.indexOf("ctx_doctor"), serverSrc.indexOf("ctx_upgrade"));
+    const doctorSection = serverSrc.slice(serverSrc.indexOf("ctx_doctor"));
     expect(doctorSection).toContain("for (const scriptPath of hookScriptPaths)");
     expect(doctorSection).toContain("const hookPath = resolve(pluginRoot, scriptPath)");
     expect(doctorSection).not.toContain("for (const hookPath of hookScriptPaths)");
@@ -4959,91 +4783,7 @@ describe("startup banner suppressed in stdio transport mode", () => {
   });
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// v1.0.134 SLICE A — cross-adapter session attribution
-// CLAUDE_SESSION_ID env var is NOT propagated to MCP servers (only hooks).
-// `resolveSessionIdFromSessionDB` must read the most-recent session_id from
-// THIS project's session DB so chunk attribution works on every adapter
-// (cursor, codex, gemini, kiro, opencode, etc.) without relying on env.
-// ═══════════════════════════════════════════════════════════════════════════
-describe("v1.0.134 SLICE A — cross-adapter currentAttribution session DB fallback", () => {
-  test("currentAttribution falls back to session DB when CLAUDE_SESSION_ID env not set (cross-adapter)", async () => {
-    const { resolveSessionIdFromSessionDB, currentAttribution } = await import(
-      "../../src/server.js"
-    );
-    const { SessionDB, resolveSessionDbPath } = await import(
-      "../../src/session/db.js"
-    );
-
-    const sessionsDir = mkdtempSync(join(tmpdir(), "slice-a-sessions-"));
-    const projectDir = mkdtempSync(join(tmpdir(), "slice-a-proj-"));
-    try {
-      const dbPath = resolveSessionDbPath({ projectDir, sessionsDir });
-      const expectedSid = "11111111-2222-3333-4444-555566667777";
-
-      const sdb = new SessionDB({ dbPath });
-      try {
-        sdb.ensureSession(expectedSid, projectDir);
-        sdb.insertEvent(
-          expectedSid,
-          {
-            type: "tool_use",
-            category: "file",
-            priority: 1,
-            data: "src/x.ts",
-            project_dir: projectDir,
-            attribution_source: "test",
-            attribution_confidence: 1,
-          },
-          "test",
-        );
-      } finally {
-        sdb.close();
-      }
-
-      // Ensure env path is NOT taken — both env vars unset.
-      const prevSid = process.env.CLAUDE_SESSION_ID;
-      const prevProjDir = process.env.CLAUDE_PROJECT_DIR;
-      const prevCmProjDir = process.env.CONTEXT_MODE_PROJECT_DIR;
-      delete process.env.CLAUDE_SESSION_ID;
-      delete process.env.CLAUDE_PROJECT_DIR;
-      delete process.env.CONTEXT_MODE_PROJECT_DIR;
-      try {
-        // bypassCache: this test runs after others may have populated the cache.
-        const sid = resolveSessionIdFromSessionDB({
-          projectDir,
-          sessionsDir,
-          bypassCache: true,
-        });
-        expect(sid).toBe(expectedSid);
-
-        // currentAttribution wraps it the same way for prod callers — when the
-        // env var is unset it must surface the DB-resolved sid via the
-        // wrapper too. We re-set CONTEXT_MODE_PROJECT_DIR so the wrapper's
-        // own (cache-bypassed by 2s window starting fresh) call also resolves.
-        process.env.CONTEXT_MODE_PROJECT_DIR = projectDir;
-        // Wait long enough that the previous lookup's 2s cache won't shadow
-        // the wrapper's own resolveSessionIdFromSessionDB call (env-driven path).
-        // Easier: bypass via a direct call shape — the wrapper just composes.
-        const attr = currentAttribution();
-        // Either the env-resolved path returned the same sid, or — if cache
-        // beat us — at least it's not the empty/undefined case. The hard
-        // assertion is the DB lookup above; here we only confirm the
-        // wrapper's contract (returns { sessionId } when sid resolves).
-        expect(attr?.sessionId).toBeTruthy();
-      } finally {
-        if (prevSid !== undefined) process.env.CLAUDE_SESSION_ID = prevSid;
-        if (prevProjDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjDir;
-        if (prevCmProjDir !== undefined) process.env.CONTEXT_MODE_PROJECT_DIR = prevCmProjDir;
-        else delete process.env.CONTEXT_MODE_PROJECT_DIR;
-      }
-    } finally {
-      try { rmSync(sessionsDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      try { rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    }
-  });
-});
-
+// Native plugin hosts pass their session identity through the scoped override.
 test("withProjectDirOverride carries native plugin session id into currentAttribution (#574)", async () => {
   const { withProjectDirOverride, currentAttribution } = await import("../../src/server.js");
   const projectDir = mkdtempSync(join(tmpdir(), "native-plugin-attr-proj-"));
@@ -5333,14 +5073,10 @@ describe("tool description style contract (#683 ADR-0002)", () => {
   // - ctx_stats / ctx_doctor / ctx_insight: minimal one-line descriptions by
   //   design — diagnostic/GUI affordances, not routing targets. Audit row:
   //   "NIT — Clean, minimal, no change."
-  // - ctx_upgrade: MUST is appropriate here (post-call obligation on the
-  //   agent to run the returned shell command). Audit row: "LOW — MUST is
-  //   appropriate here (post-call obligation), good use case. No change."
   const EXEMPT_FROM_WHEN = new Set([
     "ctx_stats",
     "ctx_doctor",
     "ctx_insight",
-    "ctx_upgrade",
   ]);
 
   // ctx_purge carve-out — the rewrite (PR #683 WS2) preserves the
@@ -5353,9 +5089,9 @@ describe("tool description style contract (#683 ADR-0002)", () => {
   // meets the canonical contract enforced below.
   const EXEMPT_FROM_FORBIDDEN_TOKENS = new Set<string>([]);
 
-  test("at least 11 ctx_* tools are registered", () => {
+  test("all registered ctx_* tools are included", () => {
     // Sanity check that the extractor found the corpus.
-    expect(tools.length).toBeGreaterThanOrEqual(11);
+    expect(tools.length).toBeGreaterThanOrEqual(10);
   });
 
   // Forbidden tokens per ADR-0002. Each pattern is documented inline so
@@ -5930,12 +5666,11 @@ describe("tool description source form contract (#683 PR follow-up)", () => {
   const SHORT_DESCRIPTION_EXEMPT = new Set([
     "ctx_stats",
     "ctx_doctor",
-    "ctx_upgrade",
     "ctx_insight",
   ]);
 
-  test("at least 11 ctx_* tools surfaced for source-form contract", () => {
-    expect(blocks.length).toBeGreaterThanOrEqual(11);
+  test("all registered ctx_* tools are surfaced for source-form contract", () => {
+    expect(blocks.length).toBeGreaterThanOrEqual(10);
   });
 
   for (const block of blocks) {
@@ -6485,7 +6220,7 @@ describe("ctx_stats cache observability + index_state (issue #697)", () => {
     // formatReport MUST NOT emit the Observability block any longer — neither
     // on the narrative path nor on the legacy path, regardless of whether
     // indexState is passed.
-    const textLegacy = formatReport(report, "0.0.0-test", null, {
+    const textLegacy = formatReport(report, "0.0.0-test", {
       indexState: { totalChunks: 42, totalSources: 7, lastIndexedAt: "2026-05-24T12:00:00" },
     });
     expect(textLegacy).not.toContain("## Observability");
@@ -6506,7 +6241,7 @@ describe("ctx_stats cache observability + index_state (issue #697)", () => {
       firstEventMs: Date.now() - 86_400_000,
       lastEventMs: Date.now(),
     };
-    const textNarrative = formatReport(report, "0.0.0-test", null, {
+    const textNarrative = formatReport(report, "0.0.0-test", {
       conversation: conversation as any,
       indexState: { totalChunks: 42, totalSources: 7, lastIndexedAt: "2026-05-24T12:00:00" },
       cwd: "/test/repo",
@@ -6681,7 +6416,6 @@ describe("ctx_* MCP tool annotations (#846)", () => {
     ctx_batch_execute:   { readOnlyHint: false, destructiveHint: true,  idempotentHint: false, openWorldHint: true  },
     ctx_stats:           { readOnlyHint: true,  destructiveHint: false, idempotentHint: true,  openWorldHint: false },
     ctx_doctor:          { readOnlyHint: true,  destructiveHint: false, idempotentHint: true,  openWorldHint: false },
-    ctx_upgrade:         { readOnlyHint: false, destructiveHint: false, idempotentHint: true,  openWorldHint: false },
     ctx_purge:           { readOnlyHint: false, destructiveHint: true,  idempotentHint: true,  openWorldHint: false },
     ctx_insight:         { readOnlyHint: false, destructiveHint: false, idempotentHint: true,  openWorldHint: true  },
   };
@@ -6710,7 +6444,7 @@ describe("ctx_* MCP tool annotations (#846)", () => {
   test("never blanket-marks executing/mutating/destructive tools read-only", () => {
     for (const name of [
       "ctx_execute", "ctx_execute_file", "ctx_batch_execute", "ctx_index",
-      "ctx_fetch_and_index", "ctx_purge", "ctx_upgrade", "ctx_insight",
+      "ctx_fetch_and_index", "ctx_purge", "ctx_insight",
     ]) {
       expect(find(name)!.config.annotations!.readOnlyHint).toBe(false);
     }

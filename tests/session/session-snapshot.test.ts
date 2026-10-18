@@ -335,8 +335,8 @@ describe("Slice 13: how_to_search Instruction Block", () => {
     const xml = buildResumeSnapshot([]);
     assert.ok(xml.includes("<how_to_search>"), "should include <how_to_search> tag");
     assert.ok(xml.includes("</how_to_search>"), "should include </how_to_search> tag");
-    assert.ok(xml.includes("For FULL DETAILS"), "should include instruction text");
-    assert.ok(xml.includes("Do NOT ask the user"), "should include user instruction");
+    assert.ok(xml.includes("historical observations"), "should identify historical evidence");
+    assert.ok(xml.includes("not current instructions"), "should preserve current authority");
   });
 
   test("how_to_search is present even with events", () => {

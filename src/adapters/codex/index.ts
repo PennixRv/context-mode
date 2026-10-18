@@ -604,14 +604,14 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           : deprecatedOnly
             ? `[features].codex_hooks is deprecated; [features].hooks is missing in ${this.getSettingsPath()}`
             : `[features].hooks missing from ${this.getSettingsPath()}`,
-        ...(enabled ? {} : { fix: "context-mode upgrade" }),
+        ...(enabled ? {} : { fix: "Use pennix-component-lifecycle to repair this managed installation" }),
       });
     } catch {
       results.push({
         check: "Codex hooks feature flag",
         status: "warn",
         message: `Could not read ${this.getSettingsPath()}`,
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 
@@ -627,7 +627,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           ? `context-mode doctor is running from ${pluginHookStatus.configuredRoot}, but Codex plugin manager reports ${pluginHookStatus.runtimeRoot}`
           : `Codex plugin manager reports ${pluginHookStatus.runtimeRoot}`,
         ...(pluginHookStatus.rootMismatch
-          ? { fix: "Restart Codex after upgrade; run context-mode upgrade to keep native user-hook fallback until the plugin root converges" }
+          ? { fix: "Use lifecycle to remove duplicate plugin integration, then reload Codex" }
           : {}),
       });
     } else if (codexPluginEnabled) {
@@ -652,7 +652,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         check: "Standalone MCP duplicate",
         status: "warn",
         message: "[mcp_servers.context-mode] is still registered while context-mode@context-mode is enabled; Codex may start both plugin and standalone MCP surfaces",
-        fix: "context-mode upgrade (removes the standalone Codex MCP registration when the plugin owns context-mode)",
+        fix: "Use lifecycle to resolve the duplicate integration before reloading Codex",
       });
     }
 
@@ -671,7 +671,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           check: "Hooks config",
           status: "fail",
           message: `No readable ${this.getHooksPath()} found`,
-          fix: "Copy configs/codex/hooks.json to hooks.json or run context-mode upgrade",
+          fix: "Use lifecycle to merge the package's six hooks into the shared hooks.json",
         }]);
       }
       if (hookConfig.reason === "invalid_json") {
@@ -679,7 +679,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           check: "Hooks config",
           status: "fail",
           message: `${this.getHooksPath()} is not valid JSON: ${hookConfig.error}`,
-          fix: "Repair hooks.json so it contains valid JSON, then rerun context-mode upgrade if needed",
+          fix: "Repair invalid JSON before requesting lifecycle integration",
         }]);
       }
 
@@ -687,7 +687,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         check: "Hooks config",
         status: "fail",
         message: `Could not read ${this.getHooksPath()}: ${hookConfig.error}`,
-        fix: "Check permissions and file accessibility for hooks.json, then rerun context-mode upgrade if needed",
+        fix: "Check hooks.json accessibility before requesting lifecycle integration",
       }]);
     }
 
@@ -742,14 +742,14 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           check: `${hookName} duplicates`,
           status: "warn",
           message: `${managedCount} context-mode entries found for ${hookName} in ${this.getHooksPath()}; Codex will fire all of them`,
-          fix: "context-mode upgrade (collapses duplicate context-mode entries; preserves unrelated hooks)",
+          fix: "Resolve duplicate context-mode entries through lifecycle; preserve unrelated hooks",
         });
       } else if (codexPluginHooksAvailable && managedCount === 1) {
         duplicateChecks.push({
           check: `${hookName} plugin duplicate`,
           status: "warn",
           message: `${hookName} is configured in both ${this.getHooksPath()} and the context-mode Codex plugin; Codex will fire both hooks`,
-          fix: "context-mode upgrade (removes user config context-mode hooks; preserves unrelated hooks)",
+          fix: "Remove the duplicate integration through its owner; preserve unrelated hooks",
         });
       }
     }
@@ -770,7 +770,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           check: "MCP registration",
           status: "warn",
           message: "context-mode@context-mode plugin is enabled, but standalone [mcp_servers.context-mode] is also configured",
-          fix: "context-mode upgrade",
+          fix: "Use pennix-component-lifecycle to repair this managed installation",
         };
       }
 
@@ -1195,10 +1195,11 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   /**
    * Extract session ID from Codex CLI hook input.
-   * Priority: session_id field > fallback to ppid.
+   * Codex must provide its native session_id; process identity is not a
+   * session identity and cannot be used as a fallback.
    */
   private extractSessionId(input: CodexHookInput): string {
     if (input.session_id) return input.session_id;
-    return `pid-${process.ppid}`;
+    throw new Error("Codex hook input missing session_id");
   }
 }

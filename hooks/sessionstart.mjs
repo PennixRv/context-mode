@@ -303,41 +303,16 @@ await runHook(async () => {
       // Detect true fresh start vs --continue (which fires startup→resume).
       // If cleanup flag exists from a PREVIOUS startup that was never followed by
       // resume, that was a true fresh start — aggressively wipe all data.
-      db.cleanupOldSessions(7);
-      // Bug fix: the unconditional DELETE below USED to wipe ALL orphan
-      // events (any session_id missing from session_meta). On a power-outage
-      // restart this destroyed 1000+ events of real Claude Code work whose
-      // UUID session_ids hadn't yet had their session_meta row written
-      // (timing window between insertEvent and ensureSession). See
-      // tests/session/cleanup-preserves-live-uuid-events.test.ts.
-      //
-      // Now: protect anything that LOOKS like a real session UUID
-      // (4 dashes per RFC 4122 8-4-4-4-12), unless it's already older than
-      // the 7-day cleanup horizon. Detection-probe orphans like 'pid-12345'
-      // (no UUID shape) are still wiped aggressively — they're noise.
-      // Loose 4-dash shape `*-*-*-*-*`. Claude Code session_ids are UUIDs
-      // (5 dash-separated segments) and match. `pid-XXXXX` probes have one
-      // dash and don't match → wiped aggressively. We deliberately keep
-      // this loose so adapters that may eventually share this DB (or reuse
-      // this hook with hybrid `claude-code-...`-style IDs across 15
-      // platforms) aren't accidentally classified as orphans. The 7-day
-      // fallback still wipes truly abandoned UUIDs.
-      db.db.exec(`
-        DELETE FROM session_events
-         WHERE session_id NOT IN (SELECT session_id FROM session_meta)
-           AND (
-             session_id NOT GLOB '*-*-*-*-*'              -- pid-XXX probes etc.
-             OR created_at < datetime('now', '-7 day')    -- truly abandoned UUIDs
-           )
-      `);
+      const sessionId = getSessionId(input);
+      const projectDir = getInputProjectDir(input);
+      db.ensureSession(sessionId, projectDir);
+      db.cleanupOldSessions(30, sessionId);
+      db.pruneOrphanedEvents(30, sessionId);
 
       // Proactively capture CLAUDE.md files — Claude Code loads them as system
       // context at startup, invisible to PostToolUse hooks. We read them from
       // disk so they survive compact/resume via the session events pipeline.
-      const sessionId = getSessionId(input);
       // v1.0.160: cross-adapter projectDir resolution (was hardcoded CC env).
-      const projectDir = getInputProjectDir(input);
-      db.ensureSession(sessionId, projectDir);
       const claudeMdPaths = [
         join(resolveConfigDir(), "CLAUDE.md"),
         join(projectDir, "CLAUDE.md"),

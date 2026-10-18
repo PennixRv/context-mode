@@ -269,7 +269,7 @@ export default function ompPlugin(pi: MinimalHookAPI): void {
     try {
       _sessionId = deriveSessionId(ctx);
       db.ensureSession(_sessionId, projectDir);
-      db.cleanupOldSessions(7);
+      db.cleanupOldSessions(30, _sessionId);
     } catch {
       // best effort — never break session start
       if (!_sessionId) {

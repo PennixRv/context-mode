@@ -18,8 +18,8 @@
  * artifacts instead of pre-built bundles.
  */
 
-import { join, dirname } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, dirname, isAbsolute } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -45,7 +45,6 @@ const _sessionDb = await loadSessionDbModule();
 const {
   ensureWritableStorageDir,
   hashProjectDirCanonical,
-  hashProjectDirLegacy,
   normalizeWorktreePath,
   resolveDefaultSessionDir,
   resolveSessionStorageDir,
@@ -185,7 +184,8 @@ export const CODEX_OPTS = {
   configDir: ".codex",
   configDirEnv: "CODEX_HOME",
   projectDirEnv: undefined,   // Codex passes cwd in hook stdin, no env var
-  sessionIdEnv: undefined,    // Uses session_id from hook stdin or ppid fallback
+  sessionIdEnv: undefined,
+  requireSessionId: true,
 };
 
 /** Kiro CLI platform options. */
@@ -348,6 +348,13 @@ export function getProjectDir(opts = CLAUDE_OPTS) {
  * Falls back to the platform env var and finally process.cwd().
  */
 export function getInputProjectDir(input, opts = CLAUDE_OPTS) {
+  if (opts.requireSessionId) {
+    const context = _sessionDb.resolveCodexThreadContext(input?.session_id);
+    if (typeof input?.cwd !== "string" || !isAbsolute(input.cwd) || realpathSync(input.cwd) !== context.projectDir) {
+      throw new Error("Codex hook cwd does not match its native thread metadata.");
+    }
+    return context.projectDir;
+  }
   if (typeof input?.cwd === "string" && input.cwd.length > 0) {
     return input.cwd;
   }
@@ -362,6 +369,12 @@ export function getInputProjectDir(input, opts = CLAUDE_OPTS) {
  * Priority: transcript_path UUID > sessionId (camelCase) > session_id > env var > ppid fallback.
  */
 export function getSessionId(input, opts = CLAUDE_OPTS) {
+  if (opts.requireSessionId) {
+    if (typeof input?.session_id !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.session_id)) {
+      throw new Error("Codex hook is missing a valid native session_id.");
+    }
+    return input.session_id;
+  }
   if (input.transcript_path) {
     const match = input.transcript_path.match(/([a-f0-9-]{36})\.jsonl$/);
     if (match) return match[1];
@@ -372,6 +385,7 @@ export function getSessionId(input, opts = CLAUDE_OPTS) {
   if (opts.sessionIdEnv && process.env[opts.sessionIdEnv]) {
     return process.env[opts.sessionIdEnv];
   }
+  if (opts.requireSessionId) return undefined;
   return `pid-${process.ppid}`;
 }
 
@@ -414,7 +428,10 @@ export function getSessionDBPath(opts = CLAUDE_OPTS, projectDirOverride) {
  * Used by sessionstart hook (write) and MCP server (read + auto-index).
  * Path: ~/<configDir>/context-mode/sessions/<canonicalHash><suffix>-events.md
  */
-export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride) {
+export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride, sessionId) {
+  if (opts.requireSessionId) return _sessionDb.resolveSessionEventsPath({
+    projectDir: projectDirOverride, sessionsDir: resolveSessionDir(opts), sessionId,
+  });
   return _resolveProjectFile(opts, projectDirOverride, "-events.md");
 }
 

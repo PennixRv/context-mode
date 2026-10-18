@@ -138,7 +138,7 @@ export class VSCodeCopilotAdapter extends CopilotBaseAdapter {
         check: "Hooks directory",
         status: "fail",
         message: ".github/hooks/ directory not found",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
       return results;
     }
@@ -162,7 +162,7 @@ export class VSCodeCopilotAdapter extends CopilotBaseAdapter {
           check: "PreToolUse hook",
           status: "fail",
           message: "PreToolUse not found in context-mode.json",
-          fix: "context-mode upgrade",
+          fix: "Use pennix-component-lifecycle to repair this managed installation",
         });
       }
 
@@ -178,7 +178,7 @@ export class VSCodeCopilotAdapter extends CopilotBaseAdapter {
           check: "SessionStart hook",
           status: "fail",
           message: "SessionStart not found in context-mode.json",
-          fix: "context-mode upgrade",
+          fix: "Use pennix-component-lifecycle to repair this managed installation",
         });
       }
     } catch {
@@ -186,7 +186,7 @@ export class VSCodeCopilotAdapter extends CopilotBaseAdapter {
         check: "Hook configuration",
         status: "fail",
         message: "Could not read .github/hooks/context-mode.json",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 

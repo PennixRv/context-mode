@@ -13,6 +13,7 @@ import {
   getSessionDBPath,
   getInputProjectDir,
   resolveConfigDir,
+  getSessionEventsPath,
   CODEX_OPTS,
 } from "../session-helpers.mjs";
 import { createSessionLoaders } from "../session-loaders.mjs";
@@ -23,20 +24,22 @@ import { fileURLToPath } from "node:url";
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadSnapshot } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
-const DEBUG_LOG = join(resolveConfigDir(OPTS), "context-mode", "precompact-debug.log");
 
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
   const projectDir = getInputProjectDir(input, OPTS);
+  const sessionId = getSessionId(input, OPTS);
+  if (!sessionId) {
+    process.stdout.write("{}\n");
+    process.exit(0);
+  }
 
   const { buildResumeSnapshot } = await loadSnapshot();
   const { SessionDB } = await loadSessionDB();
 
   const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
-  const sessionId = getSessionId(input, OPTS);
-
   const events = db.getEvents(sessionId);
 
   if (events.length > 0) {
@@ -60,7 +63,7 @@ try {
   db.close();
 } catch (err) {
   try {
-    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${err?.message || err}\n`);
+    process.stderr.write(`Context Mode PreCompact skipped: ${err?.message || err}\n`);
   } catch {
     // Hook errors must not break Codex compaction.
   }

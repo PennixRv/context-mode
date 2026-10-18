@@ -335,7 +335,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
         check: "BeforeTool hook",
         status: "fail",
         message: "Could not read ~/.gemini/settings.json",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
       return results;
     }
@@ -356,14 +356,14 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
         message: hasHook
           ? "BeforeTool hook configured"
           : "BeforeTool exists but does not point to context-mode",
-        fix: hasHook ? undefined : "context-mode upgrade",
+        fix: hasHook ? undefined : "Use pennix-component-lifecycle to repair this managed installation",
       });
     } else {
       results.push({
         check: "BeforeTool hook",
         status: "fail",
         message: "No BeforeTool hooks found",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 
@@ -381,14 +381,14 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
         message: hasHook
           ? "SessionStart hook configured"
           : "SessionStart exists but does not point to context-mode",
-        fix: hasHook ? undefined : "context-mode upgrade",
+        fix: hasHook ? undefined : "Use pennix-component-lifecycle to repair this managed installation",
       });
     } else {
       results.push({
         check: "SessionStart hook",
         status: "fail",
         message: "No SessionStart hooks found",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 

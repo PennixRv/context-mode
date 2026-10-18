@@ -65,6 +65,7 @@ function hasModernSqlite() {
 }
 
 export async function ensureDeps() {
+  if (process.env.CONTEXT_MODE_PLATFORM === "codex") return;
   // Bun ships bun:sqlite and never needs better-sqlite3
   if (typeof globalThis.Bun !== "undefined") return;
   for (const pkg of NATIVE_DEPS) {
@@ -140,6 +141,7 @@ function replaceActiveNativeBinaryFromCache(abiCachePath, binaryPath) {
 }
 
 export function ensureNativeCompat(pluginRoot) {
+  if (process.env.CONTEXT_MODE_PLATFORM === "codex") return;
   // Pre-compute paths regardless of runtime — the Bun branch below uses
   // them to seed the ABI cache (#543) so the next /ctx-upgrade boot (under
   // Node) finds the success marker file. Bun spoofs

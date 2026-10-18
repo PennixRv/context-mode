@@ -82,11 +82,10 @@ try {
     const db = new SessionDB({ dbPath });
     try { unlinkSync(getSessionEventsPath(OPTS, projectDir)); } catch { /* no stale file */ }
 
-    db.cleanupOldSessions(7);
-    db.db.exec(`DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`);
-
     const sessionId = getSessionId(input, OPTS);
     db.ensureSession(sessionId, projectDir);
+    db.cleanupOldSessions(30, sessionId);
+    db.pruneOrphanedEvents(30, sessionId);
 
     // NOTE (#558): excised the old GEMINI.md auto-write block. It loaded an
     // adapter from build/ (gitignored, missing on marketplace installs) and

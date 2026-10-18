@@ -401,7 +401,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
         check: "Plugin configuration",
         status: "fail",
         message: `Could not read ${this.platform}.json or ${this.platform}.jsonc`,
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
       return results;
     }
@@ -417,14 +417,14 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
           : "context-mode not found in plugin array",
         fix: hasPlugin
           ? undefined
-          : "context-mode upgrade",
+          : "Use pennix-component-lifecycle to repair this managed installation",
       });
     } else {
       results.push({
         check: "Plugin registration",
         status: "fail",
         message: `No plugin array found in ${this.platform}.json or ${this.platform}.jsonc`,
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 
@@ -433,7 +433,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
         check: "Legacy MCP registration",
         status: "warn",
         message: "mcp.context-mode is redundant: ctx_* tools are now provided by the plugin",
-        fix: "context-mode upgrade (removes only mcp.context-mode; preserves other MCP servers)",
+        fix: "Ask the installation owner to remove the duplicate MCP entry; preserve other servers",
       });
     }
 
@@ -470,7 +470,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       check: "Plugin registration",
       status: "fail",
       message: `context-mode not found in ${this.platform}.json plugin array`,
-      fix: "context-mode upgrade",
+      fix: "Use pennix-component-lifecycle to repair this managed installation",
     };
   }
 

@@ -223,6 +223,6 @@ describe("getProjectDir() under Codex platform detection (issue #45)", () => {
     // server.ts captures `detectPlatform()` + env vars at call time
     // inside getProjectDir(), so a single static import + per-test env
     // setup is enough.
-    expect(getProjectDir()).toBe(expectedCwd);
+    expect(() => getProjectDir()).toThrow(/verified native request/);
   });
 });

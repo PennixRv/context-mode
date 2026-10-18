@@ -120,7 +120,7 @@ function multi(rows: AdapterScanResult[]): MultiAdapterLifetimeStats {
 
 describe("Slice 3.2 — formatReport renders 'Where it came from' sub-block", () => {
   test("emits 'Where it came from' header when multiAdapter has >= 2 real adapters", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code", { events: 17_413, data: 276_700_000, rescue: 14_400_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),
@@ -134,7 +134,7 @@ describe("Slice 3.2 — formatReport renders 'Where it came from' sub-block", ()
   });
 
   test("each rendered adapter row shows captures count and a byte total", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code", { events: 17_413, data: 276_700_000, rescue: 14_400_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),
@@ -148,7 +148,7 @@ describe("Slice 3.2 — formatReport renders 'Where it came from' sub-block", ()
   });
 
   test("when no real adapters exist, no 'Where it came from' header is emitted", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code", { events: 5, data: 100, projects: ["/p"], isReal: false }),
@@ -160,7 +160,7 @@ describe("Slice 3.2 — formatReport renders 'Where it came from' sub-block", ()
 
 describe("Slice 3.3 — Skipped adapters disclosure", () => {
   test("lists skipped adapter names with count and 'no real chat activity' rationale", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code", { events: 17_413, data: 276_700_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),
@@ -179,7 +179,7 @@ describe("Slice 3.3 — Skipped adapters disclosure", () => {
   });
 
   test("when no adapters are skipped, no 'Skipped' line appears", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code", { events: 17_413, data: 276_700_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),
@@ -192,7 +192,7 @@ describe("Slice 3.3 — Skipped adapters disclosure", () => {
 
 describe("Slice 3.4 — Headline updates", () => {
   test("opening tagline mentions 'across N AI tools' when multiAdapter has >= 2 real adapters", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code",       { events: 17_413, data: 276_700_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),
@@ -204,7 +204,7 @@ describe("Slice 3.4 — Headline updates", () => {
   });
 
   test("falls back to 'in Claude Code' framing when only one real adapter present", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code", { events: 17_413, data: 276_700_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),
@@ -218,7 +218,7 @@ describe("Slice 3.4 — Headline updates", () => {
 
 describe("Slice 3.6 — Cross-adapter scope ladder ('the receipt — getting wider')", () => {
   test("receipt section names 'All your work everywhere' when multiAdapter present", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       lifetime: lifetime(),
       multiAdapter: multi([
         adapter("claude-code",       { events: 17_413, data: 276_700_000, projects: new Array(12).fill(0).map((_, i) => `/p/${i}`), isReal: true }),

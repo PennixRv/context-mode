@@ -12,7 +12,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { ContentStore, cleanupStaleDBs } from "../src/store.js";
+import { ContentStore } from "../src/store.js";
 import {
   withRetry,
   closeDB,
@@ -1137,31 +1137,6 @@ describe("Smart Chunk Titles", () => {
 });
 
 describe("DB Cleanup", () => {
-  test("cleanupStaleDBs removes files for dead PIDs", () => {
-    const fakePid = 99999;
-    const fakePath = join(tmpdir(), `context-mode-${fakePid}.db`);
-    writeFileSync(fakePath, "fake");
-    writeFileSync(fakePath + "-wal", "fake");
-    writeFileSync(fakePath + "-shm", "fake");
-
-    const cleaned = cleanupStaleDBs();
-    assert.ok(cleaned >= 1, `Should clean at least 1 file, cleaned ${cleaned}`);
-    assert.ok(!existsSync(fakePath), "DB file should be removed");
-    assert.ok(!existsSync(fakePath + "-wal"), "WAL file should be removed");
-    assert.ok(!existsSync(fakePath + "-shm"), "SHM file should be removed");
-  });
-
-  test("cleanupStaleDBs does not remove current process DB", () => {
-    const myPath = join(tmpdir(), `context-mode-${process.pid}.db`);
-    writeFileSync(myPath, "current");
-
-    cleanupStaleDBs();
-    assert.ok(existsSync(myPath), "Current process DB should NOT be removed");
-
-    // Clean up manually
-    try { require("fs").unlinkSync(myPath); } catch {}
-  });
-
   test("store.cleanup() removes own DB and WAL/SHM files", () => {
     const store = createStore();
     // Index something to generate WAL activity
@@ -1451,24 +1426,35 @@ describe("Source metadata (TTL cache)", () => {
 // ── Persistent content store lifecycle ────────────────────────────────
 
 describe("Persistent content store lifecycle", () => {
-  test("cleanupStaleSources keeps recent sources and returns 0", () => {
+  test("cleanupStaleSessionSources keeps recent session indexes", () => {
     const store = createStore();
-    store.index({ content: "# Fresh doc\nContent", source: "fresh-source" });
-    const deleted = store.cleanupStaleSources(30);
+    store.index({ content: "# Fresh doc\nContent", source: "session-events" });
+    const deleted = store.cleanupStaleSessionSources(30);
     expect(typeof deleted).toBe("number");
     expect(deleted).toBe(0);
-    const meta = store.getSourceMeta("fresh-source");
+    const meta = store.getSourceMeta("session-events");
     expect(meta).not.toBeNull();
-    expect(meta!.label).toBe("fresh-source");
+    expect(meta!.label).toBe("session-events");
     store.close();
   });
 
-  test("cleanupStaleSources returns number type", () => {
-    const store = createStore();
-    store.index({ content: "# Test\nContent", source: "test-source" });
-    const deleted = store.cleanupStaleSources(365);
-    expect(typeof deleted).toBe("number");
+  test("expires old session indexes without deleting old user indexes", () => {
+    const dbPath = join(tmpdir(), `cleanup-session-index-${Date.now()}.db`);
+    const store = new ContentStore(dbPath);
+    store.index({ content: "# Session\nCaptured events", source: "session-events" });
+    store.index({ content: "# User\nIndexed notes", source: "user-notes" });
     store.close();
+
+    const Database = loadDatabase();
+    const db = new Database(dbPath);
+    db.prepare("UPDATE sources SET indexed_at = datetime('now', '-31 days')").run();
+    db.close();
+
+    const reopened = new ContentStore(dbPath);
+    expect(reopened.cleanupStaleSessionSources(30)).toBe(1);
+    expect(reopened.getSourceMeta("session-events")).toBeNull();
+    expect(reopened.getSourceMeta("user-notes")).not.toBeNull();
+    reopened.close();
   });
 
   test("getDBSizeBytes returns positive number after indexing", () => {

@@ -82,6 +82,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
 
     emitSandboxExecuteEvent({
       sessionDbPath: dbPath,
+      sessionId: sid,
       toolName: "ctx_execute",
       bytesReturned: 1234,
     });
@@ -104,6 +105,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
 
     emitIndexWriteEvent({
       sessionDbPath: dbPath,
+      sessionId: sid,
       source: "execute:javascript",
       bytesAvoided: 5678,
     });
@@ -125,6 +127,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
 
     emitCacheHitEvent({
       sessionDbPath: dbPath,
+      sessionId: sid,
       source: "https://example.com/docs",
       bytesAvoided: 9000,
     });

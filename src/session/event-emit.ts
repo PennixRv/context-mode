@@ -30,12 +30,13 @@ import { SessionDB } from "./db.js";
 function withLatestSession(
   dbPath: string,
   fn: (db: SessionDB, sessionId: string) => void,
+  sessionId?: string,
 ): void {
   try {
     if (!existsSync(dbPath)) return;
     const sdb = new SessionDB({ dbPath });
     try {
-      const sid = sdb.getLatestSessionId();
+      const sid = sessionId;
       if (!sid) return;
       fn(sdb, sid);
     } finally {
@@ -53,6 +54,7 @@ function withLatestSession(
  */
 export function emitSandboxExecuteEvent(opts: {
   sessionDbPath: string;
+  sessionId?: string;
   toolName: string;
   bytesReturned: number;
 }): void {
@@ -72,7 +74,7 @@ export function emitSandboxExecuteEvent(opts: {
       undefined,
       { bytesReturned: opts.bytesReturned },
     );
-  });
+  }, opts.sessionId);
 }
 
 /**
@@ -81,6 +83,7 @@ export function emitSandboxExecuteEvent(opts: {
  */
 export function emitIndexWriteEvent(opts: {
   sessionDbPath: string;
+  sessionId?: string;
   source: string;
   bytesAvoided: number;
 }): void {
@@ -100,7 +103,7 @@ export function emitIndexWriteEvent(opts: {
       undefined,
       { bytesAvoided: opts.bytesAvoided },
     );
-  });
+  }, opts.sessionId);
 }
 
 /**
@@ -109,6 +112,7 @@ export function emitIndexWriteEvent(opts: {
  */
 export function emitCacheHitEvent(opts: {
   sessionDbPath: string;
+  sessionId?: string;
   source: string;
   bytesAvoided: number;
 }): void {
@@ -128,5 +132,5 @@ export function emitCacheHitEvent(opts: {
       undefined,
       { bytesAvoided: opts.bytesAvoided },
     );
-  });
+  }, opts.sessionId);
 }

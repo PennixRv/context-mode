@@ -9,7 +9,7 @@
 import type DatabaseConstructor from "better-sqlite3";
 import type { Database as DatabaseInstance } from "better-sqlite3";
 import { createRequire } from "node:module";
-import { existsSync, unlinkSync, renameSync } from "node:fs";
+import { existsSync, unlinkSync, renameSync, openSync, closeSync, fchmodSync, constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // v1.0.130 — `acquireDbLock` + `locking_mode = EXCLUSIVE` were REMOVED.
@@ -524,6 +524,13 @@ const _liveDBs: Set<DatabaseInstance> = (() => {
   return g[_kLiveDBs]!;
 })();
 
+export function prepareDatabaseFile(dbPath: string): void {
+  if (dbPath === ":memory:") return;
+  const fd = openSync(dbPath, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  try { if (process.platform !== "win32") fchmodSync(fd, 0o600); }
+  finally { closeSync(fd); }
+}
+
 export abstract class SQLiteBase {
   readonly #dbPath: string;
   readonly #db: DatabaseInstance;
@@ -551,6 +558,7 @@ export abstract class SQLiteBase {
   constructor(dbPath: string) {
     const Database = loadDatabase();
     this.#dbPath = dbPath;
+    prepareDatabaseFile(dbPath);
     cleanOrphanedWALFiles(dbPath);
     let db: DatabaseInstance;
     try {

@@ -99,7 +99,7 @@ export class JetBrainsCopilotAdapter extends CopilotBaseAdapter {
           check: "PreToolUse hook",
           status: "fail",
           message: "PreToolUse not found in .github/hooks/context-mode.json",
-          fix: "context-mode upgrade",
+          fix: "Use pennix-component-lifecycle to repair this managed installation",
         });
       }
 
@@ -114,7 +114,7 @@ export class JetBrainsCopilotAdapter extends CopilotBaseAdapter {
           check: "SessionStart hook",
           status: "fail",
           message: "SessionStart not found in .github/hooks/context-mode.json",
-          fix: "context-mode upgrade",
+          fix: "Use pennix-component-lifecycle to repair this managed installation",
         });
       }
     } catch {
@@ -122,7 +122,7 @@ export class JetBrainsCopilotAdapter extends CopilotBaseAdapter {
         check: "Hook configuration",
         status: "fail",
         message: "Could not read .github/hooks/context-mode.json",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 

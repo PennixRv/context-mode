@@ -317,7 +317,7 @@ describe("OpenClawPlugin", () => {
         .not.toThrow();
       expect(mock.tools.length).toBeGreaterThan(0);
       expect(mock.commands.map((c) => c.name)).toEqual(
-        expect.arrayContaining(["ctx-stats", "ctx-doctor", "ctx-upgrade"]),
+        expect.arrayContaining(["ctx-stats", "ctx-doctor"]),
       );
       const lifecycleNames = mock.lifecycle.map((h) => h.event);
       expect(lifecycleNames).toContain("before_tool_call");
@@ -343,12 +343,6 @@ describe("OpenClawPlugin", () => {
       expect(doctorCmd!.description).toContain("diagnostics");
     });
 
-    it("registers ctx-upgrade command", async () => {
-      const mock = await createTestPlugin(join(tempDir, "cmd-upgrade"));
-      const upgradeCmd = mock.commands.find((c) => c.name === "ctx-upgrade");
-      expect(upgradeCmd).toBeDefined();
-      expect(upgradeCmd!.description).toContain("Upgrade");
-    });
 
     it("ctx-stats handler returns session stats text", async () => {
       const mock = await createTestPlugin(join(tempDir, "cmd-stats-run"));
@@ -366,14 +360,6 @@ describe("OpenClawPlugin", () => {
       expect(result.text).toContain("doctor");
     });
 
-    it("ctx-upgrade handler returns upgrade command", async () => {
-      const mock = await createTestPlugin(join(tempDir, "cmd-upgrade-run"));
-      const upgradeCmd = mock.commands.find((c) => c.name === "ctx-upgrade");
-      const result = await upgradeCmd!.handler({});
-      expect(result.text).toContain("ctx-upgrade");
-      expect(result.text).toContain("upgrade");
-      expect(result.text).toContain("Restart");
-    });
   });
 
   // ── before_tool_call ──────────────────────────────────
@@ -614,12 +600,11 @@ describe("OpenClawPlugin", () => {
       "ctx_batch_execute",
       "ctx_stats",
       "ctx_doctor",
-      "ctx_upgrade",
       "ctx_purge",
       "ctx_insight",
     ] as const;
 
-    it("registers all 11 ctx_* tools via api.registerTool", async () => {
+    it("registers all 10 ctx_* tools via api.registerTool", async () => {
       const mock = await createTestPlugin(join(tempDir, "register-tool"));
       const names = mock.tools.map((t) => t.name);
       for (const expected of EXPECTED_NAMES) {

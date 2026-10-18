@@ -75,14 +75,14 @@ describe("Opus pricing", () => {
 
 describe("formatReport — Bugs #5/#6/#7/#8", () => {
   test("includes Opus pricing line for the active session", () => {
-    const text = formatReport(baseReport(), "1.0.103", null, {
+    const text = formatReport(baseReport(), "1.0.103", {
       lifetime: emptyLifetime(),
     });
     expect(text).toMatch(/\$\d+\.\d{2}.*Opus/);
   });
 
   test("uses '× longer sessions' phrasing instead of bare ratio", () => {
-    const text = formatReport(baseReport(), "1.0.103", null, {
+    const text = formatReport(baseReport(), "1.0.103", {
       lifetime: emptyLifetime(),
     });
     // Tolerate either '×' or 'x' depending on glyph choice, but require the phrase.
@@ -92,7 +92,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
   });
 
   test("never emits the legacy hardcoded '9 more categories' string", () => {
-    const text = formatReport(baseReport(), "1.0.103", null, {
+    const text = formatReport(baseReport(), "1.0.103", {
       lifetime: emptyLifetime(),
     });
     // Slice 5 — Mert: 'honest, no tease'. The renderer no longer emits
@@ -108,7 +108,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
   });
 
   test("ends with a 'Bottom line' / business-value footer", () => {
-    const text = formatReport(baseReport(), "1.0.103", null, {
+    const text = formatReport(baseReport(), "1.0.103", {
       lifetime: { ...emptyLifetime(), totalEvents: 160, totalSessions: 40 },
     });
     // Footer must include the session $ and lifetime $ summary.
@@ -124,7 +124,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
     // renderer's section 5 surfaces the same data via "N preferences
     // picked up across K projects". Either path satisfies the spirit
     // of the test: the auto-memory data must be visible.
-    const text = formatReport(baseReport(), "1.0.103", null, {
+    const text = formatReport(baseReport(), "1.0.103", {
       lifetime: {
         totalEvents: 160,
         totalSessions: 40,
@@ -145,7 +145,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
 
   // ── Cycle 1: Auto-memory must include proportional bars (Mert: "no bars") ──
   test("auto-memory rows include proportional █ bars", () => {
-    const text = formatReport(baseReport(), "1.0.103", null, {
+    const text = formatReport(baseReport(), "1.0.103", {
       lifetime: {
         totalEvents: 160,
         totalSessions: 40,
@@ -186,7 +186,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
       ...baseReport(),
       projectMemory: { ...baseReport().projectMemory, by_category: cats },
     };
-    const text = formatReport(report, "1.0.111", null, {
+    const text = formatReport(report, "1.0.111", {
       lifetime: { ...emptyLifetime(), totalEvents: 1000, totalSessions: 10 },
     });
     // Must NOT emit any "+ N more categor[y/ies]" tease.
@@ -263,7 +263,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
       ],
     };
 
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       conversation: conv,
       lifetime,
       multiAdapter: ma,
@@ -350,7 +350,7 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
         by_category: [],
       },
     };
-    const text = formatReport(fresh, "1.0.103", null, {
+    const text = formatReport(fresh, "1.0.103", {
       lifetime: {
         totalEvents: 16_300,
         totalSessions: 489,

@@ -677,7 +677,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   // event is denied with a clear reason until the security module loads cleanly.
   // Universal gate (applies to all tools, not just Bash) since user `permissions.deny`
   // patterns may target Read/Write paths that would otherwise leak before security loads.
-  if (process.env.CONTEXT_MODE_REQUIRE_SECURITY === "1" && securityInitFailed) {
+  if ((platform === "codex" || process.env.CONTEXT_MODE_REQUIRE_SECURITY === "1") && securityInitFailed) {
     return {
       action: "deny",
       reason:
@@ -721,6 +721,8 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
         // "allow" or no match → fall through to Stage 2
       }
     }
+
+    if (platform === "codex") return null;
 
     // Stage 2: Context-mode routing (existing behavior)
 
@@ -846,6 +848,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   // event with the actual file size as bytes_avoided. Threshold = 50 000 bytes;
   // smaller reads stay on the existing one-shot guidance nudge.
   if (canonical === "Read") {
+    if (platform === "codex") return null;
     const filePath = getReadFilePath(toolInput);
     if (filePath) {
       try {
@@ -868,11 +871,13 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
   // ─── Grep: nudge toward execute (once per session) ───
   if (canonical === "Grep") {
+    if (platform === "codex") return null;
     return guidanceOnce("grep", grepGuidance, sessionId);
   }
 
   // ─── WebFetch: deny + redirect to sandbox ───
   if (canonical === "WebFetch") {
+    if (platform === "codex") return null;
     const url = getWebFetchUrl(toolInput);
     return mcpRedirect({
       action: "deny",
@@ -892,6 +897,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   // ─── Agent: inject context-mode routing into subagent prompts ───
   // Subagents cannot use ctx commands (stats/doctor/upgrade/purge) — omit that section (#233)
   if (canonical === "Agent") {
+    if (platform === "codex") return null;
     const subagentType = toolInput.subagent_type ?? "";
     // Detect the correct field name for the prompt/request/objective/question/query
     const fieldName = ["prompt", "request", "objective", "question", "query", "task"].find(f => f in toolInput) ?? "prompt";

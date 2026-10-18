@@ -291,7 +291,6 @@ function getOrCreateDB(projectDir: string): OpenClawSessionDB {
     }
     _dbSingleton = new OpenClawSessionDB({ dbPath });
     _dbSingletonPath = dbPath;
-    _dbSingleton.cleanupOldSessions(7);
   }
   return _dbSingleton;
 }
@@ -624,7 +623,7 @@ export default {
       async () => {
         try {
           log.debug("command:new", { sessionId: sessionId.slice(0, 8) });
-          db.cleanupOldSessions(7);
+          db.cleanupOldSessions(30, sessionId);
         } catch {
           // best effort
         }
@@ -643,7 +642,7 @@ export default {
       async () => {
         try {
           log.debug("command:reset", { sessionId: sessionId.slice(0, 8) });
-          db.cleanupOldSessions(7);
+          db.cleanupOldSessions(30, sessionId);
         } catch {
           // best effort
         }
@@ -661,7 +660,7 @@ export default {
           if (sessionKey) {
             workspaceRouter.removeSession(sessionKey);
           }
-          db.cleanupOldSessions(7);
+          db.cleanupOldSessions(30, sessionId);
         } catch {
           // best effort
         }
@@ -703,6 +702,7 @@ export default {
           }
 
           sessionId = sid as ReturnType<typeof randomUUID>;
+          db.cleanupOldSessions(30, sessionId);
           _latestSessionId = sessionId;
           sessionKey = key;
           if (key) {
@@ -978,29 +978,6 @@ export default {
         },
       });
 
-      registerAutoReplyCommand({
-        name: "ctx-upgrade",
-        description: "Upgrade context-mode to the latest version",
-        handler: () => {
-          const bundlePath = resolve(_latestPluginRoot, "cli.bundle.mjs");
-          const fallbackPath = resolve(_latestPluginRoot, "build", "cli.js");
-          const cliPath = existsSync(bundlePath) ? bundlePath : fallbackPath;
-          const cmd = `${buildNodeCommand(cliPath)} upgrade`;
-          return {
-            text: [
-              "## ctx-upgrade",
-              "",
-              "Run this command to upgrade context-mode:",
-              "",
-              "```",
-              cmd,
-              "```",
-              "",
-              "Restart your session after upgrade.",
-            ].join("\n"),
-          };
-        },
-      });
     }
   },
 };

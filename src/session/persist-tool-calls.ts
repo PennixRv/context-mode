@@ -50,12 +50,13 @@ export function persistToolCallCounter(
   sessionDbPath: string,
   toolName: string,
   bytes: number,
+  sessionId?: string,
 ): void {
   try {
     if (!existsSync(sessionDbPath)) return;
     const sdb = new SessionDB({ dbPath: sessionDbPath });
     try {
-      const sid = sdb.getLatestSessionId();
+      const sid = sessionId;
       if (!sid) return;
       sdb.incrementToolCall(sid, toolName, bytes);
     } finally {
@@ -77,12 +78,13 @@ export function persistToolCallCounter(
  */
 export function restoreSessionStats(
   sessionDbPath: string,
+  sessionId?: string,
 ): RestoredSessionStats | null {
   try {
     if (!existsSync(sessionDbPath)) return null;
     const sdb = new SessionDB({ dbPath: sessionDbPath });
     try {
-      const sid = sdb.getLatestSessionId();
+      const sid = sessionId;
       if (!sid) return null;
 
       const stats = sdb.getToolCallStats(sid);

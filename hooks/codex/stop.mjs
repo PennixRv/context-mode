@@ -14,46 +14,11 @@ import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectD
 import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
-
-/**
- * Locate the codex rollout JSONL for this session. Codex persists turns at
- * $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<session_id>.jsonl (default
- * $CODEX_HOME = ~/.codex). The hook stdin does NOT carry the path, so we walk
- * the sessions tree and match the filename suffix on the session id. Pure
- * directory walk + string suffix test — NO regex. Best-effort: returns null on
- * any failure so cost capture never blocks the turn.
- */
-function findCodexRollout(sessionId) {
-  try {
-    if (typeof sessionId !== "string" || sessionId.length === 0) return null;
-    const home = process.env.CODEX_HOME || join(homedir(), ".codex");
-    const root = join(home, "sessions");
-    if (!existsSync(root)) return null;
-    const suffix = `${sessionId}.jsonl`;
-    const stack = [root];
-    while (stack.length > 0) {
-      const dir = stack.pop();
-      let entries;
-      try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-      for (const e of entries) {
-        const full = join(dir, e.name);
-        if (e.isDirectory()) { stack.push(full); continue; }
-        if (e.isFile() && e.name.startsWith("rollout-") && e.name.endsWith(suffix)) {
-          return full;
-        }
-      }
-    }
-  } catch {
-    // ignore — best-effort
-  }
-  return null;
-}
 
 /**
  * Load the codex usage extractor (build/adapters/codex/usage.js), mirroring the
@@ -79,18 +44,19 @@ try {
   const raw = await readStdin();
   const input = parseStdin(raw);
   const projectDir = getInputProjectDir(input, OPTS);
+  const sessionId = getSessionId(input, OPTS);
+  if (!sessionId) {
+    process.stdout.write("{}\n");
+    process.exit(0);
+  }
 
-  const { SessionDB } = await loadSessionDB();
+  const { SessionDB, resolveCodexThreadContext } = await loadSessionDB();
   const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
-  const sessionId = getSessionId(input, OPTS);
-
   db.ensureSession(sessionId, projectDir);
   const payload = {
     stop_hook_active: input.stop_hook_active ?? false,
-    last_assistant_message: typeof input.last_assistant_message === "string"
-      ? input.last_assistant_message.slice(0, 2000)
-      : null,
+    has_assistant_message: typeof input.last_assistant_message === "string",
   };
   db.insertEvent(sessionId, {
     type: "turn_end",
@@ -107,7 +73,7 @@ try {
   // — a hook must never block the session, so any read/extract failure here is
   // swallowed without aborting the turn_end write above.
   try {
-    const rolloutPath = findCodexRollout(sessionId);
+    const rolloutPath = resolveCodexThreadContext(sessionId).transcriptPath;
     if (rolloutPath) {
       let rollout = null;
       try { rollout = readFileSync(rolloutPath, "utf-8"); } catch { /* unreadable — skip */ }
@@ -118,8 +84,7 @@ try {
           const cursor = db.getUsageCursor(sessionId);
           const { events, cursor: next } = usageMod.extractCodexUsageSince(rollout, cursor);
           if (events.length > 0) {
-            // attributeAndInsertEvents both INSERTS locally and FORWARDS to the
-            // platform (gated on ~/.context-mode/platform.json).
+            // Usage metadata stays local to this verified thread.
             attributeAndInsertEvents(db, sessionId, events, input, projectDir, "Stop", resolveProjectAttributions);
           }
           if (next) db.setUsageCursor(sessionId, next);

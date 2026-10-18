@@ -313,7 +313,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
         check: "Plugin configuration",
         status: "fail",
         message: "Could not read openclaw.json",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
       return results;
     }
@@ -332,7 +332,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
           : "context-mode not found in plugins.entries",
         fix: hasPlugin
           ? undefined
-          : "context-mode upgrade",
+          : "Use pennix-component-lifecycle to repair this managed installation",
       });
 
       // Check if enabled
@@ -352,7 +352,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
         check: "Plugin registration",
         status: "fail",
         message: "No plugins.entries found in openclaw.json",
-        fix: "context-mode upgrade",
+        fix: "Use pennix-component-lifecycle to repair this managed installation",
       });
     }
 
@@ -404,7 +404,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
       check: "Plugin registration",
       status: "fail",
       message: "context-mode not found in openclaw.json plugins.entries",
-      fix: "context-mode upgrade",
+      fix: "Use pennix-component-lifecycle to repair this managed installation",
     };
   }
 

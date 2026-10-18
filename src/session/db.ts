@@ -12,7 +12,7 @@ import type { SessionEvent } from "../types.js";
 import type { ProjectAttribution } from "./project-attribution.js";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, realpathSync, renameSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, realpathSync, readdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -170,6 +170,8 @@ function defaultStorageDir(
   };
 }
 
+export { resolveCodexThreadContext } from "../util/project-dir.js";
+
 export function resolveSessionStorageDir(getDefaultDir: () => string): ResolvedStorageDir {
   const root = storageOverrideRoot("session");
   if (root.kind === "override") {
@@ -242,7 +244,8 @@ export function ensureWritableStorageDir(dir: ResolvedStorageDir): string {
   if (cached === dir.path) return cached;
 
   try {
-    mkdirSync(dir.path, { recursive: true });
+    mkdirSync(dir.path, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") chmodSync(dir.path, 0o700);
     accessSync(dir.path, constants.W_OK);
     writableStorageCache.set(key, dir.path);
     return dir.path;
@@ -401,27 +404,13 @@ export function _resetWorktreeSuffixCacheForTests(): void {
 }
 
 // ─────────────────────────────────────────────────────────
-// SessionDB path resolution + case-fold migration
+// SessionDB path resolution
 // ─────────────────────────────────────────────────────────
-
-/**
- * Hash a project directory the way the deployed code (≤ v1.0.111) did:
- * normalize slashes only, preserve raw casing. Kept exported so the
- * migration helper can locate pre-fix DB files for one-shot rename.
- *
- * Do NOT call this for new code paths — use {@link hashProjectDirCanonical}.
- */
-export function hashProjectDirLegacy(projectDir: string): string {
-  return createHash("sha256")
-    .update(normalizeWorktreePath(projectDir))
-    .digest("hex")
-    .slice(0, 16);
-}
 
 /**
  * Hash a project directory case-stably. On case-insensitive filesystems
  * (macOS HFS+/APFS, Windows NTFS) the path is lowercased so that
- * `/Users/Mert/proj` and `/users/mert/proj` resolve to the same DB file.
+ * paths differing only by case resolve to the same DB file.
  * On Linux (case-sensitive) casing is preserved.
  *
  * Used as the base half of the SessionDB filename:
@@ -435,70 +424,15 @@ export function hashProjectDirCanonical(projectDir: string): string {
   return createHash("sha256").update(folded).digest("hex").slice(0, 16);
 }
 
-/**
- * Resolve the per-project FTS5 content store DB path, performing a one-shot
- * migration from a legacy raw-casing filename to the canonical one when only
- * the legacy file (with optional `-wal` / `-shm` SQLite sidecars) exists.
- *
- * Same dual-hash safety contract as {@link resolveSessionDbPath}:
- *   - Linux: canonical hash equals legacy hash → no migration attempted.
- *   - Mac/Win: rename legacy → canonical when canonical missing.
- *   - Both exist: leave legacy alone (data-loss safety). Caller picks
- *     canonical; reconciliation is a manual operation.
- *
- * Differs from `resolveSessionDbPath` in two ways:
- *   1. No worktree suffix — the FTS5 store is per-project, not per-worktree.
- *   2. The `-wal` / `-shm` sidecars travel with the main `.db` during
- *      migration so an active SQLite WAL checkpoint is not stranded behind.
- */
+/** Resolve the per-project FTS5 content store DB path. */
 export function resolveContentStorePath(opts: {
   projectDir: string;
   contentDir: string;
 }): string {
-  const { projectDir, contentDir } = opts;
-  const canonicalHash = hashProjectDirCanonical(projectDir);
-  const canonicalPath = join(contentDir, `${canonicalHash}.db`);
-  if (existsSync(canonicalPath)) return canonicalPath;
-
-  const legacyHash = hashProjectDirLegacy(projectDir);
-  if (legacyHash === canonicalHash) return canonicalPath; // Linux short-circuit
-
-  const legacyPath = join(contentDir, `${legacyHash}.db`);
-  if (existsSync(legacyPath)) {
-    try {
-      renameSync(legacyPath, canonicalPath);
-      // Travel the SQLite sidecars too so an active WAL is not orphaned.
-      for (const suffix of ["-wal", "-shm"]) {
-        try { renameSync(legacyPath + suffix, canonicalPath + suffix); } catch { /* sidecar may not exist */ }
-      }
-    } catch {
-      // Race or permission issue — caller will create canonicalPath fresh.
-    }
-  }
-  return canonicalPath;
+  return join(opts.contentDir, `${hashProjectDirCanonical(opts.projectDir)}.db`);
 }
 
-/**
- * Resolve the SessionDB file path for a project, performing a one-shot
- * migration from legacy raw-casing filenames to canonical ones when only
- * the legacy file exists.
- *
- * Migration rules:
- *   - Linux: `legacyHash === canonicalHash` so the resolver short-circuits;
- *     no migration ever runs (case-sensitive FS, never any drift).
- *   - macOS / Windows: if the canonical path does not exist but a legacy
- *     path does, rename in place. This preserves the user's session
- *     history across the casing-fix upgrade.
- *   - When BOTH paths exist (rare — usually only if the user previously
- *     ran two terminals with different casing) the legacy file is left
- *     UNTOUCHED. The canonical path wins; manual reconciliation needed.
- *     Avoiding the rename here is the data-loss safety guarantee.
- *
- * Worktree separation is preserved: each call only ever migrates the ONE
- * legacy file matching THIS projectDir's hash. Different worktrees have
- * different physical paths → different hashes → different DB files; the
- * migration cannot collapse worktrees.
- */
+/** Resolve the SessionDB file path for a project. */
 export function resolveSessionDbPath(opts: {
   projectDir: string;
   sessionsDir: string;
@@ -506,10 +440,12 @@ export function resolveSessionDbPath(opts: {
   return resolveSessionPath({ ...opts, ext: ".db" });
 }
 
-/**
- * Generalized resolver: same case-fold + one-shot legacy-rename semantics
- * as {@link resolveSessionDbPath}, parameterised on the file extension so
- * the SAME logic powers `.db`, `-events.md`, and `.cleanup` paths.
+export function resolveSessionEventsPath(opts: { projectDir: string; sessionsDir: string; sessionId: string }): string {
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(opts.sessionId)) throw new Error("Invalid native session id.");
+  return `${resolveSessionDbPath(opts).slice(0, -3)}-${opts.sessionId}-events.md`;
+}
+
+/** Resolve a session artifact path for a project, including its worktree suffix.
  *
  * Source of truth for hooks: `hooks/session-helpers.mjs` imports this
  * function from the bundled output (`hooks/session-db.bundle.mjs`) so the
@@ -529,24 +465,8 @@ export function resolveSessionPath(opts: {
 }): string {
   const { projectDir, sessionsDir, ext } = opts;
   const suffix = opts.suffix ?? getWorktreeSuffix(projectDir);
-  const canonicalHash = hashProjectDirCanonical(projectDir);
-  const canonicalPath = join(sessionsDir, `${canonicalHash}${suffix}${ext}`);
-
-  if (existsSync(canonicalPath)) return canonicalPath;
-
-  const legacyHash = hashProjectDirLegacy(projectDir);
-  if (legacyHash === canonicalHash) return canonicalPath; // Linux or already canonical
-
-  const legacyPath = join(sessionsDir, `${legacyHash}${suffix}${ext}`);
-  if (existsSync(legacyPath)) {
-    try {
-      renameSync(legacyPath, canonicalPath);
-    } catch {
-      // Race or permission issue — caller will create canonicalPath on first
-      // write. Better to lose this rename than to throw and break ctx_stats.
-    }
-  }
-  return canonicalPath;
+  const hash = hashProjectDirCanonical(projectDir);
+  return join(sessionsDir, `${hash}${suffix}${ext}`);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1094,7 +1014,12 @@ export class SessionDB extends SQLiteBase {
 
     // ── Cleanup ──
     p(S.getOldSessions,
-      `SELECT session_id FROM session_meta WHERE started_at < datetime('now', ? || ' days')`);
+      `SELECT session_id FROM session_meta
+       WHERE MAX(
+         COALESCE(last_event_at, started_at),
+         COALESCE((SELECT MAX(updated_at) FROM tool_calls WHERE tool_calls.session_id = session_meta.session_id), started_at)
+       ) < datetime('now', ? || ' days')
+         AND (? IS NULL OR session_id != ?)`);
 
     // ── Tool calls (persistent counter) ──
     p(S.incrementToolCall,
@@ -1578,6 +1503,13 @@ export class SessionDB extends SQLiteBase {
     this.stmt(S.markResumeConsumed).run(sessionId);
   }
 
+  /** Claim only this thread's snapshot, once, across concurrent hook processes. */
+  claimResume(sessionId: string): ResumeRow | null {
+    return this.db.prepare(
+      "UPDATE session_resume SET consumed = 1 WHERE session_id = ? AND consumed = 0 RETURNING snapshot, event_count, consumed",
+    ).get(sessionId) as ResumeRow | undefined ?? null;
+  }
+
   /**
    * Atomically claim the most recent unconsumed resume snapshot in this DB,
    * EXCLUDING any row that belongs to `currentSessionId`.
@@ -1687,40 +1619,56 @@ export class SessionDB extends SQLiteBase {
       this.stmt(S.deleteEvents).run(sessionId);
       this.stmt(S.deleteResume).run(sessionId);
       this.stmt(S.deleteMeta).run(sessionId);
+      this.db.prepare("DELETE FROM tool_calls WHERE session_id = ?").run(sessionId);
     })();
   }
 
   /**
-   * Remove sessions older than maxAgeDays. Returns the count of deleted sessions.
+   * Remove inactive sessions older than maxAgeDays, preserving the active session.
    */
-  cleanupOldSessions(maxAgeDays: number = 7): number {
+  cleanupOldSessions(maxAgeDays: number = 30, currentSessionId?: string): number {
     const negDays = `-${maxAgeDays}`;
-    const oldSessions = this.stmt(S.getOldSessions).all(negDays) as Array<{ session_id: string }>;
+    const oldSessions = this.stmt(S.getOldSessions).all(
+      negDays,
+      currentSessionId ?? null,
+      currentSessionId ?? null,
+    ) as Array<{ session_id: string }>;
 
     for (const { session_id } of oldSessions) {
       this.deleteSession(session_id);
+      if (/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(session_id)) {
+        const base = `${this.dbPath.slice(0, -3)}-${session_id}-events.md`;
+        const owned = readdirSync(dirname(this.dbPath)).filter(name =>
+          name === base.split(/[/\\]/).pop() || name.startsWith(`${base.split(/[/\\]/).pop()}.`));
+        for (const name of owned) {
+          try { unlinkSync(join(dirname(this.dbPath), name)); } catch { /* retained if unavailable */ }
+        }
+        try { unlinkSync(join(dirname(this.dbPath), `stats-${session_id}.json`)); } catch { /* no sidecar */ }
+      }
     }
 
     return oldSessions.length;
   }
 
-  /**
-   * Delete event rows whose session_id has no matching session_meta row.
-   *
-   * Orphaned events accumulate when meta rows were aged out by an older
-   * version of `cleanupOldSessions` but the matching events were left
-   * behind (or when callers wrote events without a meta upsert). The Kimi
-   * Code sessionstart hook calls this on every startup as a self-healing
-   * step; surfacing it as a SessionDB method keeps the SQL definition in
-   * one place instead of letting hook scripts reach through to
-   * `db.db.exec(...)` and re-encode schema knowledge in mjs files.
-   */
-  pruneOrphanedEvents(): number {
+  getRetainedSessionIds(maxAgeDays = 30, currentSessionId?: string): string[] {
+    const expired = new Set((this.stmt(S.getOldSessions).all(`-${maxAgeDays}`, currentSessionId ?? null, currentSessionId ?? null) as Array<{session_id: string}>).map(row => row.session_id));
+    const ids = (this.db.prepare("SELECT session_id FROM session_meta").all() as Array<{session_id: string}>).map(row => row.session_id).filter(id => !expired.has(id));
+    if (currentSessionId && !ids.includes(currentSessionId)) ids.push(currentSessionId);
+    return ids;
+  }
+
+  /** Remove orphaned events older than the retention window, preserving the active session. */
+  pruneOrphanedEvents(maxAgeDays: number = 30, currentSessionId?: string): number {
     const result = this.db
       .prepare(
-        `DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`,
+        `DELETE FROM session_events
+         WHERE created_at < datetime('now', ? || ' days')
+           AND (? IS NULL OR session_id != ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM session_meta WHERE session_meta.session_id = session_events.session_id
+           )`,
       )
-      .run();
+      .run(`-${maxAgeDays}`, currentSessionId ?? null, currentSessionId ?? null);
     return Number(result.changes ?? 0);
   }
 }

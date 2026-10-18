@@ -62,7 +62,6 @@ Descriptive source labels for `search(source: "label")`.
 |---------|--------|
 | `ctx stats` | Call `stats` MCP tool, display full output verbatim |
 | `ctx doctor` | Call `doctor` MCP tool, run returned shell command, display as checklist |
-| `ctx upgrade` | Call `upgrade` MCP tool, run returned shell command, display as checklist |
 | `ctx purge` | Call `purge` MCP tool with confirm: true. Warns before wiping knowledge base. |
 
 After /clear or /compact: knowledge base and session stats preserved. Use `ctx purge` to start fresh.

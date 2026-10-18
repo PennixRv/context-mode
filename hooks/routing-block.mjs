@@ -67,9 +67,6 @@ ${includeCommands ? `
     "ctx doctor" | "ctx-doctor" | "/ctx-doctor" | diagnose context-mode
     → Call doctor MCP tool, run returned shell command, display as checklist.
 
-    "ctx upgrade" | "ctx-upgrade" | "/ctx-upgrade" | update context-mode
-    → Call upgrade MCP tool, run returned shell command, display as checklist.
-
     "ctx purge" | "ctx-purge" | "/ctx-purge" | wipe/reset knowledge base
     → Call purge MCP tool with confirm: true. Warn: irreversible.
 

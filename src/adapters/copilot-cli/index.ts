@@ -322,7 +322,7 @@ export class CopilotCliAdapter extends CopilotBaseAdapter {
       : settingsPath;
     const fix = pluginRuntime
       ? "copilot plugin install mksglu/context-mode:configs/copilot-cli"
-      : "context-mode upgrade";
+      : "Use pennix-component-lifecycle to repair this managed installation";
 
     try {
       const config = readHookConfig(settingsPath);

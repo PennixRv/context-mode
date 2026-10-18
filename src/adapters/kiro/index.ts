@@ -254,7 +254,7 @@ export class KiroAdapter extends BaseAdapter implements HookAdapter {
           message: found
             ? `context-mode ${hookType} hook found`
             : `context-mode ${hookType} hook not configured`,
-          ...(found ? {} : { fix: `Run: context-mode upgrade` }),
+          ...(found ? {} : { fix: "Ask the installation owner to configure hooks" }),
         });
       }
 
@@ -277,7 +277,7 @@ export class KiroAdapter extends BaseAdapter implements HookAdapter {
         check: "Hook configuration",
         status: "warn",
         message: "Could not read ~/.kiro/agents/default.json",
-        fix: "Run: context-mode upgrade",
+        fix: "Ask the installation owner to configure hooks",
       });
     }
 

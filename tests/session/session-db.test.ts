@@ -729,6 +729,24 @@ describe("Cleanup Old Sessions", () => {
     const count = db.cleanupOldSessions();
     assert.equal(count, 0);
   });
+
+  test("uses last activity and preserves the current session", () => {
+    const db = createTestDB();
+    for (const sessionId of ["stale", "active-tool", "current"]) {
+      db.ensureSession(sessionId, "/project");
+      db.db.prepare(
+        "UPDATE session_meta SET started_at = datetime('now', '-40 days'), last_event_at = datetime('now', '-40 days') WHERE session_id = ?",
+      ).run(sessionId);
+    }
+    db.db.prepare(
+      "INSERT INTO tool_calls (session_id, tool, calls, bytes_returned, updated_at) VALUES ('active-tool', 'ctx_search', 1, 0, datetime('now'))",
+    ).run();
+
+    assert.equal(db.cleanupOldSessions(30, "current"), 1);
+    assert.equal(db.getSessionStats("stale"), null);
+    assert.notEqual(db.getSessionStats("active-tool"), null);
+    assert.notEqual(db.getSessionStats("current"), null);
+  });
 });
 
 // ════════════════════════════════════════════

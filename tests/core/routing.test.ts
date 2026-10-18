@@ -81,9 +81,7 @@ describe("Routing: Subagents (Agent only — Task removed per #241)", () => {
 
   it("Agent block omits the ToolSearch bootstrap on platforms without deferred tools (#724)", () => {
     const decision = routePreToolUse("Agent", { prompt: "test" }, "/test", "codex");
-    const prompt = decision.updatedInput.prompt;
-    expect(prompt).not.toContain("deferred_tool_bootstrap");
-    expect(prompt).not.toContain("ToolSearch");
+    expect(decision).toBeNull();
   });
 
   it("Task tool is NOT routed — returns null (passthrough) (#241)", () => {

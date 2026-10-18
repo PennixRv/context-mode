@@ -1,0 +1,46 @@
+name: Publish Pennix npm package
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check release identity
+        run: |
+          node --input-type=module -e 'import assert from "node:assert/strict"; import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json")); assert.equal(p.name,"@pennixrv/context-mode"); assert.match(p.version,/^\d+\.\d+\.\d+-pennix\.\d+$/); assert.equal(process.env.GITHUB_REF_NAME,`v${p.version}`);'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Install target Codex for isolated host verification
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/codex-host" @openai/codex@0.163.0
+          echo "CODEX_BIN=$RUNNER_TEMP/codex-host/bin/codex" >> "$GITHUB_ENV"
+      - name: Pack and verify the release artifact
+        run: |
+          mkdir -p "$RUNNER_TEMP/context-mode-package"
+          npm pack --pack-destination "$RUNNER_TEMP/context-mode-package" --json > "$RUNNER_TEMP/context-mode-pack.json"
+          artifact_path=$(node -p 'process.env.RUNNER_TEMP+"/context-mode-package/"+require(process.env.RUNNER_TEMP+"/context-mode-pack.json")[0].filename')
+          node scripts/verify-tarball.mjs "$artifact_path"
+          sha256sum "$artifact_path"
+          echo "CONTEXT_MODE_TARBALL=$artifact_path" >> "$GITHUB_ENV"
+      - name: Publish the verified tarball
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "$CONTEXT_MODE_TARBALL" --ignore-scripts --access public --tag beta --provenance

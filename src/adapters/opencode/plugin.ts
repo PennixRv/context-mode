@@ -304,9 +304,6 @@ async function createContextModePlugin(ctx: PluginContext) {
     dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }),
   });
 
-  // Clean up old sessions on startup (no SessionStart hook to do this).
-  db.cleanupOldSessions(7);
-
   // OC-4 (#487 follow-up): per-session capture gate. PR #487 trusted the host
   // to deliver AGENTS.md events, but OpenCode only fires `rule_content` events
   // when the user explicitly reads the file. snapshot.ts:172 + analytics.ts:152
@@ -520,6 +517,7 @@ async function createContextModePlugin(ctx: PluginContext) {
       if (!sessionId) return;
       try {
         db.ensureSession(sessionId, projectDir);
+        if (!agentsMdCaptured.has(sessionId)) db.cleanupOldSessions(30, sessionId);
         // OC-4 (#487 follow-up): AGENTS.md → rule_content capture for snapshot
         // and auto-memory parity. Idempotent per-session via Set guard.
         captureAgentsMd(sessionId);

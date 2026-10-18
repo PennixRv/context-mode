@@ -14,6 +14,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { SessionDB } from "../src/session/db.js";
+import { writeCodexRollout } from "./helpers/codex-rollout.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
@@ -112,7 +113,8 @@ describe("Issue #117 — Session hooks without build/session/", () => {
   });
 
   test("hooks/codex/posttooluse.mjs normalizes failed apply_patch into tool_output.isError", () => {
-    const sessionId = "codex-posttooluse-error";
+    const sessionId = "a66aa66a-6666-4666-8666-666666666666";
+    writeCodexRollout(join(fakeHomeDir, ".codex"), fakeProjectDir, sessionId);
     const result = runHook("codex/posttooluse.mjs", {
       session_id: sessionId,
       cwd: fakeProjectDir,

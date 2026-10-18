@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { loadDatabase } from "../../src/db-base.js";
+import { writeCodexRollout } from "../helpers/codex-rollout.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CODEX_USER_PROMPT_PATH = join(__dirname, "..", "..", "hooks", "codex", "userpromptsubmit.mjs");
@@ -68,7 +69,8 @@ describe("hooks/codex — /goal survives compact resume context", () => {
   });
 
   test("restores a Codex slash /goal directive after PreCompact", () => {
-    const sessionId = "codex-goal-compact-session";
+    const sessionId = "a11aa11a-1111-4111-8111-111111111111";
+    writeCodexRollout(codexHome, fakeProject, sessionId);
     const objective = "keep codex slash goal alive through compact";
     const baseInput = {
       session_id: sessionId,

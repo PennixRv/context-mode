@@ -189,7 +189,7 @@ export class PiAdapter extends BaseAdapter implements HookAdapter {
         check: "Pi extension registration",
         status: "fail",
         message: `context-mode not found at ${pkgPath}`,
-        fix: "Run: context-mode upgrade",
+        fix: "Ask the installation owner to configure hooks",
       };
     }
   }

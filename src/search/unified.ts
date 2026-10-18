@@ -40,6 +40,7 @@ export interface SearchAllSourcesOpts {
   configDir?: string;
   /** Detected platform adapter — used for adapter-aware auto-memory. */
   adapter?: AutoMemoryAdapter;
+  includeAutoMemory?: boolean;
   /**
    * Per-project scope for the ContentStore filter (#737). Only honoured
    * when a `sessionDB` is also supplied (the 2-step IN-clause needs the
@@ -151,7 +152,7 @@ export function searchAllSources(opts: SearchAllSourcesOpts): UnifiedSearchResul
 
     // Source 3: Auto-memory
     try {
-      const memResults = searchAutoMemory([query], limit, projectDir, configDir, adapter);
+      const memResults = opts.includeAutoMemory === false ? [] : searchAutoMemory([query], limit, projectDir, configDir, adapter);
       results.push(...memResults);
     } catch (e) {
       if (DEBUG) process.stderr.write(`[ctx] auto-memory search failed: ${e}\n`);

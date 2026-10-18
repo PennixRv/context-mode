@@ -458,40 +458,6 @@ describe("formatReport", () => {
   });
 
   describe("version handling", () => {
-    it("shows update warning when latestVersion differs", () => {
-      const report = makeReport({
-        savings: {
-          ...makeReport().savings,
-          total_calls: 10,
-          total_bytes_returned: 2000,
-          kept_out: 100000,
-        },
-      });
-      const output = formatReport(report, "1.0.65", "1.0.70");
-      expect(output).toContain("Update available");
-      expect(output).toContain("v1.0.65 -> v1.0.70");
-      expect(output).toContain("ctx_upgrade");
-    });
-
-    it("no update warning when version matches", () => {
-      const report = makeReport({
-        savings: {
-          ...makeReport().savings,
-          total_calls: 10,
-          total_bytes_returned: 2000,
-          kept_out: 100000,
-        },
-      });
-      const output = formatReport(report, "1.0.70", "1.0.70");
-      expect(output).not.toContain("Update available");
-    });
-
-    it("shows update warning on fresh session too", () => {
-      const report = makeReport();
-      const output = formatReport(report, "1.0.65", "1.0.70");
-      expect(output).toContain("Update available");
-    });
-
     it("shows version when provided", () => {
       const report = makeReport();
       const output = formatReport(report, "1.0.71");
@@ -735,7 +701,7 @@ describe("v1.0.148 Bug G — Section 1 bar uses strict-compression formula", () 
       totalSavedTokens: 0,
     };
 
-    const output = formatReport(report, "1.0.148", null, {
+    const output = formatReport(report, "1.0.148", {
       conversation: conversation as any,
       realBytes: { conversation: conversationRealBytes as any },
     });
@@ -757,7 +723,7 @@ describe("v1.0.148 Bug G — Section 1 bar uses strict-compression formula", () 
       totalSavedTokens: Math.floor((100_000 + 6_000) / 4),
     };
 
-    const output = formatReport(report, "1.0.148", null, {
+    const output = formatReport(report, "1.0.148", {
       conversation: conversation as any,
       realBytes: { conversation: conversationRealBytes as any },
     });
@@ -787,7 +753,7 @@ describe("v1.0.148 Bug G — Section 1 bar uses strict-compression formula", () 
       totalSavedTokens: Math.floor((50_000 + 10_000) / 4),
     };
 
-    const output = formatReport(report, "1.0.148", null, {
+    const output = formatReport(report, "1.0.148", {
       conversation: conversation as any,
       realBytes: { conversation: conversationRealBytes as any },
     });
@@ -818,7 +784,7 @@ describe("v1.0.148 Bug G — Section 1 bar uses strict-compression formula", () 
       totalSavedTokens: Math.floor((255_106 + 9_363_976 + 2_821) / 4),
     };
 
-    const output = formatReport(report, "1.0.169", null, {
+    const output = formatReport(report, "1.0.169", {
       conversation: conversation as any,
       realBytes: { conversation: conversationRealBytes as any },
     });
@@ -899,7 +865,7 @@ describe("PR-B: stats UX fixes", () => {
           total_processed: 250_000,
         },
       });
-      const output = formatReport(report, "1.0.108", null, {
+      const output = formatReport(report, "1.0.108", {
         lifetime: {
           totalEvents: 50_000,
           totalSessions: 12,
@@ -929,7 +895,7 @@ describe("PR-B: stats UX fixes", () => {
           total_processed: 6000,
         },
       });
-      const output = formatReport(report, "1.0.108", null, {
+      const output = formatReport(report, "1.0.108", {
         mcpUsage: [
           {
             tool_name: "mcp__context_mode__ctx_batch_execute",
@@ -957,7 +923,7 @@ describe("PR-B: stats UX fixes", () => {
           total_processed: 300,
         },
       });
-      const output = formatReport(report, "1.0.108", null, {
+      const output = formatReport(report, "1.0.108", {
         mcpUsage: [
           {
             tool_name: "mcp__context_mode__ctx_search",

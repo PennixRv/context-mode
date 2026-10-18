@@ -5,7 +5,8 @@
  * Each adaptor imports these instead of duplicating the logic.
  */
 
-import { writeFileSync } from "node:fs";
+import { writeFileSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 // ── Leg-boundary helpers (#780) ──
 // The current Claude Code session_id persists across `--continue` legs, so the
@@ -267,7 +268,9 @@ export function writeSessionEventsFile(events, eventsPath) {
     lines.push("");
   }
 
-  writeFileSync(eventsPath, lines.join("\n"), "utf-8");
+  const tmpPath = `${eventsPath}.${randomUUID()}.tmp`;
+  writeFileSync(tmpPath, lines.join("\n"), { encoding: "utf-8", mode: 0o600, flag: "wx" });
+  renameSync(tmpPath, eventsPath);
   return { grouped, lastPrompt, fileNames };
 }
 

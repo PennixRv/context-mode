@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter, parseCodexContextModePluginRoot, probeCodexCliVersion } from "../../src/adapters/codex/index.js";
 import { resolveSessionDbPath, SessionDB } from "../../src/session/db.js";
+import { writeCodexRollout } from "../helpers/codex-rollout.js";
 
 function writeCodexPluginManifest(pluginRoot: string): void {
   const pluginDir = join(pluginRoot, ".codex-plugin");
@@ -175,7 +176,7 @@ describe("CodexAdapter", () => {
       const savedCwd = process.env.CODEX_PROJECT_DIR;
       delete process.env.CODEX_PROJECT_DIR;
       try {
-        const post = adapter.parsePostToolUseInput({ tool_name: "Bash" });
+        const post = adapter.parsePostToolUseInput({ tool_name: "Bash", session_id: "s1" });
         expect(post.projectDir).toBe(process.cwd());
 
         const compact = adapter.parsePreCompactInput({ session_id: "s1" });
@@ -186,6 +187,12 @@ describe("CodexAdapter", () => {
       } finally {
         if (savedCwd !== undefined) process.env.CODEX_PROJECT_DIR = savedCwd;
       }
+    });
+
+    it("requires the native session_id", () => {
+      expect(() => adapter.parsePostToolUseInput({ tool_name: "Bash" })).toThrow(
+        "Codex hook input missing session_id",
+      );
     });
   });
 
@@ -820,7 +827,7 @@ args = ["-y", "context-mode"]
 
       const duplicate = results.find((result) => result.check === "Standalone MCP duplicate");
       expect(duplicate?.status).toBe("warn");
-      expect(duplicate?.fix).toMatch(/context-mode upgrade/);
+      expect(duplicate?.fix).toMatch(/lifecycle/);
     });
 
     it("warns instead of failing when only PreCompact is missing", () => {
@@ -878,7 +885,7 @@ args = ["-y", "context-mode"]
       const preToolDup = results.find((r) => r.check === "PreToolUse duplicates");
       expect(preToolDup?.status).toBe("warn");
       expect(preToolDup?.message).toMatch(/2 context-mode entries/);
-      expect(preToolDup?.fix).toMatch(/context-mode upgrade/);
+      expect(preToolDup?.fix).toMatch(/lifecycle/);
 
       const postToolDup = results.find((r) => r.check === "PostToolUse duplicates");
       expect(postToolDup?.status).toBe("warn");
@@ -987,9 +994,11 @@ describe("Codex stop hook script", () => {
     const hookScript = resolve(__dirname, "../../hooks/codex/stop.mjs");
     const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-stop-home-"));
     const projectDir = join(codexHome, "project");
-    const sessionId = "test-stop";
+    const sessionId = "a33aa33a-3333-4333-8333-333333333333";
     const savedCodexHome = process.env.CODEX_HOME;
     mkdirSync(projectDir, { recursive: true });
+
+    writeCodexRollout(codexHome, projectDir, sessionId);
 
     const input = JSON.stringify({
       session_id: sessionId,
@@ -1029,7 +1038,8 @@ describe("Codex stop hook script", () => {
 
         const payload = JSON.parse(rows.find((row) => row.type === "turn_end")?.data ?? "{}");
         expect(payload.stop_hook_active).toBe(false);
-        expect(payload.last_assistant_message).toBe("done");
+        expect(payload.has_assistant_message).toBe(true);
+        expect(payload).not.toHaveProperty("last_assistant_message");
       } finally {
         db.close();
       }
@@ -1046,11 +1056,13 @@ describe("Codex precompact hook script", () => {
     const hookScript = resolve(__dirname, "../../hooks/codex/precompact.mjs");
     const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
     const projectDir = join(codexHome, "project");
-    const sessionId = "test-precompact";
+    const sessionId = "a44aa44a-4444-4444-8444-444444444444";
     const savedCodexHome = process.env.CODEX_HOME;
 
     mkdirSync(projectDir, { recursive: true });
     process.env.CODEX_HOME = codexHome;
+
+    writeCodexRollout(codexHome, projectDir, sessionId);
 
     try {
       const dbPath = resolveSessionDbPath({
@@ -1107,12 +1119,14 @@ describe("Codex sessionstart hook script", () => {
     const hookScript = resolve(__dirname, "../../hooks/codex/sessionstart.mjs");
     const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
     const projectDir = join(codexHome, "project");
-    const sessionId = "test-sessionstart-compact";
+    const sessionId = "a55aa55a-5555-4555-8555-555555555555";
     const snapshot = "<session_resume><task_state>restore me</task_state></session_resume>";
     const savedCodexHome = process.env.CODEX_HOME;
 
     mkdirSync(projectDir, { recursive: true });
     process.env.CODEX_HOME = codexHome;
+
+    writeCodexRollout(codexHome, projectDir, sessionId);
 
     try {
       const dbPath = resolveSessionDbPath({
@@ -1191,17 +1205,6 @@ describe("Codex matcher parity + config integrity", () => {
     expect(entry?.hooks?.[0]?.command).toBe("context-mode hook codex precompact");
   });
 
-  it("README documents the same Codex PreToolUse matcher as the adapter", () => {
-    const constant = readMatcherConstant();
-    const readme = readFileSync(readmePath, "utf8");
-    const blockRe = /"PreToolUse":\s*\[\{\s*"matcher":\s*"([^"]+)"/g;
-    const documented: string[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = blockRe.exec(readme)) !== null) {
-      documented.push(m[1].replace(/\\\\/g, "\\"));
-    }
-    expect(documented).toContain(constant);
-  });
 });
 
 // #547: Codex CLI uses Rust's `regex` crate which does NOT support look-around

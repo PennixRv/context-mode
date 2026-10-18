@@ -814,7 +814,7 @@ describe("v1.0.148 Bug G — strict-compression formula (Section 1 Without/With)
       totalSavedTokens: Math.floor((2_898_000 + 140_000) / 4),
     };
 
-    const text = formatReport(strictReport(), "1.0.148", null, {
+    const text = formatReport(strictReport(), "1.0.148", {
       conversation: strictConversation(),
       realBytes: { conversation: realBytes },
       ...STRICT_OPTS,
@@ -865,7 +865,7 @@ describe("v1.0.148 Bug G — empty-state branch (no degenerate bar)", () => {
       totalSavedTokens:    0,
     };
 
-    const text = formatReport(strictReport(), "1.0.148", null, {
+    const text = formatReport(strictReport(), "1.0.148", {
       conversation: strictConversation(),
       realBytes: { conversation: realBytes },
       ...STRICT_OPTS,

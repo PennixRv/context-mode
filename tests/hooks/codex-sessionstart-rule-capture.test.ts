@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { loadDatabase } from "../../src/db-base.js";
+import { writeCodexRollout } from "../helpers/codex-rollout.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CODEX_SESSIONSTART_PATH = join(__dirname, "..", "..", "hooks", "codex", "sessionstart.mjs");
@@ -50,6 +51,8 @@ describe("hooks/codex/sessionstart.mjs — rule capture", () => {
   });
 
   test("captures project AGENTS.md as rule events on startup", () => {
+    const sessionId = "a22aa22a-2222-4222-8222-222222222222";
+    writeCodexRollout(codexHome, fakeProject, sessionId);
     writeFileSync(
       join(fakeProject, "AGENTS.md"),
       "# Project rules\n\nUse context-mode for analysis.\n",
@@ -58,7 +61,7 @@ describe("hooks/codex/sessionstart.mjs — rule capture", () => {
 
     const result = spawnSync("node", [CODEX_SESSIONSTART_PATH], {
       input: JSON.stringify({
-        session_id: "codex-rule-capture-session",
+        session_id: sessionId,
         source: "startup",
         cwd: fakeProject,
       }),

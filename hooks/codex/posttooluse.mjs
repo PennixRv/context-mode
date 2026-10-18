@@ -26,15 +26,20 @@ try {
   const raw = await readStdin();
   const input = parseStdin(raw);
   const projectDir = getInputProjectDir(input, OPTS);
+  const sessionId = getSessionId(input, OPTS);
+  if (!sessionId) {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "" },
+    }) + "\n");
+    process.exit(0);
+  }
 
-  const { extractEvents } = await loadExtract();
+  const { extractCodexEvents } = await loadExtract();
   const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
   const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
-  const sessionId = getSessionId(input, OPTS);
-
   db.ensureSession(sessionId, projectDir);
 
   const normalizedInput = {
@@ -51,7 +56,7 @@ try {
       : undefined,
   };
 
-  const events = extractEvents(normalizedInput);
+  const events = extractCodexEvents(normalizedInput);
 
   attributeAndInsertEvents(db, sessionId, events, input, projectDir, "PostToolUse", resolveProjectAttributions);
 

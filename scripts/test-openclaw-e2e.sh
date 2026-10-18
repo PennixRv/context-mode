@@ -127,7 +127,7 @@ contextEngineId === "context-mode"
   ? pass("registerContextEngine('context-mode') called")
   : fail("registerContextEngine('context-mode') called", `got: ${contextEngineId}`);
 
-["/ctx-stats", "/ctx-doctor", "/ctx-upgrade"].forEach(name => {
+["/ctx-stats", "/ctx-doctor"].forEach(name => {
   commands.has(name.slice(1))
     ? pass(`${name} command registered`)
     : fail(`${name} command registered`);

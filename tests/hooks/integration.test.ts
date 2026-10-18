@@ -695,14 +695,6 @@ describe("Skill Commands", () => {
     assert.ok(content.includes("/context-mode:ctx-doctor"), "Trigger must reference ctx-doctor");
   });
 
-  test("ctx-upgrade skill directory exists with valid SKILL.md", () => {
-    const skillMd = join(SKILLS_DIR, "ctx-upgrade", "SKILL.md");
-    assert.ok(existsSync(skillMd), "skills/ctx-upgrade/SKILL.md must exist");
-    const content = readFileSync(skillMd, "utf-8");
-    assert.ok(content.includes("name: ctx-upgrade"), "SKILL.md name must be ctx-upgrade");
-    assert.ok(content.includes("/context-mode:ctx-upgrade"), "Trigger must reference ctx-upgrade");
-  });
-
   test("ctx-stats skill directory exists with valid SKILL.md", () => {
     const skillMd = join(SKILLS_DIR, "ctx-stats", "SKILL.md");
     assert.ok(existsSync(skillMd), "skills/ctx-stats/SKILL.md must exist");

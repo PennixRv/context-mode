@@ -17,17 +17,6 @@ import { loadDatabase as loadDatabaseImpl } from "../db-base.js";
 import { ensureSessionEventsSchema } from "./db.js";
 import { resolveClaudeConfigDir } from "../util/claude-config.js";
 
-function semverNewer(a: string, b: string): boolean {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
-    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
-  }
-  return false;
-}
-
-
 // ─────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────
@@ -2071,9 +2060,8 @@ function renderNarrative5Section(args: {
   tz: string;
   now: number;
   version?: string;
-  latestVersion?: string | null;
 }): string[] {
-  const { conversation, lifetime, multiAdapter, realBytes, cwd, locale, tz, now, version, latestVersion } = args;
+  const { conversation, lifetime, multiAdapter, realBytes, cwd, locale, tz, now, version } = args;
   const out: string[] = [];
 
   // ── Token math (same monotonic-growth invariant as the legacy branch).
@@ -2305,9 +2293,6 @@ function renderNarrative5Section(args: {
   out.push("");
   const versionStr = version ? `v${version}` : "context-mode";
   out.push(`  ${versionStr}`);
-  if (version && latestVersion && latestVersion !== "unknown" && semverNewer(latestVersion, version)) {
-    out.push(`  Update available: v${version} -> v${latestVersion}  |  ctx_upgrade`);
-  }
 
   // Suppress consecutive blank lines / leading blanks for tidier output —
   // we use `push("")` liberally above as paragraph separators, easier to
@@ -2827,7 +2812,6 @@ function renderMultiAdapter(multiAdapter: MultiAdapterLifetimeStats | undefined)
 export function formatReport(
   report: FullReport,
   version?: string,
-  latestVersion?: string | null,
   opts?: {
     lifetime?: LifetimeStats;
     mcpUsage?: McpToolUsageRow[];
@@ -2941,7 +2925,7 @@ export function formatReport(
     const tz     = opts?.tz     ?? detected.tz;
     lines.push(...renderNarrative5Section({
       conversation, lifetime, multiAdapter, realBytes,
-      cwd, locale, tz, now, version, latestVersion,
+      cwd, locale, tz, now, version,
     }));
     return lines.join("\n");
   }
@@ -2979,9 +2963,6 @@ export function formatReport(
     lines.push("");
     const versionStr = version ? `v${version}` : "context-mode";
     lines.push(versionStr);
-    if (version && latestVersion && latestVersion !== "unknown" && semverNewer(latestVersion, version)) {
-      lines.push(`Update available: v${version} -> v${latestVersion}  |  ctx_upgrade`);
-    }
     return lines.join("\n");
   }
 
@@ -3077,9 +3058,6 @@ export function formatReport(
   lines.push("");
   const versionStr = version ? `v${version}` : "context-mode";
   lines.push(versionStr);
-  if (version && latestVersion && latestVersion !== "unknown" && latestVersion !== version) {
-    lines.push(`Update available: v${version} -> v${latestVersion}  |  ctx_upgrade`);
-  }
 
   return lines.join("\n");
 }

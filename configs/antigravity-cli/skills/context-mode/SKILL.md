@@ -32,7 +32,6 @@ If agy uses the generic MCP wrapper, call `call_mcp_tool` with:
   with `ctx_search`.
 - `context-mode/ctx_stats`: show context savings and current-session stats.
 - `context-mode/ctx_doctor`: diagnose context-mode runtime and hook health.
-- `context-mode/ctx_upgrade`: provide upgrade or repair guidance.
 - `context-mode/ctx_purge`: purge stored context-mode knowledge after
   confirmation.
 - `context-mode/ctx_insight`: launch or report the Insight analytics app.

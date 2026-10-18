@@ -99,7 +99,7 @@ const STABLE_OPTS = {
 
 describe("formatReport — Phase 8 realBytes opt", () => {
   test("8.4 backward compat: omitting realBytes still emits the legacy ~$69 math via Opus alone", () => {
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       conversation: baseConversation(),
       lifetime: baseLifetime(),
       ...STABLE_OPTS,
@@ -121,7 +121,7 @@ describe("formatReport — Phase 8 realBytes opt", () => {
       totalSavedTokens: Math.floor((80_000_000 + 120_000_000 + 8_000_000) / 4),
     };
 
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       conversation: baseConversation(),
       lifetime: baseLifetime(),
       realBytes: { lifetime: realBytes },
@@ -148,7 +148,7 @@ describe("formatReport — Phase 8 realBytes opt", () => {
       totalSavedTokens: Math.floor((4_000_000 + 6_000_000 + 1_552 * 1024) / 4),
     };
 
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       conversation: baseConversation(),
       lifetime: baseLifetime(),
       realBytes: { lifetime: lifetimeRealBytes, conversation: conversationRealBytes },
@@ -173,7 +173,7 @@ describe("formatReport — Phase 8 realBytes opt", () => {
       totalSavedTokens: 52_000_000,
     };
 
-    const text = formatReport(baseReport(), "1.0.111", null, {
+    const text = formatReport(baseReport(), "1.0.111", {
       conversation: baseConversation(),
       lifetime: baseLifetime(),
       realBytes: { lifetime: realBytes },

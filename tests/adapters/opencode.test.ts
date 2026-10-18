@@ -287,7 +287,7 @@ describe("OpenCodeAdapter", () => {
         expect(results).toContainEqual(expect.objectContaining({
           check: "Legacy MCP registration",
           status: "warn",
-          fix: expect.stringContaining("removes only mcp.context-mode"),
+          fix: expect.stringContaining("preserve other servers"),
         }));
       } finally {
         process.chdir(cwd);

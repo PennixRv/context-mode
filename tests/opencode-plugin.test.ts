@@ -99,7 +99,6 @@ describe("ContextModePlugin", () => {
         "ctx_purge",
         "ctx_search",
         "ctx_stats",
-        "ctx_upgrade",
       ]);
     });
 
@@ -249,6 +248,7 @@ describe("ContextModePlugin", () => {
       it("ctx_search coerces JSON-stringified queries array (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-search-coerce");
         const plugin = await createTestPlugin(projectDir);
+        await plugin.tool!.ctx_index.execute({content: "coercion fixture", source: "fixture"}, baseCtx(projectDir));
         // ctx_search also uses z.preprocess(coerceJsonArray, …) on queries.
         // Empty knowledge base is fine — we only assert the call returns
         // without a TypeError (the original symptom).
@@ -279,6 +279,7 @@ describe("ContextModePlugin", () => {
       it("ctx_search accepts stringified limit (#627 exact reporter case)", async () => {
         const projectDir = join(tempDir, "issue-627-limit-string");
         const plugin = await createTestPlugin(projectDir);
+        await plugin.tool!.ctx_index.execute({content: "coercion fixture", source: "fixture"}, baseCtx(projectDir));
         // Reporter's exact call shape: queries arrives as JSON string AND
         // limit arrives as a number-string. v1.0.140's plain z.number()
         // rejects "4" with "Expected number, received string".
@@ -301,6 +302,7 @@ describe("ContextModePlugin", () => {
       it("ctx_search lifts bare-string queries into single-element array (#627)", async () => {
         const projectDir = join(tempDir, "issue-627-bare-query");
         const plugin = await createTestPlugin(projectDir);
+        await plugin.tool!.ctx_index.execute({content: "coercion fixture", source: "fixture"}, baseCtx(projectDir));
         // Some LLM providers send a single query as a bare string rather
         // than a JSON-stringified array. Without widening, coerceJsonArray
         // returns the string unchanged → z.array(z.string()) rejects it.
@@ -351,6 +353,7 @@ describe("ContextModePlugin", () => {
         const result = await plugin.tool!.ctx_purge.execute(
           {
             confirm: "false" as unknown as boolean,
+            scope: "project",
           },
           baseCtx(projectDir),
         );

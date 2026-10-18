@@ -427,7 +427,7 @@ export class KimiAdapter extends BaseAdapter implements HookAdapter {
         check: "Hooks config",
         status: "fail",
         message: `No readable ${this.getSettingsPath()} found`,
-        fix: "Run context-mode upgrade to generate the initial config.toml",
+        fix: "Ask the installation owner to create the initial hook configuration",
       });
       return results;
     }
@@ -465,7 +465,7 @@ export class KimiAdapter extends BaseAdapter implements HookAdapter {
           check: `${hookName} duplicates`,
           status: "warn",
           message: `${managedCount} context-mode entries found for ${hookName} in ${this.getSettingsPath()}; Kimi will fire all of them`,
-          fix: "context-mode upgrade (collapses duplicate context-mode entries; preserves unrelated hooks)",
+          fix: "Ask the installation owner to resolve duplicate hooks; preserve unrelated entries",
         });
       }
     }

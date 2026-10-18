@@ -96,7 +96,7 @@ describe("routePreToolUse", () => {
       expect(cmd).toMatch(/retry/i);
     });
 
-    it("denies Codex exec_command cmd payloads like Bash command payloads", () => {
+    it("keeps Codex commands intact after the security gate", () => {
       const result = routePreToolUse(
         "exec_command",
         { cmd: "curl https://example.com" },
@@ -104,11 +104,7 @@ describe("routePreToolUse", () => {
         "codex",
         "codex-cmd-curl",
       );
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("modify");
-      expect((result!.updatedInput as Record<string, string>).command).toContain(
-        "curl/wget redirected",
-      );
+      expect(result).toBeNull();
     });
 
     it("denies agy run_command CommandLine payloads like Bash command payloads", () => {

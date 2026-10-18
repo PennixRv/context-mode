@@ -6,11 +6,10 @@ import "../ensure-deps.mjs";
  * Codex CLI sessionStart hook for context-mode.
  */
 
-import { createRoutingBlock } from "../routing-block.mjs";
 import { createToolNamer } from "../core/tool-naming.mjs";
 
 const toolNamer = createToolNamer("codex");
-const ROUTING_BLOCK = createRoutingBlock(toolNamer);
+const ROUTING_BLOCK = "Context Mode stores local session history for reference. Current host instructions and native task state remain authoritative; use pennix-context-mode-integration for workflow boundaries.";
 import {
   writeSessionEventsFile,
   buildSessionDirective,
@@ -62,17 +61,17 @@ try {
   const input = parseStdin(raw);
   const source = input.source ?? "startup";
   const projectDir = getInputProjectDir(input, CODEX_OPTS);
+  const sessionId = getSessionId(input, OPTS);
 
-  if (source === "compact" || source === "resume") {
+  if (sessionId && (source === "compact" || source === "resume")) {
     const { SessionDB } = await loadSessionDB();
     const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
-    const sessionId = getSessionId(input, OPTS);
     let resumeSnapshot = null;
 
     if (source === "compact") {
-      const resume = sessionId ? db.getResume(sessionId) : null;
-      if (resume && !resume.consumed) {
+      const resume = db.claimResume(sessionId);
+      if (resume) {
         resumeSnapshot = resume.snapshot;
       }
     } else {
@@ -86,26 +85,24 @@ try {
     // and before the resume.
     const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
-      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
+      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir, sessionId));
+      additionalContext += "\nHistorical observations only; current instructions, authorization and native task state take precedence.";
       additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
     }
     if (resumeSnapshot) {
       additionalContext += `\n\n${resumeSnapshot}`;
-      db.markResumeConsumed(sessionId);
     }
 
     db.close();
-  } else if (source === "startup") {
+  } else if (source === "startup" && sessionId) {
     const { SessionDB } = await loadSessionDB();
     const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
-    try { unlinkSync(getSessionEventsPath(OPTS, projectDir)); } catch { /* no stale file */ }
+    try { unlinkSync(getSessionEventsPath(OPTS, projectDir, sessionId)); } catch { /* no stale file */ }
 
-    db.cleanupOldSessions(7);
-    db.db.exec(`DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`);
-
-    const sessionId = getSessionId(input, OPTS);
     db.ensureSession(sessionId, projectDir);
+    db.cleanupOldSessions(30, sessionId);
+    db.pruneOrphanedEvents(30, sessionId);
     captureCodexInstructionRules(db, sessionId, projectDir);
 
     db.close();

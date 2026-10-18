@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _resetWorktreeSuffixCacheForTests,
   hashProjectDirCanonical,
-  hashProjectDirLegacy,
   resolveSessionDbPath,
 } from "../../src/session/db.js";
 
@@ -59,11 +58,6 @@ describe("hashProjectDirCanonical", () => {
     },
   );
 
-  it("legacy hash (raw casing) differs from canonical on Mac/Win for mixed-case input", () => {
-    if (process.platform === "linux") return;
-    const mixed = "/Users/Mert/proj";
-    expect(hashProjectDirLegacy(mixed)).not.toBe(hashProjectDirCanonical(mixed));
-  });
 });
 
 describe("resolveSessionDbPath", () => {
@@ -75,53 +69,6 @@ describe("resolveSessionDbPath", () => {
     expect(path.endsWith(".db")).toBe(true);
     expect(existsSync(path)).toBe(false); // not created yet — caller opens it
   });
-
-  it.skipIf(process.platform === "linux")(
-    "migrates legacy raw-casing DB to canonical when only legacy exists",
-    () => {
-      const repo = makeRepo("migrate");
-      const sessionsDir = makeSessionsDir();
-
-      const legacyHash = hashProjectDirLegacy(repo);
-      const canonicalHash = hashProjectDirCanonical(repo);
-      // Sanity: the test only matters when the two differ. realpath may
-      // already lowercase on some macOS configs; skip if no migration to do.
-      if (legacyHash === canonicalHash) return;
-
-      const legacyPath = join(sessionsDir, `${legacyHash}.db`);
-      writeFileSync(legacyPath, "LEGACY-DB-CONTENT");
-
-      const resolved = resolveSessionDbPath({ projectDir: repo, sessionsDir });
-
-      expect(resolved).toBe(join(sessionsDir, `${canonicalHash}.db`));
-      expect(existsSync(resolved)).toBe(true);
-      expect(readFileSync(resolved, "utf8")).toBe("LEGACY-DB-CONTENT");
-      expect(existsSync(legacyPath)).toBe(false); // legacy renamed away
-    },
-  );
-
-  it.skipIf(process.platform === "linux")(
-    "DOES NOT migrate when both legacy AND canonical exist (data-loss safety)",
-    () => {
-      const repo = makeRepo("both");
-      const sessionsDir = makeSessionsDir();
-      const legacyHash = hashProjectDirLegacy(repo);
-      const canonicalHash = hashProjectDirCanonical(repo);
-      if (legacyHash === canonicalHash) return;
-
-      const legacyPath = join(sessionsDir, `${legacyHash}.db`);
-      const canonicalPath = join(sessionsDir, `${canonicalHash}.db`);
-      writeFileSync(legacyPath, "LEGACY-CONTENT");
-      writeFileSync(canonicalPath, "CANONICAL-CONTENT");
-
-      const resolved = resolveSessionDbPath({ projectDir: repo, sessionsDir });
-
-      expect(resolved).toBe(canonicalPath);
-      expect(readFileSync(canonicalPath, "utf8")).toBe("CANONICAL-CONTENT"); // untouched
-      expect(existsSync(legacyPath)).toBe(true); // preserved — manual reconciliation needed
-      expect(readFileSync(legacyPath, "utf8")).toBe("LEGACY-CONTENT");
-    },
-  );
 
   it("different worktrees stay in separate DB files (no cross-migration)", () => {
     const wt1 = makeRepo("wt1");
@@ -143,22 +90,4 @@ describe("resolveSessionDbPath", () => {
     expect(second).toBe(first);
   });
 
-  it.skipIf(process.platform !== "linux")(
-    "Linux: legacy hash ALWAYS equals canonical hash → no migration path is ever attempted",
-    () => {
-      const repo = makeRepo("linux-noop");
-      const sessionsDir = makeSessionsDir();
-      // Pre-create a "legacy"-named file that would be migrated on Mac/Win.
-      // On Linux, hashProjectDirLegacy === hashProjectDirCanonical so this
-      // file IS the canonical file, no rename should occur.
-      const hash = hashProjectDirLegacy(repo);
-      expect(hash).toBe(hashProjectDirCanonical(repo));
-      const filePath = join(sessionsDir, `${hash}.db`);
-      writeFileSync(filePath, "LINUX-NO-OP");
-
-      const resolved = resolveSessionDbPath({ projectDir: repo, sessionsDir });
-      expect(resolved).toBe(filePath);
-      expect(readFileSync(filePath, "utf8")).toBe("LINUX-NO-OP");
-    },
-  );
 });
