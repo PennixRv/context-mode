@@ -174,3 +174,14 @@ export const VERBOSE_FLAGS = Object.freeze(["-v", "--verbose"] as const); // any
 // path followed by `pipeLength` (spaces around "|" allowed). Anything else -> not a bounded sink.
 export const JQ_WHITELIST: Readonly<{ identity: "."; length: "length"; pipeLength: "| length"; fieldSep: "." }> =
   Object.freeze({ identity: ".", length: "length", pipeLength: "| length", fieldSep: "." });
+
+// impl/08 §6.1 steps 4, 5d, 6, 7, 8 (DEVIATIONS D-M3-E4-5). Hint templates: TOOL_PREFIX_SLOT is replaced by
+// row.toolNamePrefix. Same text as the drafts.md hint-* id blocks (the unit test compares them).
+export const TOOL_PREFIX_SLOT = "{prefix}";
+export const BASH_HINT = "context-mode: when this command's output may be long, or you need a few facts from it, run it with {prefix}ctx_execute and print just what you need; the full output is indexed for {prefix}ctx_search. Short fixed output and file changes are fine here.";
+export const GREP_HINT = "context-mode: grep output can be larger than you expect. To count, filter or group matches, run the search with {prefix}ctx_execute and print the result.";
+export const READ_HINT = "context-mode: to analyze this file rather than edit it, run code on it with {prefix}ctx_execute and file set to its path; what your code prints comes back, nothing else.";
+export const MCP_HINT = "context-mode: tools of other MCP servers can return large payloads in full. For a page or API you can reach directly, fetch it in {prefix}ctx_execute, or store it with {prefix}ctx_index and query it with {prefix}ctx_search.";
+export const DENY_WEBFETCH_JOIN = ", then "; // "Tool: <p>ctx_index, then <p>ctx_search"
+// ADR-0008 item 6, #1006/#945: WebFetch to these hosts (or a subdomain) is never denied (claude.ai artifacts).
+export const NEVER_DENY_HOSTS = Object.freeze(["claude.ai", "claude.site", "claudeusercontent.com"] as const);
