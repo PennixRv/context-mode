@@ -96,7 +96,7 @@ describe("routePreToolUse", () => {
       expect(cmd).toMatch(/retry/i);
     });
 
-    it("keeps Codex commands intact after the security gate", () => {
+    it("routes Codex exec_command curl through Context Mode after the security gate", () => {
       const result = routePreToolUse(
         "exec_command",
         { cmd: "curl https://example.com" },
@@ -104,7 +104,30 @@ describe("routePreToolUse", () => {
         "codex",
         "codex-cmd-curl",
       );
-      expect(result).toBeNull();
+      expect(result?.action).toBe("modify");
+      expect((result?.updatedInput as Record<string, string>).command).toContain("curl/wget redirected");
+    });
+
+    it("routes Codex grep_files through Context Mode", () => {
+      const result = routePreToolUse(
+        "grep_files",
+        { pattern: "TODO", path: "src" },
+        undefined,
+        "codex",
+        "codex-grep",
+      );
+      expect(result?.action).toBe("context");
+    });
+
+    it("routes Codex read_file through Context Mode", () => {
+      const result = routePreToolUse(
+        "read_file",
+        { file_path: "/missing/context-mode-test-file" },
+        undefined,
+        "codex",
+        "codex-read",
+      );
+      expect(result?.action).toBe("context");
     });
 
     it("denies agy run_command CommandLine payloads like Bash command payloads", () => {
@@ -870,14 +893,15 @@ describe("routePreToolUse", () => {
     });
 
     it("does NOT match context-mode's own MCP tools (no double-firing)", () => {
-      // These are routed by dedicated branches above (ctx_execute,
-      // ctx_execute_file, ctx_batch_execute) — they must NOT receive the
-      // external-MCP guidance, which would be redundant noise.
+      // Context Mode-owned MCP servers are excluded from external guidance,
+      // including tools without a dedicated routing branch.
       const contextModeTools = [
         "mcp__plugin_context-mode_context-mode__ctx_execute",
         "mcp__plugin_context-mode_context-mode__ctx_execute_file",
         "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
         "mcp__context-mode__ctx_execute",
+        "mcp__context_mode__ctx_search",
+        "mcp__context_mode__ctx_index",
       ];
       for (const tool of contextModeTools) {
         resetGuidanceThrottle();

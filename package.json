@@ -1,6 +1,6 @@
 {
   "name": "@pennixrv/context-mode",
-  "version": "1.0.169-pennix.1",
+  "version": "1.0.169-pennix.2",
   "type": "module",
   "description": "Pennix workflow integration of Context Mode: bounded execution, FTS5 search and local session continuity for Codex.",
   "author": "Mert Koseoğlu",
@@ -48,7 +48,10 @@
     ]
   },
   "bugs": "https://github.com/PennixRv/context-mode/issues",
-  "publishConfig": { "access": "public", "tag": "beta" },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
   "main": "./build/adapters/opencode/plugin.js",
   "exports": {
     ".": "./build/adapters/opencode/plugin.js",

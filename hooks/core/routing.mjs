@@ -596,7 +596,7 @@ function isExternalMcpTool(toolName) {
   if (raw.startsWith(MCP_PREFIX)) {
     const server = raw.slice(MCP_PREFIX.length).split("__")[0];
     if (!server) return false;
-    return !server.includes(CONTEXT_MODE_SUBSTRING);
+    return !server.replaceAll("_", "-").includes(CONTEXT_MODE_SUBSTRING);
   }
 
   // Cursor wire shape: `MCP:<tool>` — own tools are `MCP:ctx_*`. There is no
@@ -722,8 +722,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       }
     }
 
-    if (platform === "codex") return null;
-
     // Stage 2: Context-mode routing (existing behavior)
 
     // curl/wget detection: strip quoted content first to avoid false positives
@@ -848,7 +846,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   // event with the actual file size as bytes_avoided. Threshold = 50 000 bytes;
   // smaller reads stay on the existing one-shot guidance nudge.
   if (canonical === "Read") {
-    if (platform === "codex") return null;
     const filePath = getReadFilePath(toolInput);
     if (filePath) {
       try {
@@ -871,7 +868,6 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
   // ─── Grep: nudge toward execute (once per session) ───
   if (canonical === "Grep") {
-    if (platform === "codex") return null;
     return guidanceOnce("grep", grepGuidance, sessionId);
   }
 

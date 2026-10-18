@@ -25,9 +25,27 @@ const env = { PATH: process.env.PATH!, HOME: root, CODEX_HOME: codexHome, CONTEX
 const client = new Client({ name: "codex-composition-test", version: "1" });
 const textOf = (result: any) => result.content?.map((part: any) => part.text ?? "").join("\n") ?? "";
 const call = (thread: typeof threads[number], name: string, args: Record<string, unknown>) => client.callTool({ name, arguments: args, _meta: { threadId: thread.sessionId } });
+const hookEvents: Record<string, string> = {
+  sessionstart: "SessionStart",
+  userpromptsubmit: "UserPromptSubmit",
+  posttooluse: "PostToolUse",
+  pretooluse: "PreToolUse",
+  precompact: "PreCompact",
+  stop: "Stop",
+};
 function hook(name: string, thread: typeof threads[number], extra: Record<string, unknown> = {}) {
+  const toolEvent = name === "pretooluse" || name === "posttooluse";
   const result = spawnSync(process.execPath, [join(packageRoot, "hooks/codex", `${name}.mjs`)], {
-    env, input: JSON.stringify({session_id: thread.sessionId, cwd: thread.projectDir, ...extra}), encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      session_id: thread.sessionId,
+      transcript_path: join(sessions, `rollout-2026-10-18T00-00-00-${thread.sessionId}.jsonl`),
+      cwd: thread.projectDir,
+      hook_event_name: hookEvents[name],
+      ...(toolEvent ? {turn_id: randomUUID(), tool_use_id: randomUUID(), permission_mode: "default"} : {}),
+      ...extra,
+    }),
+    encoding: "utf8",
   });
   expect(result.status, result.stderr).toBe(0);
   return JSON.parse(result.stdout);
@@ -87,6 +105,22 @@ describe("Codex native identity and MCP composition", () => {
     hook("posttooluse", a, {tool_name: "apply_patch", tool_input: {patch: "*** Begin Patch\n*** Add File: fixture.txt\n+test\n*** End Patch"}, tool_response: "ok"});
     const pre = hook("pretooluse", a, {tool_name: "exec_command", tool_input: {cmd: "pwd"}});
     expect(pre.hookSpecificOutput.permissionDecision).not.toBe("deny");
+    const redirected = hook("pretooluse", a, {
+      tool_name: "Bash",
+      tool_input: {command: "curl https://example.com"},
+    }).hookSpecificOutput;
+    if (redirected.permissionDecision === "allow") {
+      expect(redirected.updatedInput.command).toContain("curl/wget redirected");
+    } else {
+      expect(redirected.permissionDecision).toBe("deny");
+      expect(redirected.permissionDecisionReason).toContain("curl/wget redirected");
+    }
+    const ownMcp = hook("pretooluse", a, {
+      tool_name: "mcp__context_mode__ctx_search",
+      tool_input: {queries: ["test"]},
+    }).hookSpecificOutput;
+    expect(ownMcp.permissionDecision).toBeUndefined();
+    expect(ownMcp.additionalContext).toBeUndefined();
     hook("precompact", a);
     hook("stop", a);
     const restored = hook("sessionstart", a, {source: "compact"});
