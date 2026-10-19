@@ -36,7 +36,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/context-mode-package"
           npm pack --pack-destination "$RUNNER_TEMP/context-mode-package" --json > "$RUNNER_TEMP/context-mode-pack.json"
-          artifact_path=$(node -p 'process.env.RUNNER_TEMP+"/context-mode-package/"+require(process.env.RUNNER_TEMP+"/context-mode-pack.json")[0].filename')
+          artifact_path=$(node -p 'process.env.RUNNER_TEMP+"/context-mode-package/"+Object.values(require(process.env.RUNNER_TEMP+"/context-mode-pack.json"))[0].filename')
           node scripts/verify-tarball.mjs "$artifact_path"
           sha256sum "$artifact_path"
           echo "CONTEXT_MODE_TARBALL=$artifact_path" >> "$GITHUB_ENV"

@@ -1,6 +1,6 @@
 # Codex 会话恢复与状态采集修复
 
-根协调任务：`codex-workflow-optimization/.trellis/tasks/10-19-context-mode-session-boundary`。用户已批准该任务封口方案 revision 1；本组件基线为 `2cb3b93e6dfa57510b13dc20eb5a7b3aac6ce6bb`、`1.0.169-pennix.2`，发行目标为 `1.0.169-pennix.3`，沿用本 fork 的 main/tag/CI 发布链。
+根协调任务：`codex-workflow-optimization/.trellis/tasks/10-19-context-mode-session-boundary`。用户已批准该任务封口方案 revision 1；本组件基线为 `2cb3b93e6dfa57510b13dc20eb5a7b3aac6ce6bb`、`1.0.169-pennix.2`，发行目标为 `1.0.169-pennix.4`，沿用本 fork 的 main/tag/CI 发布链。
 
 ## 行为差距与修改范围
 
@@ -21,3 +21,7 @@
 全套运行需排除调用者继承的 CODEX_THREAD_ID/CODEX_CI 平台识别信号，避免将 OpenCode 等宿主夹具识别为当前 Codex；产品验证仍使用原生线程身份。两个路由测试改用既有 resetGuidanceThrottle 清理其固定测试会话的一次性标记，重复运行可通过。共享约束提取保留其他宿主既有 Error/显式失败入口。
 
 本地 tarball SHA-1 为 dcf70465b7c730325cae83fdf4c48d52efefc52f；发布 CI 仍须对实际发布的 tarball 复验，当前 WSL 部署及历史维护由根任务继续记录。
+
+.3 的 main/tag 为 4224578331624980ae6079262b4e889c6fc4ab5e；Linux CI 39180003996 通过，发布 CI 39180020381 的类型及全套检查也通过，但 runner 的只读网络沙箱配置 loopback 失败，使原生命令实际退出 1，精确包断言正确阻断发布，npm 未发布 .3。保留失败标签，前向发布 .4。夹具仅为合成命令显式使用原生 `readOnly` / `networkAccess: true` 策略，保留文件只读和原生 Hook 信任；不使用 bypass，不修改用户设置，不发起外部功能请求。另兼容 npm pack JSON 的数组/对象形态。
+
+.4 的最终 tarball 已在本地以修订夹具验证通过：CLI/app-server、六 Hook 信任、原生压缩/resume 与原文查询均通过，恢复字段 8153 字节、完整 JSON 8490 字节；registry 版本预检返回 E404，尚未占用。后续 CI/registry 和部署回执由根执行记录保存。

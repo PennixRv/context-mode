@@ -174,7 +174,9 @@ try {
   assert.ok(trusted.data.flatMap(x => x.hooks).every(h => h.trustStatus === "trusted"));
   const recoveryThread = (await recoveryApp.rpc("thread/start", {cwd: recoveryApp.project, approvalPolicy: "never", sandbox: "read-only"})).thread;
   let notificationOffset = recoveryApp.notifications.length;
-  await recoveryApp.rpc("turn/start", {threadId: recoveryThread.id, input: [{type: "text", text: "RECOVERY_PROBE run native success and failure.", text_elements: []}]});
+  // Keep filesystem read-only; the disposable fixture permits localhost networking
+  // without asking CI's restricted network namespace to configure loopback.
+  await recoveryApp.rpc("turn/start", {threadId: recoveryThread.id, sandboxPolicy: {type: "readOnly", networkAccess: true}, input: [{type: "text", text: "RECOVERY_PROBE run native success and failure.", text_elements: []}]});
   assert.equal((await recoveryApp.wait("turn/completed", notificationOffset)).params.turn.status, "completed");
   const {SessionDB, resolveSessionDbPath} = await import(join(packageRoot, "build/session/db.js"));
   const db = new SessionDB({dbPath: resolveSessionDbPath({projectDir: recoveryApp.project, sessionsDir: join(recoveryHome, "data/sessions")})});

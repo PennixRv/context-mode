@@ -14,7 +14,7 @@
 
 ## 会话恢复修复
 
-后续根任务为 `10-19-context-mode-session-boundary`，组件记录见 [docs/tasks/session-recovery.md](tasks/session-recovery.md)，发行目标 `1.0.169-pennix.3`。Codex 最终恢复字段限制为 8192 个 UTF-8 字节；原始事件在既有保留范围内完整投影，自动恢复来源按核验线程隔离，主动索引保持项目共享。成功输出不再因关键词形成错误或约束，未知状态不标成功；Stop/PreCompact 从原生 rollout 的关联结果确认失败，与用量共用原子游标。
+后续根任务为 `10-19-context-mode-session-boundary`，组件记录见 [docs/tasks/session-recovery.md](tasks/session-recovery.md)，发行目标 `1.0.169-pennix.4`。Codex 最终恢复字段限制为 8192 个 UTF-8 字节；原始事件在既有保留范围内完整投影，自动恢复来源按核验线程隔离，主动索引保持项目共享。成功输出不再因关键词形成错误或约束，未知状态不标成功；Stop/PreCompact 从原生 rollout 的关联结果确认失败，与用量共用原子游标。
 
 `context-mode recovery` 提供严格只读预览和带预览摘要的精确应用，仅清除已消费的超大恢复快照。数据、归属、旁路文件或摘要不确定时拒绝；不改原始事件、有效索引和用量，不强制回收 SQLite 物理空间。清理会改变恢复快照派生指标，不调整 ADR-0004 的统计公式。
 
