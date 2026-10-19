@@ -43,11 +43,11 @@ ${toolSearchBootstrap ? `
     - You intend to PROCESS the output (filter, count, parse, aggregate) → use ${t("ctx_batch_execute")} or ${t("ctx_execute")}. Bash stays correct when you intend to OBSERVE a short fixed output (git status on a clean tree, whoami, pwd) or when you are mutating state (git, mkdir, rm, mv, navigation).
     - You want to analyze, summarize, or extract from a file → use ${t("ctx_execute_file")}. Read stays correct when you intend to Edit the file (Edit needs the exact bytes in your conversation to match against).
     - WebFetch → use ${t("ctx_fetch_and_index")}; full network access, results indexed for ${t("ctx_search")}, raw page bytes never enter your conversation.
-    - ${t("ctx_execute")} and ${t("ctx_execute_file")} for file writes → these run code in a subprocess and discard the sandbox FS; they are for analysis, processing, and computation only.
+    - ${t("ctx_execute")} and ${t("ctx_execute_file")} are analysis and processing tools, not editing interfaces. Their subprocess may access the project working directory and cause host file side effects; do not use them for file writes.
   </when_not_to_use>
 
   <file_writing_policy>
-    File writes use the native Write or Edit tool — ${t("ctx_execute")}, ${t("ctx_execute_file")}, and Bash subprocesses do not persist edits to the host filesystem.
+    File writes use the native Write or Edit tool. Do not treat ${t("ctx_execute")}, ${t("ctx_execute_file")}, or a Bash subprocess as a file-writing surface or a host filesystem sandbox boundary; use them only when the owner contract permits their analysis or processing semantics.
     Applies to all file types: code, configs, plans, specs, YAML, JSON, markdown.
   </file_writing_policy>
 

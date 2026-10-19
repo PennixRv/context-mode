@@ -1784,6 +1784,10 @@ describe("ctx_execute_file: CONTEXT_MODE_PROJECT_DIR env cascade", () => {
     delete env.OPENCODE_PROJECT_DIR;
     delete env.PI_PROJECT_DIR;
     delete env.IDEA_INITIAL_DIRECTORY;
+    delete env.CODEX_THREAD_ID;
+    delete env.CODEX_CI;
+    delete env.CODEX_SESSION_ID;
+    delete env.CODEX_TOOL_CALL_ID;
     env.CONTEXT_MODE_PROJECT_DIR = projectDirEnv;
     return spawn("node", [buildServerEntry], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -5713,6 +5717,23 @@ describe("tool description source form contract (#683 PR follow-up)", () => {
       });
     });
   }
+});
+
+describe("ctx_execute cwd contract", () => {
+  const serverTs = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
+  const executorTs = readFileSync(resolve(__dirname, "../../src/executor.ts"), "utf-8");
+
+  test("documents the implemented project-root cwd for every language", () => {
+    expect(serverTs).toContain(
+      "Optional working directory for all languages. Without an override, every language executes from the project root; the script file remains in a temporary execution directory.",
+    );
+    expect(serverTs).not.toContain(
+      "Optional working directory for shell commands. Non-shell languages still execute from their sandbox temp directory.",
+    );
+    expect(executorTs).toContain("Every language runs in the project directory so git, relative paths,");
+    expect(executorTs).toContain("and other project-aware tools resolve naturally.");
+    expect(executorTs).not.toContain("Non-shell languages keep their tmpDir sandbox cwd regardless");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1651,7 +1651,7 @@ EXAMPLE: ctx_execute(language: "javascript", code: "const out = require('child_p
       cwd: z
         .string()
         .optional()
-        .describe("Optional working directory for shell commands. Non-shell languages still execute from their sandbox temp directory."),
+        .describe("Optional working directory for all languages. Without an override, every language executes from the project root; the script file remains in a temporary execution directory."),
       intent: z
         .string()
         .optional()

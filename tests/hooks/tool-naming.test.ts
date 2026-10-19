@@ -194,6 +194,13 @@ describe("createRoutingBlock", () => {
     expect(block).toContain("ctx_search(queries:");
     expect(block).not.toContain("mcp__");
   });
+
+  it("describes the executor as an analysis surface, not a host filesystem sandbox", () => {
+    const block = createRoutingBlock(createToolNamer("codex"));
+    expect(block).toContain("may access the project working directory and cause host file side effects");
+    expect(block).toContain("Do not treat ctx_execute, ctx_execute_file, or a Bash subprocess as a file-writing surface");
+    expect(block).not.toContain("do not persist edits to the host filesystem");
+  });
 });
 
 describe("createReadGuidance", () => {

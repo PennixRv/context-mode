@@ -49,12 +49,23 @@ afterEach(() => { try { unlinkSync(mcpSentinel); } catch {} });
 
 describe("ContextModePlugin", () => {
   let tempDir: string;
+  const codexIdentityKeys = ["CODEX_THREAD_ID", "CODEX_CI", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID"] as const;
+  const previousCodexIdentity = new Map<string, string | undefined>();
 
   beforeAll(() => {
+    for (const key of codexIdentityKeys) {
+      previousCodexIdentity.set(key, process.env[key]);
+      delete process.env[key];
+    }
     tempDir = mkdtempSync(join(tmpdir(), "opencode-plugin-test-"));
   });
 
   afterAll(() => {
+    for (const key of codexIdentityKeys) {
+      const value = previousCodexIdentity.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch { /* cleanup best effort */ }

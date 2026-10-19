@@ -808,9 +808,10 @@ describe("routePreToolUse", () => {
       expect(ROUTING_BLOCK).toContain("<file_writing_policy>");
       expect(ROUTING_BLOCK).toContain("File writes use the native Write or Edit tool");
       // semantic intent: ctx_execute family must not be used for file writes —
-      // expressed positively as "do not persist edits to the host filesystem"
+      // expressed as an analysis surface rather than a file-writing surface.
       expect(ROUTING_BLOCK).toContain("ctx_execute");
-      expect(ROUTING_BLOCK).toContain("do not persist edits");
+      expect(ROUTING_BLOCK).toContain("Do not treat");
+      expect(ROUTING_BLOCK).toContain("as a file-writing surface");
     });
 
     it("when_not_to_use redirects ctx_execute away from file creation", () => {
@@ -818,7 +819,7 @@ describe("routePreToolUse", () => {
       // (do not pick ctx_execute for file creation) expressed via WHEN NOT.
       expect(ROUTING_BLOCK).toContain("<when_not_to_use>");
       expect(ROUTING_BLOCK).toContain("for file writes");
-      expect(ROUTING_BLOCK).toContain("analysis, processing, and computation only");
+      expect(ROUTING_BLOCK).toContain("analysis and processing tools, not editing interfaces");
     });
 
     it("artifact_policy points artifacts at files with file-path return shape", () => {
