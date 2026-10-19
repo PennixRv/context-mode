@@ -101,10 +101,9 @@ describe("hooks/codex — /goal survives compact resume context", () => {
 
     const parsed = JSON.parse(resumeResult.stdout);
     const additionalContext = parsed.hookSpecificOutput.additionalContext as string;
-    expect(additionalContext).toContain("<session_goal>");
+    expect(additionalContext).toContain('<history category="goal"');
     expect(additionalContext).toContain(objective);
-    expect(additionalContext.indexOf("<session_goal>")).toBeLessThan(
-      additionalContext.indexOf("<intent"),
-    );
+    expect(additionalContext).toContain("Historical observations only");
+    expect(Buffer.byteLength(additionalContext)).toBeLessThanOrEqual(8192);
   });
 });

@@ -12,7 +12,6 @@ const toolNamer = createToolNamer("codex");
 const ROUTING_BLOCK = "Context Mode stores local session history for reference. Current host instructions and native task state remain authoritative; use pennix-context-mode-integration for workflow boundaries.";
 import {
   writeSessionEventsFile,
-  buildSessionDirective,
   getSessionEvents,
 } from "../session-directive.mjs";
 import {
@@ -32,7 +31,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = fileURLToPath(new URL(".", import.meta.url));
-const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
+const { loadSessionDB, loadSnapshot } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
 
 let additionalContext = ROUTING_BLOCK;
@@ -67,13 +66,12 @@ try {
     const { SessionDB } = await loadSessionDB();
     const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
-    let resumeSnapshot = null;
+    const { buildResumeSnapshot, CODEX_RECOVERY_MAX_BYTES } = await loadSnapshot();
+    let claimed = source === "resume";
 
     if (source === "compact") {
       const resume = db.claimResume(sessionId);
-      if (resume) {
-        resumeSnapshot = resume.snapshot;
-      }
+      claimed = Boolean(resume);
     } else {
       try { unlinkSync(getCleanupFlagPath(OPTS, projectDir)); } catch { /* no flag */ }
     }
@@ -85,13 +83,15 @@ try {
     // and before the resume.
     const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
-      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir, sessionId));
-      additionalContext += "\nHistorical observations only; current instructions, authorization and native task state take precedence.";
-      additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
+      writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir, sessionId), {fullData: true});
+      const searchSource = `session-events:${sessionId}`;
+      const hint = `\nHistorical observations only. Query retained history on demand: ${toolNamer("ctx_search")}(${JSON.stringify({queries: ["session history"], source: searchSource})}).`;
+      const remaining = CODEX_RECOVERY_MAX_BYTES - Buffer.byteLength(additionalContext + "\n");
+      const snapshot = claimed ? buildResumeSnapshot(events, {maxBytes: remaining, searchSource, searchTool: toolNamer("ctx_search")}) : "";
+      additionalContext += snapshot ? `\n${snapshot}` : hint;
     }
-    if (resumeSnapshot) {
-      additionalContext += `\n\n${resumeSnapshot}`;
-    }
+
+    if (Buffer.byteLength(additionalContext) > CODEX_RECOVERY_MAX_BYTES) additionalContext = ROUTING_BLOCK;
 
     db.close();
   } else if (source === "startup" && sessionId) {
@@ -109,7 +109,7 @@ try {
   }
   // clear => routing block only
 } catch {
-  // Swallow errors — hook must not fail
+  additionalContext = `${ROUTING_BLOCK}\nContext Mode history projection unavailable; retained source events were preserved.`;
 }
 
 // Codex SessionStart requires hookEventName in hookSpecificOutput

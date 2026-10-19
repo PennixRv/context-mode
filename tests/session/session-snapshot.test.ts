@@ -7,6 +7,25 @@ import {
 } from "../../src/session/snapshot.js";
 
 // ── Helpers ──
+describe("Explicit recovery budget", () => {
+  test("bounds huge fields and accumulated categories without mutating source events", () => {
+    const payload = "目标<&😀".repeat(100_000);
+    const events = Array.from({length: 1000}, (_, i) => makeEvent({type: "fixture", category: ["goal", "user-prompt", "error", "decision", "file", "task", "rule", "env"][i % 8], data: payload}));
+    const xml = buildResumeSnapshot(events, {maxBytes: 7000, searchSource: "session-events:fixture"});
+    assert.ok(Buffer.byteLength(xml) <= 7000);
+    assert.ok(xml.startsWith("<session_resume"));
+    assert.ok(xml.endsWith("</session_resume>"));
+    assert.ok(xml.includes("session-events:fixture"));
+    assert.ok(xml.includes("Historical"));
+    assert.equal(xml.includes("\uFFFD"), false);
+    assert.equal(events[0].data, payload);
+  });
+  test("unbudgeted callers retain full error payload", () => {
+    const data = "native default ".repeat(2000);
+    assert.ok(buildResumeSnapshot([makeEvent({type: "error_tool", category: "error", data})]).includes(data));
+  });
+});
+
 function makeEvent(overrides: Partial<StoredEvent> & Pick<StoredEvent, "type" | "category">): StoredEvent {
   return {
     type: overrides.type,

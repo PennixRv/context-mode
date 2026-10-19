@@ -2,7 +2,25 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, test } from "vitest";
-import { extractEvents, extractUserEvents, resetErrorResolutionState, resetIterationLoopState } from "../../src/session/extract.js";
+import { extractEvents, extractCodexEvents, extractUserEvents, resetErrorResolutionState, resetIterationLoopState } from "../../src/session/extract.js";
+
+describe("Codex evidence-based outcomes", () => {
+  test("explicit success overrides failure words in output and source", () => {
+    for (const response of ["10 passed; 0 failed", 'function onError() { throw new Error("failed"); }']) {
+      const events = extractEvents({ tool_name: "Bash", tool_input: { command: "fixture" }, tool_response: response, tool_output: { isError: false } });
+      assert.equal(events.some(e => e.category === "error" || e.category === "constraint"), false);
+    }
+  });
+  test("native unknown is neither failed nor resolved; opaque status preserves unknown", () => {
+    resetErrorResolutionState();
+    extractEvents({tool_name: "Bash", tool_input: {}, tool_response: "Error: real failure", tool_output: {isError: true}});
+    const events = extractCodexEvents({tool_name: "exec_command", tool_input: {cmd: "fixture"}, tool_response: "10 passed; 0 failed"});
+    assert.equal(events.some(e => ["error", "constraint", "error-resolution"].includes(e.category)), false);
+    const opaque = extractCodexEvents({tool_name: "functions.exec", tool_input: {}, tool_response: "opaque"});
+    assert.equal(JSON.parse(opaque[0].data).failed, undefined);
+    resetErrorResolutionState();
+  });
+});
 
 // ════════════════════════════════════════════
 // SLICE 1: FILE EVENT EXTRACTION

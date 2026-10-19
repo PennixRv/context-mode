@@ -469,6 +469,10 @@ export function currentAttribution(): { sessionId?: string } | undefined {
   return { sessionId };
 }
 
+function automaticSessionSource(): string | undefined {
+  return projectDirOverride.getStore()?.codex ? `session-events:${currentAttribution()?.sessionId ?? ""}` : undefined;
+}
+
 /**
  * Auto-index session events files written by SessionStart hook.
  * Scans ~/.claude/context-mode/sessions/ for *-events.md files.
@@ -1309,7 +1313,7 @@ export function formatBatchQueryResults(
       continue;
     }
 
-    const results = store.searchWithFallback(query, 3, searchSource, undefined, "exact");
+    const results = store.searchWithFallback(query, 3, searchSource, undefined, "exact", undefined, automaticSessionSource());
     sections.push(`## ${query}`);
     sections.push("");
     if (results.length > 0) {
@@ -1912,7 +1916,7 @@ function intentSearch(
   const indexed = persistent.indexPlainText(stdout, source, undefined, currentAttribution());
 
   // Search the persistent store directly (porter → trigram → fuzzy)
-  let results = persistent.searchWithFallback(intent, maxResults, source);
+  let results = persistent.searchWithFallback(intent, maxResults, source, undefined, "like", undefined, automaticSessionSource());
 
   // Extract distinctive terms as vocabulary hints for the LLM
   const distinctiveTerms = persistent.getDistinctiveTerms(indexed.sourceId);
@@ -2644,6 +2648,7 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
             adapter: _detectedAdapter ?? undefined,
             projectScope,
             includeAutoMemory: !projectDirOverride.getStore()?.codex,
+            automaticSessionSource: automaticSessionSource(),
           });
         } else {
           results = store.searchWithFallback(
@@ -2653,6 +2658,7 @@ EXAMPLE: ctx_search(queries: ["last user prompt", "active skills", "open blocker
             contentType,
             "like",
             relevanceAllowSet,
+            automaticSessionSource(),
           );
         }
 

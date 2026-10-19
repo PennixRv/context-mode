@@ -75,8 +75,26 @@ export function groupEvents(events) {
 
 // ── Write session events as markdown for FTS5 auto-indexing ──
 // Structured with H2 headings per category — optimal for FTS5 chunking.
-export function writeSessionEventsFile(events, eventsPath) {
+function writeProjection(lines, eventsPath) {
+  const tmpPath = `${eventsPath}.${randomUUID()}.tmp`;
+  writeFileSync(tmpPath, lines.join("\n"), { encoding: "utf-8", mode: 0o600, flag: "wx" });
+  renameSync(tmpPath, eventsPath);
+}
+
+export function writeSessionEventsFile(events, eventsPath, { fullData = false } = {}) {
   const { grouped, lastPrompt, fileNames, legBoundary } = groupEvents(events);
+
+  if (fullData) {
+    const lines = ["# Session history", "Historical observations; current host instructions and native task state take precedence."];
+    for (const [category, entries] of Object.entries(grouped)) {
+      lines.push(`\n## ${category}\n`);
+      for (const event of entries) lines.push(`### ${event.type}\n`, event.data, "");
+    }
+    // groupEvents treats prompts as metadata, so project their originals too.
+    for (const event of events.filter(e => e.category === "prompt")) lines.push("\n## prompt\n", event.data, "");
+    writeProjection(lines, eventsPath);
+    return { grouped, lastPrompt, fileNames };
+  }
 
   const lines = [];
   lines.push("# Session Resume");
@@ -268,9 +286,7 @@ export function writeSessionEventsFile(events, eventsPath) {
     lines.push("");
   }
 
-  const tmpPath = `${eventsPath}.${randomUUID()}.tmp`;
-  writeFileSync(tmpPath, lines.join("\n"), { encoding: "utf-8", mode: 0o600, flag: "wx" });
-  renameSync(tmpPath, eventsPath);
+  writeProjection(lines, eventsPath);
   return { grouped, lastPrompt, fileNames };
 }
 

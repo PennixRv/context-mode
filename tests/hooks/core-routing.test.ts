@@ -109,6 +109,7 @@ describe("routePreToolUse", () => {
     });
 
     it("routes Codex grep_files through Context Mode", () => {
+      resetGuidanceThrottle("codex-grep");
       const result = routePreToolUse(
         "grep_files",
         { pattern: "TODO", path: "src" },
@@ -120,6 +121,7 @@ describe("routePreToolUse", () => {
     });
 
     it("routes Codex read_file through Context Mode", () => {
+      resetGuidanceThrottle("codex-read");
       const result = routePreToolUse(
         "read_file",
         { file_path: "/missing/context-mode-test-file" },

@@ -493,7 +493,9 @@ export class ContentStore {
     );
 
     // Search path (hot)
-    this.#stmtSearchPorter = this.#db.prepare(`
+    // Filter automatic recovery sources before LIMIT; ordinary indexes stay shared.
+    const prepareSearch = (sql: string) => this.#db.prepare(sql.replace("ORDER BY rank", "AND (sources.label NOT GLOB 'session-events:*' OR sources.label = COALESCE(?, sources.label)) ORDER BY rank"));
+    this.#stmtSearchPorter = prepareSearch(`
       SELECT
         chunks.title,
         chunks.content,
@@ -509,7 +511,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchPorterFiltered = this.#db.prepare(`
+    this.#stmtSearchPorterFiltered = prepareSearch(`
       SELECT
         chunks.title,
         chunks.content,
@@ -525,7 +527,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchPorterExact = this.#db.prepare(`
+    this.#stmtSearchPorterExact = prepareSearch(`
       SELECT
         chunks.title,
         chunks.content,
@@ -541,7 +543,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchTrigram = this.#db.prepare(`
+    this.#stmtSearchTrigram = prepareSearch(`
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
@@ -557,7 +559,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchTrigramFiltered = this.#db.prepare(`
+    this.#stmtSearchTrigramFiltered = prepareSearch(`
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
@@ -573,7 +575,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchTrigramExact = this.#db.prepare(`
+    this.#stmtSearchTrigramExact = prepareSearch(`
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
@@ -591,7 +593,7 @@ export class ContentStore {
     `);
 
     // Content-type filtered variants
-    this.#stmtSearchPorterContentType = this.#db.prepare(`
+    this.#stmtSearchPorterContentType = prepareSearch(`
       SELECT
         chunks.title,
         chunks.content,
@@ -607,7 +609,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchPorterFilteredContentType = this.#db.prepare(`
+    this.#stmtSearchPorterFilteredContentType = prepareSearch(`
       SELECT
         chunks.title,
         chunks.content,
@@ -623,7 +625,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchPorterExactContentType = this.#db.prepare(`
+    this.#stmtSearchPorterExactContentType = prepareSearch(`
       SELECT
         chunks.title,
         chunks.content,
@@ -639,7 +641,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchTrigramContentType = this.#db.prepare(`
+    this.#stmtSearchTrigramContentType = prepareSearch(`
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
@@ -655,7 +657,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchTrigramFilteredContentType = this.#db.prepare(`
+    this.#stmtSearchTrigramFilteredContentType = prepareSearch(`
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
@@ -671,7 +673,7 @@ export class ContentStore {
       ORDER BY rank
       LIMIT ?
     `);
-    this.#stmtSearchTrigramExactContentType = this.#db.prepare(`
+    this.#stmtSearchTrigramExactContentType = prepareSearch(`
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
@@ -1027,6 +1029,7 @@ export class ContentStore {
     mode: "AND" | "OR" = "AND",
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
+    automaticSessionSource?: string,
   ): SearchResult[] {
     const sanitized = sanitizeQuery(query, mode);
 
@@ -1051,6 +1054,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
+    params.splice(params.length - 1, 0, automaticSessionSource ?? null);
     return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
@@ -1063,6 +1067,7 @@ export class ContentStore {
     mode: "AND" | "OR" = "AND",
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
+    automaticSessionSource?: string,
   ): SearchResult[] {
     const sanitized = sanitizeTrigramQuery(query, mode);
     if (!sanitized) return [];
@@ -1088,6 +1093,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
+    params.splice(params.length - 1, 0, automaticSessionSource ?? null);
     return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
@@ -1148,12 +1154,13 @@ export class ContentStore {
     source?: string,
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
+    automaticSessionSource?: string,
   ): SearchResult[] {
     const K = 60; // Standard RRF constant
     const fetchLimit = Math.max(limit * 2, 10);
 
-    const porterResults = this.search(query, fetchLimit, source, "OR", contentType, sourceMatchMode);
-    const trigramResults = this.searchTrigram(query, fetchLimit, source, "OR", contentType, sourceMatchMode);
+    const porterResults = this.search(query, fetchLimit, source, "OR", contentType, sourceMatchMode, automaticSessionSource);
+    const trigramResults = this.searchTrigram(query, fetchLimit, source, "OR", contentType, sourceMatchMode, automaticSessionSource);
 
     const scoreMap = new Map<string, { result: SearchResult; score: number }>();
     const key = (r: SearchResult) => `${r.source}::${r.title}`;
@@ -1245,6 +1252,7 @@ export class ContentStore {
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
     sessionIdAllowSet?: Set<string>,
+    automaticSessionSource?: string,
   ): SearchResult[] {
     // Step 0: Auto-refresh stale file-backed sources before searching
     this.#refreshStaleSources();
@@ -1258,7 +1266,7 @@ export class ContentStore {
     const sessionFilter = this.#makeSessionFilter(sessionIdAllowSet);
 
     // Step 1: RRF fusion (porter OR + trigram OR → merge)
-    const rrfResults = this.#rrfSearch(query, fetchLimit, source, contentType, sourceMatchMode);
+    const rrfResults = this.#rrfSearch(query, fetchLimit, source, contentType, sourceMatchMode, automaticSessionSource);
     const rrfFiltered = sessionFilter ? rrfResults.filter(sessionFilter) : rrfResults;
     if (rrfFiltered.length > 0) {
       const reranked = this.#applyProximityReranking(rrfFiltered.slice(0, limit), query);
@@ -1278,7 +1286,7 @@ export class ContentStore {
     const correctedQuery = correctedWords.join(" ");
 
     if (correctedQuery !== original) {
-      const fuzzyResults = this.#rrfSearch(correctedQuery, fetchLimit, source, contentType, sourceMatchMode);
+      const fuzzyResults = this.#rrfSearch(correctedQuery, fetchLimit, source, contentType, sourceMatchMode, automaticSessionSource);
       const fuzzyFiltered = sessionFilter ? fuzzyResults.filter(sessionFilter) : fuzzyResults;
       if (fuzzyFiltered.length > 0) {
         const reranked = this.#applyProximityReranking(fuzzyFiltered.slice(0, limit), correctedQuery);

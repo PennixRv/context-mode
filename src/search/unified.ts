@@ -41,6 +41,7 @@ export interface SearchAllSourcesOpts {
   /** Detected platform adapter — used for adapter-aware auto-memory. */
   adapter?: AutoMemoryAdapter;
   includeAutoMemory?: boolean;
+  automaticSessionSource?: string;
   /**
    * Per-project scope for the ContentStore filter (#737). Only honoured
    * when a `sessionDB` is also supplied (the 2-step IN-clause needs the
@@ -112,6 +113,7 @@ export function searchAllSources(opts: SearchAllSourcesOpts): UnifiedSearchResul
       contentType,
       "like",
       sessionIdAllowSet,
+      opts.automaticSessionSource,
     );
     results.push(
       ...storeResults.map((r: SearchResult) => ({

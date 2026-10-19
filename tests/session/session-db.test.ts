@@ -34,6 +34,24 @@ function createTestDB(): SessionDB {
   return db;
 }
 
+describe("Atomic rollout event and cursor commit", () => {
+  test("competing readers cannot double-commit and an insertion failure rolls back", () => {
+    const dbPath = join(tmpdir(), `session-cursor-${randomUUID()}.db`);
+    const db = new SessionDB({dbPath});
+    const other = new SessionDB({dbPath});
+    cleanups.push(() => {other.close(); db.cleanup();});
+    db.ensureSession("native", "/project");
+    const event = {type: "error_tool", category: "error", data: "confirmed fixture failure", priority: 1};
+    assert.equal(db.commitCodexRollout("native", null, "2", [event], "Stop"), true);
+    assert.equal(other.commitCodexRollout("native", null, "2", [event], "PreCompact"), false);
+    assert.equal(db.getEvents("native").length, 1);
+    (db as any).db.exec("CREATE TRIGGER fail_fixture BEFORE INSERT ON session_events WHEN NEW.data = 'fixture abort' BEGIN SELECT RAISE(ABORT, 'fixture commit failure'); END");
+    assert.throws(() => db.commitCodexRollout("native", "2", "4", [{...event, data: "must roll back"}, {...event, data: "fixture abort"}], "Stop"), /fixture commit failure/);
+    assert.equal(other.getUsageCursor("native"), "2");
+    assert.equal(other.getEvents("native").length, 1);
+  });
+});
+
 /** Create a minimal session event for testing. */
 function makeEvent(overrides: Partial<{
   type: string;

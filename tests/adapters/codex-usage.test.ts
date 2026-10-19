@@ -23,6 +23,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseCodexUsage,
   extractCodexUsageSince,
+  extractCodexRolloutSince,
 } from "../../src/adapters/codex/usage.js";
 
 /** A completed-turn token_count payload (info populated). */
@@ -55,6 +56,46 @@ function tokenCount(last: Record<string, number>, total?: Record<string, number>
 function line(type: string, payload: unknown): string {
   return JSON.stringify({ timestamp: "2026-05-11T14:12:23.754Z", type, payload });
 }
+
+describe("Codex persisted command outcomes", () => {
+  const call = (id: string, cmd = "fixture", name = "exec_command") => line("response_item", {type: "function_call", call_id: id, name, arguments: JSON.stringify({cmd})});
+  const result = (id: string, code: number, body: string) => line("response_item", {type: "function_call_output", call_id: id, output: `Chunk ID: fixture\nWall time: 0.0000 seconds\nProcess exited with code ${code}\nOriginal token count: 4\nOutput:\n${body}\n`});
+  it("confirms only eligible outer failures, correlating calls before the cursor", () => {
+    const rows = [call("ok"), call("bad"), call("private", "cat .env"), call("opaque", "fixture", "functions.exec"), result("ok", 0, "0 failed; Process exited with code 7"), result("bad", 7, "native fixture failure"), result("private", 7, "PRIVATE"), result("opaque", 7, "OPAQUE")];
+    const parsed = extractCodexRolloutSince(rows.join("\n") + "\n", "3");
+    expect(parsed.events.filter(e => e.category === "error")).toHaveLength(1);
+    expect(parsed.events.find(e => e.category === "error")?.data).toContain("bad");
+    expect(JSON.stringify(parsed.events)).not.toMatch(/PRIVATE|OPAQUE|0 failed/);
+    expect(extractCodexRolloutSince(rows.join("\n") + "\n", parsed.cursor).events).toEqual([]);
+  });
+  it("does not consume an incomplete tail or infer status from an opaque body", () => {
+    const first = call("bad") + "\n";
+    const pending = result("bad", 9, "native failure");
+    expect(extractCodexRolloutSince(first + pending.slice(0, -4), null).cursor).toBe("0");
+    const settled = extractCodexRolloutSince(first + pending + "\n", "0");
+    expect(settled.events.filter(e => e.category === "error")).toHaveLength(1);
+    const opaque = first + line("response_item", {type: "function_call_output", call_id: "bad", output: "Running session 123\nProcess exited with code 9"}) + "\n";
+    expect(extractCodexRolloutSince(opaque, null).events).toEqual([]);
+    expect(() => extractCodexRolloutSince(first, "garbage")).toThrow(/cursor/i);
+    expect(extractCodexRolloutSince(first, "9")).toEqual({events: [], cursor: "9"});
+  });
+  it("shares the monotonic cursor with usage and stops at a corrupt complete line", () => {
+    const rows = [line("turn_context", {model: "gpt-5.5"}), call("bad"), result("bad", 7, "fixture failure"), line("event_msg", tokenCount({input_tokens: 100, output_tokens: 20}))];
+    const parsed = extractCodexRolloutSince(rows.join("\n") + "\n", null);
+    expect(parsed.events.map(e => e.category).sort()).toEqual(["constraint", "cost", "error"]);
+    expect(parsed.cursor).toBe("3");
+    const corrupt = extractCodexRolloutSince(rows[0] + "\n{broken}\n" + rows[3] + "\n", null);
+    expect(corrupt.events).toEqual([]);
+    expect(corrupt.cursor).toBe("0");
+  });
+  it("rejects namespaced MCP lookalikes and derives constraints only after confirmed failure", () => {
+    const mcp = line("response_item", {type: "function_call", call_id: "mcp", name: "exec_command", namespace: "mcp__external", arguments: JSON.stringify({cmd: "fixture"})});
+    const parsed = extractCodexRolloutSince([mcp, result("mcp", 7, "MCP_PRIVATE"), call("ok"), result("ok", 0, "permission denied"), call("bad"), result("bad", 7, "permission denied")].join("\n") + "\n", null);
+    expect(parsed.events.filter(e => e.category === "constraint")).toHaveLength(1);
+    expect(parsed.events.filter(e => e.category === "error")).toHaveLength(1);
+    expect(JSON.stringify(parsed)).not.toContain("MCP_PRIVATE");
+  });
+});
 
 describe("parseCodexUsage", () => {
   it("maps last_token_usage to the buildAgentUsageEvent shape (incremental, not cumulative)", () => {

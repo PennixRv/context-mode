@@ -11,34 +11,14 @@ import "../ensure-deps.mjs";
  */
 
 import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, CODEX_OPTS } from "../session-helpers.mjs";
-import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { existsSync, readFileSync } from "node:fs";
+import { createSessionLoaders } from "../session-loaders.mjs";
+import { collectCodexRollout } from "./rollout.mjs";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
-const { loadSessionDB, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
+const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
-
-/**
- * Load the codex usage extractor (build/adapters/codex/usage.js), mirroring the
- * loadModule build-path fallback in session-loaders. Returns null if the module
- * is absent (e.g. pre-build dev tree) so the hook degrades gracefully.
- */
-async function loadCodexUsage() {
-  try {
-    const pluginRoot = join(HOOK_DIR, "..", "..");
-    const candidates = [
-      join(pluginRoot, "build", "adapters", "codex", "usage.js"),
-    ];
-    for (const p of candidates) {
-      if (existsSync(p)) return await import(pathToFileURL(p).href);
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
 
 try {
   const raw = await readStdin();
@@ -50,7 +30,7 @@ try {
     process.exit(0);
   }
 
-  const { SessionDB, resolveCodexThreadContext } = await loadSessionDB();
+  const { SessionDB } = await loadSessionDB();
   const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
   db.ensureSession(sessionId, projectDir);
@@ -65,35 +45,7 @@ try {
     priority: 1,
   }, "Stop");
 
-  // ─── codex MAIN-turn cost capture (cursor-aware, no double-count) ─────────
-  // Codex carries no tokens on the hook payload (model only); per-turn usage is
-  // persisted to the session rollout JSONL as `event_msg`/`token_count`
-  // records. We tail that file, cursor-gated by rollout LINE INDEX, summing
-  // ONLY the completed turns NEW since the last Stop. Each step is best-effort
-  // — a hook must never block the session, so any read/extract failure here is
-  // swallowed without aborting the turn_end write above.
-  try {
-    const rolloutPath = resolveCodexThreadContext(sessionId).transcriptPath;
-    if (rolloutPath) {
-      let rollout = null;
-      try { rollout = readFileSync(rolloutPath, "utf-8"); } catch { /* unreadable — skip */ }
-      if (rollout) {
-        const usageMod = await loadCodexUsage();
-        if (usageMod && typeof usageMod.extractCodexUsageSince === "function") {
-          const { resolveProjectAttributions } = await loadProjectAttribution();
-          const cursor = db.getUsageCursor(sessionId);
-          const { events, cursor: next } = usageMod.extractCodexUsageSince(rollout, cursor);
-          if (events.length > 0) {
-            // Usage metadata stays local to this verified thread.
-            attributeAndInsertEvents(db, sessionId, events, input, projectDir, "Stop", resolveProjectAttributions);
-          }
-          if (next) db.setUsageCursor(sessionId, next);
-        }
-      }
-    }
-  } catch {
-    // Best-effort cost capture — never block the session on failure.
-  }
+  await collectCodexRollout(db, sessionId, projectDir, "Stop");
 
   db.close();
 } catch {

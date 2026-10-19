@@ -1112,7 +1112,7 @@ describe("Codex precompact hook script", () => {
 });
 
 describe("Codex sessionstart hook script", () => {
-  it("injects a compact resume snapshot before marking it consumed", () => {
+  it("claims compact recovery once and rebuilds from retained events", () => {
     const hookScript = resolve(__dirname, "../../hooks/codex/sessionstart.mjs");
     const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
     const projectDir = join(codexHome, "project");
@@ -1132,6 +1132,7 @@ describe("Codex sessionstart hook script", () => {
       });
       const db = new SessionDB({ dbPath });
       db.ensureSession(sessionId, projectDir);
+      db.insertEvent(sessionId, {type: "task_state", category: "task", data: "retained task evidence", priority: 2});
       db.upsertResume(sessionId, snapshot, 1);
       db.close();
 
@@ -1149,7 +1150,9 @@ describe("Codex sessionstart hook script", () => {
 
       const parsed = JSON.parse(stdout.trim());
       expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
-      expect(parsed.hookSpecificOutput.additionalContext).toContain("restore me");
+      expect(parsed.hookSpecificOutput.additionalContext).not.toContain("restore me");
+      expect(parsed.hookSpecificOutput.additionalContext).toContain("retained task evidence");
+      expect(Buffer.byteLength(parsed.hookSpecificOutput.additionalContext)).toBeLessThanOrEqual(8192);
 
       const verifyDb = new SessionDB({ dbPath });
       const consumed = verifyDb.getResume(sessionId)?.consumed;

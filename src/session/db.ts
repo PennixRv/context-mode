@@ -1146,9 +1146,10 @@ export class SessionDB extends SQLiteBase {
     sourceHook: string = "PostToolUse",
     attributions?: Array<Partial<ProjectAttribution> | undefined>,
     bytesList?: Array<EventBytes | undefined>,
-  ): void {
-    if (!events || events.length === 0) return;
-    if (events.length === 1) {
+    cursorCommit?: {expected: string | null; next: string},
+  ): boolean | void {
+    if ((!events || events.length === 0) && !cursorCommit) return;
+    if (events.length === 1 && !cursorCommit) {
       // Cheaper to fall through to insertEvent (its own dedicated transaction).
       this.insertEvent(sessionId, events[0], sourceHook, attributions?.[0], bytesList?.[0]);
       return;
@@ -1195,6 +1196,7 @@ export class SessionDB extends SQLiteBase {
     });
 
     const transaction = this.db.transaction(() => {
+      if (cursorCommit && (!this.getSessionStats(sessionId) || this.getUsageCursor(sessionId) !== cursorCommit.expected)) return false;
       let cnt = (this.stmt(S.getEventCount).get(sessionId) as { cnt: number }).cnt;
       for (const row of prepared) {
         const dup = this.stmt(S.checkDuplicate).get(
@@ -1222,9 +1224,11 @@ export class SessionDB extends SQLiteBase {
         );
       }
       this.stmt(S.updateMetaLastEvent).run(sessionId);
+      if (cursorCommit) this.setUsageCursor(sessionId, cursorCommit.next);
+      return true;
     });
 
-    this.withRetry(() => transaction());
+    return this.withRetry(() => transaction());
   }
 
   /**
@@ -1475,6 +1479,20 @@ export class SessionDB extends SQLiteBase {
    */
   setUsageCursor(sessionId: string, uuid: string): void {
     this.stmt(S.setUsageCursor).run(uuid, sessionId);
+  }
+
+  /** Compare-and-commit prevents Stop and PreCompact from replaying one slice. */
+  commitCodexRollout(
+    sessionId: string,
+    expectedCursor: string | null,
+    nextCursor: string,
+    events: SessionEvent[],
+    sourceHook: string,
+    attributions?: Array<Partial<ProjectAttribution> | undefined>,
+  ): boolean {
+    if (!/^(0|[1-9]\d*)$/.test(nextCursor) || !Number.isSafeInteger(Number(nextCursor)) ||
+        (expectedCursor !== null && Number(nextCursor) < Number(expectedCursor))) throw new Error("Invalid Codex rollout cursor advance");
+    return this.bulkInsertEvents(sessionId, events, sourceHook, attributions, undefined, {expected: expectedCursor, next: nextCursor}) === true;
   }
 
   // ═══════════════════════════════════════════

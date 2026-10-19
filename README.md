@@ -31,7 +31,18 @@ context-mode doctor
 
 六类 Hook 采集本地会话事件并提供恢复材料，不向上游平台自动同步。恢复的规则和角色属于历史证据；当前指令、授权和 Trellis 原生任务状态保持权威。完整提问和规则可能含敏感内容，数据目录和文件采用私有权限；有限字段处理不保证任意文本脱敏。
 
+Codex 的 compact/resume 只恢复一份有界摘要，最终 `additionalContext`（含路由与查询指引）不超过 8192 个 UTF-8 字节。已采集且仍在保留范围内的事件正文通过 `ctx_search` 的 `session-events:<当前线程 ID>` 来源查询；自动恢复投影按线程隔离，主动索引继续按项目共享。摘要不会回放旧快照正文。原生命令成败由已落盘的关联结果确认，未知状态保持未知，不根据输出中的“failed”判断成败。
+
 未活动 30 天的会话及可证明归属的自动采集派生数据会清理，当前会话受保护。普通主动索引和 Codex 原始历史保留。显式 `ctx_purge` 必须给出 `confirm: true` 及 `scope: "session"` 或 `scope: "project"`；session 范围只允许当前核验线程。程序卸载与数据清除分别执行。
+
+修复历史超大恢复缓存时，先对项目的规范绝对路径执行只读预览：
+
+```sh
+context-mode recovery --project /absolute/canonical/project --json
+context-mode recovery --project /absolute/canonical/project --apply --expected-digest <预览的 digest> --json
+```
+
+应用只删除该项目已消费且超过 8192 字节的恢复快照；保留未消费快照、原始事件、有效索引和用量。摘要或归属变化则整批拒绝并重新预览。报告区分逻辑移除字节和数据库文件大小，不强制压缩数据库。
 
 ## 维护与验证
 
@@ -43,7 +54,7 @@ node scripts/verify-codex-host.mjs
 npm pack
 ```
 
-原生宿主验证要求 Codex 0.163.0，使用隔离 HOME/CODEX_HOME 和本地模拟模型响应，实际贯通 CLI、app-server 和 MCP；不读取用户认证、不请求真实模型。发布工作流验证后只发布同一个 tarball，使用 `beta` 标签。上游其他宿主代码保留，当前 Pennix 支持范围以 lifecycle 和集成 Skill 的合同为准。
+原生宿主验证要求 Codex 0.163.0，使用隔离 HOME/CODEX_HOME 和本地模拟模型响应，实际贯通 CLI、app-server、MCP、六类 Hook 的原生信任、命令成败、压缩与恢复检索；不读取用户认证、不请求真实模型。发布工作流验证后只发布同一个 tarball，使用 `beta` 标签。上游其他宿主代码保留，当前 Pennix 支持范围以 lifecycle 和集成 Skill 的合同为准。
 
 上游通用实现说明见 [原始仓库](https://github.com/mksglu/context-mode)。本 fork 的维护差异与验证记录见 [docs/pennix-integration.md](docs/pennix-integration.md)。
 

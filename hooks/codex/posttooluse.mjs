@@ -51,7 +51,7 @@ try {
     tool_output: input.tool_output
       ? {
         ...input.tool_output,
-        isError: input.tool_output.isError === true || input.tool_output.is_error === true,
+        ...(input.tool_output.is_error === true ? {isError: true} : {}),
       }
       : undefined,
   };

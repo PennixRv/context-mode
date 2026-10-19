@@ -9,8 +9,8 @@
  * contains a natural summary plus a runnable search tool call that retrieves
  * full details from the indexed knowledge base on demand.
  *
- * Zero truncation. Zero information loss. Full data lives in SessionDB;
- * the snapshot is a table of contents.
+ * Codex opts into a UTF-8 byte budget; retained full data lives in SessionDB
+ * and its searchable projection. Other hosts retain the default renderer.
  */
 
 import { escapeXML } from "../truncate.js";
@@ -29,6 +29,54 @@ export interface StoredEvent {
 export interface BuildSnapshotOpts {
   compactCount?: number;
   searchTool?: string;    // platform-specific tool name, default "ctx_search"
+  maxBytes?: number;
+  searchSource?: string;
+}
+
+export const CODEX_RECOVERY_MAX_BYTES = 8192;
+
+function previewUtf8(value: string, maxBytes: number): string {
+  let result = "";
+  let bytes = 0;
+  for (const char of value) {
+    bytes += Buffer.byteLength(char);
+    if (bytes > maxBytes) break;
+    result += char;
+  }
+  return result;
+}
+
+/** Build references within the budget; never assemble full payloads first. */
+function buildBoundedSnapshot(events: StoredEvent[], opts: BuildSnapshotOpts): string {
+  const budget = opts.maxBytes!;
+  if (!Number.isSafeInteger(budget) || budget < 0) throw new RangeError("Invalid recovery byte budget");
+  const header = `<session_resume events="${events.length}" compact_count="${opts.compactCount ?? 1}">`;
+  const footer = "\n</session_resume>";
+  const source = opts.searchSource ?? "session-events";
+  const query = `${opts.searchTool ?? "ctx_search"}(${JSON.stringify({queries: ["session history"], source})})`;
+  let xml = `${header}\n  <how_to_search>Historical observations only; current host instructions, authorization and native task state take precedence. Full retained event data is indexed on demand. ${escapeXML(query)}</how_to_search>`;
+  if (Buffer.byteLength(xml + footer) > budget) return "";
+  const grouped = new Map<string, StoredEvent[]>();
+  for (const event of events) {
+    if (event.type === "rule_content") continue;
+    const entries = grouped.get(event.category) ?? [];
+    entries.push(event);
+    grouped.set(event.category, entries);
+  }
+  const preferred = ["prompt", "user-prompt", "goal", "decision", "task", "file", "error"];
+  const categories = [...new Set([...preferred, ...grouped.keys()])];
+  for (const category of categories) {
+    const entries = grouped.get(category);
+    if (!entries?.length) continue;
+    let section = `\n  <history category="${escapeXML(previewUtf8(category, 80))}" count="${entries.length}">`;
+    const close = "\n  </history>";
+    for (const event of entries.slice(-3)) {
+      const row = `\n    <event type="${escapeXML(previewUtf8(event.type, 80))}">${escapeXML(previewUtf8(event.data, 240))}</event>`;
+      if (Buffer.byteLength(xml + section + row + close + footer) <= budget) section += row;
+    }
+    if (Buffer.byteLength(xml + section + close + footer) <= budget) xml += section + close;
+  }
+  return xml + footer;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -472,6 +520,7 @@ export function buildResumeSnapshot(
   events: StoredEvent[],
   opts?: BuildSnapshotOpts,
 ): string {
+  if (opts?.maxBytes !== undefined) return buildBoundedSnapshot(events, opts);
   const compactCount = opts?.compactCount ?? 1;
   const searchTool = opts?.searchTool ?? "ctx_search";
   const now = new Date().toISOString();

@@ -124,7 +124,7 @@ describe("Codex native identity and MCP composition", () => {
     hook("precompact", a);
     hook("stop", a);
     const restored = hook("sessionstart", a, {source: "compact"});
-    expect(restored.hookSpecificOutput.additionalContext).toContain("historical");
+    expect(restored.hookSpecificOutput.additionalContext).toMatch(/historical/i);
     const file = resolveSessionEventsPath({ ...a, sessionsDir: join(data, "sessions") });
     expect(existsSync(file)).toBe(true);
     await call(b, "ctx_index", {content: "sibling", source: "sibling"});
@@ -155,6 +155,34 @@ describe("Codex native identity and MCP composition", () => {
     expect(events.filter(event => event.type === "tool_status")).toHaveLength(3);
     db.close();
   });
+
+  test("compact and resume stay bounded while full retained events remain queryable", async () => {
+    const a = threads[0];
+    const db = new SessionDB({dbPath: resolveSessionDbPath({projectDir: a.projectDir, sessionsDir: join(data, "sessions")})});
+    db.ensureSession(a.sessionId, a.projectDir);
+    db.insertEvent(a.sessionId, {type: "error_tool", category: "error", priority: 1, data: "OLD-HUGE-ERROR " + "x".repeat(1024 * 1024)});
+    for (let i = 0; i < 12; i++) db.insertEvent(a.sessionId, {type: "data", category: "data", priority: 4, data: `DATAHEAD${i} ` + "body ".repeat(100) + ` RETAINEDTAIL${i}`});
+    db.insertEvent(a.sessionId, {type: "constraint", category: "constraint", priority: 2, data: "RETAINEDCONSTRAINT exact native evidence"});
+    db.insertEvent(a.sessionId, {type: "goal", category: "goal", priority: 1, data: "RETAINEDGOAL verify full projection"});
+    db.upsertResume(a.sessionId, "OLD-OPAQUE-SNAPSHOT".repeat(100_000));
+    for (const source of ["compact", "compact", "resume"]) {
+      const output = hook("sessionstart", a, {source});
+      const context = output.hookSpecificOutput.additionalContext;
+      expect(Buffer.byteLength(context)).toBeLessThanOrEqual(8192);
+      expect(context).not.toContain("OLD-OPAQUE-SNAPSHOT");
+      expect(context).toContain(`session-events:${a.sessionId}`);
+    }
+    const found = await call(a, "ctx_search", {queries: ["RETAINEDTAIL0", "RETAINEDTAIL11", "RETAINEDCONSTRAINT", "RETAINEDGOAL"], source: `session-events:${a.sessionId}`});
+    const text = textOf(found);
+    for (const marker of ["RETAINEDTAIL0", "RETAINEDTAIL11", "RETAINEDCONSTRAINT", "RETAINEDGOAL"]) expect(text).toContain(marker);
+    for (const sort of ["relevance", "timeline"]) {
+      const sibling = await call(threads[1], "ctx_search", {queries: ["RETAINEDTAIL11"], source: `session-events:${a.sessionId}`, sort});
+      expect(textOf(sibling)).toContain("No results found");
+    }
+    hook("precompact", a);
+    expect(Buffer.byteLength(db.getResume(a.sessionId)!.snapshot)).toBeLessThanOrEqual(8192);
+    db.close();
+  }, 20_000);
 
   test("RPC cancellation kills descendants before a delayed write", async () => {
     const marker = join(threads[2].projectDir, "cancelled-marker");

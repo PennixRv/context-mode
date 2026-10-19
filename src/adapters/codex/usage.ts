@@ -64,7 +64,57 @@ import {
   type AgentUsageCounts,
   type SessionEvent,
   buildAgentUsageEvent,
+  canCaptureCodexTool,
+  extractConstraint,
 } from "../../session/extract.js";
+
+/** Completed native results and usage share one physical-line high-water mark. */
+export function extractCodexRolloutSince(
+  rollout: string,
+  sinceCursor: string | null,
+): { events: SessionEvent[]; cursor: string | null } {
+  if (sinceCursor !== null && !/^(0|[1-9]\d*)$/.test(sinceCursor)) throw new Error("Invalid Codex rollout cursor");
+  const since = sinceCursor === null ? -1 : Number(sinceCursor);
+  if (!Number.isSafeInteger(since)) throw new Error("Invalid Codex rollout cursor");
+  const lines = rollout.split("\n");
+  const records: Array<{index: number; record: Record<string, any>}> = [];
+  let last = -1;
+  // A partial or corrupt line is not settled; never advance past it.
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!lines[i].trim()) continue;
+    let record;
+    try { record = JSON.parse(lines[i]); } catch { break; }
+    if (!record || typeof record !== "object" || Array.isArray(record)) break;
+    records.push({index: i, record});
+    last = i;
+  }
+  if (last <= since) return {events: [], cursor: sinceCursor};
+  const calls = new Map<string, {tool_name: string; tool_input: Record<string, unknown>}>();
+  const failures: SessionEvent[] = [];
+  for (const {index, record} of records) {
+    if (record.type !== "response_item") continue;
+    const payload = record.payload;
+    if (!payload || typeof payload !== "object" || typeof payload.call_id !== "string") continue;
+    if (payload.type === "function_call") {
+      if (payload.name !== "exec_command" || (payload.namespace !== undefined && payload.namespace !== "functions") || typeof payload.arguments !== "string") continue;
+      try {
+        const args = JSON.parse(payload.arguments);
+        if (args && typeof args === "object" && !Array.isArray(args)) calls.set(payload.call_id, {tool_name: payload.name, tool_input: args});
+      } catch { /* Unknown call arguments are ineligible. */ }
+      continue;
+    }
+    if (index <= since || payload.type !== "function_call_output" || typeof payload.output !== "string") continue;
+    const call = calls.get(payload.call_id);
+    if (!call || !canCaptureCodexTool(call)) continue;
+    const status = /^Chunk ID: [^\r\n]+\r?\nWall time: \d+(?:\.\d+)? seconds\r?\nProcess exited with code (-?\d+)\r?\n(?:Original token count: \d+\r?\n)?(?:Output|Final output):\r?\n/.exec(payload.output);
+    if (!status || Number(status[1]) === 0) continue;
+    failures.push({type: "error_tool", category: "error", priority: 1,
+      data: `[Codex native result call_id=${payload.call_id} exit_code=${status[1]}]\n${payload.output.slice(status[0].length)}`});
+    failures.push(...extractConstraint({...call, tool_output: {isError: true}, tool_response: payload.output.slice(status[0].length)}));
+  }
+  const usage = extractCodexUsageSince(lines.slice(0, last + 1).join("\n"), sinceCursor);
+  return {events: [...failures, ...usage.events], cursor: String(last)};
+}
 
 /** Codex incremental TokenUsage (protocol.rs:2000). All fields optional/defensive. */
 function toNum(v: unknown): number {

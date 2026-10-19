@@ -18,6 +18,26 @@ import { findMissingLaunchFiles } from "../../src/util/plugin-cache-integrity.js
 
 const ROOT = resolve(import.meta.dirname, "../..");
 
+describe("recovery CLI", () => {
+  it("previews an absent owner read-only and rejects an unsealed apply", () => {
+    const home = mkdtempSync(join(tmpdir(), "cm-recovery-cli-"));
+    const project = join(home, "project"), codexHome = join(home, "codex");
+    mkdirSync(project); mkdirSync(codexHome);
+    const env = {...process.env, HOME: home, CODEX_HOME: codexHome, CONTEXT_MODE_PLATFORM: "codex", CONTEXT_MODE_DIR: join(home, "data")};
+    try {
+      const run = (...args: string[]) => spawnSync(process.execPath, [join(ROOT, "cli.bundle.mjs"), ...args], {env, encoding: "utf8"});
+      const preview = run("recovery", "--project", project, "--json");
+      expect(preview.status, preview.stderr).toBe(0);
+      expect(JSON.parse(preview.stdout).candidates).toEqual([]);
+      expect(existsSync(join(home, "data"))).toBe(false);
+      const apply = run("recovery", "--project", project, "--json", "--apply");
+      expect(apply.status).toBe(1);
+      expect(apply.stderr).toMatch(/digest/i);
+      expect(run("--help").stdout).toContain("recovery");
+    } finally { rmSync(home, {recursive: true, force: true}); }
+  });
+});
+
 describe("hook dispatch fails OPEN on a missing hook (version-skew brick fix)", () => {
   // A non-zero exit + empty stdout makes GitHub Copilot CLI DENY the tool
   // ("Denied by preToolUse hook (hook errored)"), bricking the agent when a

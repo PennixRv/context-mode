@@ -196,6 +196,8 @@ function printHelp(): void {
     "  context-mode index <path>            Index a file or directory into the FTS5 knowledge base",
     "  context-mode search <query...>       Search the current project's FTS5 knowledge base",
     "  context-mode doctor                  Diagnose runtime issues, hooks, FTS5, version",
+    "  context-mode recovery --project <path> --json  Preview consumed oversized recovery snapshots (read-only)",
+    "    --apply --expected-digest <sha256>  Apply that exact preview; retain events, indexes and unconsumed snapshots",
     "  context-mode hook <platform> <event> Dispatch a configured hook script",
     "  context-mode statusline              Print Claude Code status line",
     "",
@@ -229,6 +231,8 @@ if (args[0] === "--version" || args[0] === "-v") {
   indexCommand(args.slice(1)).then((code) => process.exit(code));
 } else if (args[0] === "search") {
   searchCommand(args.slice(1)).then((code) => process.exit(code));
+} else if (args[0] === "recovery") {
+  recoveryCommand(args.slice(1)).then((code) => process.exit(code));
 } else if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "hook") {
@@ -457,6 +461,24 @@ async function openCliContentStore(projectDir: string): Promise<{ store: Content
   const { resolveContentStorePath } = await import("./session/db.js");
   const dbPath = resolveContentStorePath({ projectDir, contentDir });
   return { store: new ContentStore(dbPath), dbPath, contentDir };
+}
+
+async function recoveryCommand(argv: string[]): Promise<number> {
+  try {
+    const {positional, flags} = parseFlags(argv);
+    if (positional.length || Object.keys(flags).some(key => !["project", "json", "apply", "expected-digest"].includes(key))) throw new Error("Unknown recovery argument");
+    const project = stringFlag(flags, "project");
+    if (!project || flags.json !== true || (flags.apply !== undefined && flags.apply !== true)) throw new Error("Usage: context-mode recovery --project <canonical-path> --json [--apply --expected-digest <sha256>]");
+    if (!boolFlag(flags, "apply") && flags["expected-digest"] !== undefined) throw new Error("--expected-digest requires --apply");
+    const adapter = await getAdapter(detectPlatform().platform);
+    const {recoverSessionSnapshots} = await import("./session/recovery.js");
+    const result = recoverSessionSnapshots({projectDir: project, sessionsDir: resolveSessionStorageDir(() => adapter.getSessionDir()).path, apply: boolFlag(flags, "apply"), expectedDigest: stringFlag(flags, "expected-digest")});
+    console.log(JSON.stringify(result));
+    return 0;
+  } catch (error) {
+    console.error(JSON.stringify({status: "failed", error: error instanceof Error ? error.message : String(error)}));
+    return 1;
+  }
 }
 
 function defaultSourceForPath(absPath: string): string {

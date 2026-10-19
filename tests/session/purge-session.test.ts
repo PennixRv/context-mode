@@ -1,14 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync, symlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _resetWorktreeSuffixCacheForTests,
   hashProjectDirCanonical,
   getWorktreeSuffix,
+  SessionDB,
+  resolveSessionDbPath,
 } from "../../src/session/db.js";
 import { purgeSession } from "../../src/session/purge.js";
+import { recoverSessionSnapshots } from "../../src/session/recovery.js";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -42,6 +45,68 @@ function touchSqliteTriple(path: string): void {
   writeFileSync(`${path}-wal`, "WAL");
   writeFileSync(`${path}-shm`, "SHM");
 }
+
+describe("recovery — scoped consumed snapshot maintenance", () => {
+  it("previews without creating a DB, then applies only exact consumed oversized rows", () => {
+    const projectDir = makeRepo("recovery");
+    const sessionsDir = makeTmpDir("recovery");
+    const dbPath = resolveSessionDbPath({projectDir, sessionsDir});
+    if (process.platform !== "win32") {
+      chmodSync(sessionsDir, 0o777);
+      expect(() => recoverSessionSnapshots({projectDir, sessionsDir})).toThrow(/owner/i);
+      chmodSync(sessionsDir, 0o700);
+    }
+    expect(recoverSessionSnapshots({projectDir, sessionsDir}).candidates).toEqual([]);
+    expect(existsSync(dbPath)).toBe(false);
+    const db = new SessionDB({dbPath});
+    try {
+      for (const sid of ["consumed", "pending", "small"]) db.ensureSession(sid, projectDir);
+      db.insertEvent("consumed", {type: "error_tool", category: "error", priority: 1, data: "RAW-EVENT-MUST-REMAIN"});
+      db.setUsageCursor("consumed", "11");
+      for (const sid of ["consumed", "pending"]) db.upsertResume(sid, "PRIVATE-HISTORY".repeat(1000), 1);
+      db.upsertResume("small", "valid small snapshot", 0);
+      db.markResumeConsumed("consumed");
+      db.markResumeConsumed("small");
+      const events = JSON.stringify(db.getEvents("consumed"));
+      const before = readdirSync(sessionsDir).sort();
+      const preview = recoverSessionSnapshots({projectDir, sessionsDir});
+      expect(preview.candidates.map(row => row.sessionId)).toEqual(["consumed"]);
+      expect(preview.protected.map(row => row.reason)).toContain("unconsumed");
+      expect(JSON.stringify(preview)).not.toContain("PRIVATE-HISTORY");
+      expect(readdirSync(sessionsDir).sort()).toEqual(before);
+      expect(() => recoverSessionSnapshots({projectDir, sessionsDir, apply: true, expectedDigest: "wrong"})).toThrow(/digest/i);
+      db.upsertResume("consumed", "CHANGED-HISTORY".repeat(1000), 2); db.markResumeConsumed("consumed");
+      expect(() => recoverSessionSnapshots({projectDir, sessionsDir, apply: true, expectedDigest: preview.digest})).toThrow(/digest/i);
+      const current = recoverSessionSnapshots({projectDir, sessionsDir});
+      const applied = recoverSessionSnapshots({projectDir, sessionsDir, apply: true, expectedDigest: current.digest});
+      expect(applied.deleted).toBe(1);
+      expect(db.getResume("consumed")).toBeNull();
+      expect(db.getResume("pending")?.consumed).toBe(0);
+      expect(db.getResume("small")?.snapshot).toBe("valid small snapshot");
+      expect(JSON.stringify(db.getEvents("consumed"))).toBe(events);
+      expect(db.getUsageCursor("consumed")).toBe("11");
+      expect(recoverSessionSnapshots({projectDir, sessionsDir}).candidates).toEqual([]);
+    } finally { db.close(); }
+    const before = readdirSync(sessionsDir).sort();
+    const bytes = readFileSync(dbPath);
+    recoverSessionSnapshots({projectDir, sessionsDir});
+    expect(readdirSync(sessionsDir).sort()).toEqual(before);
+    expect(readFileSync(dbPath)).toEqual(bytes);
+  });
+  it("rejects symlink and corrupt owners without repairing them", () => {
+    const projectDir = makeRepo("recovery-bad");
+    const sessionsDir = makeTmpDir("recovery-bad");
+    const dbPath = resolveSessionDbPath({projectDir, sessionsDir});
+    const target = join(sessionsDir, "target"); writeFileSync(target, "not a database");
+    symlinkSync(target, dbPath);
+    expect(() => recoverSessionSnapshots({projectDir, sessionsDir})).toThrow(/link|owner/i);
+    rmSync(target);
+    expect(() => recoverSessionSnapshots({projectDir, sessionsDir})).toThrow(/link|owner/i);
+    rmSync(dbPath); writeFileSync(dbPath, "corrupt");
+    expect(() => recoverSessionSnapshots({projectDir, sessionsDir})).toThrow();
+    expect(readFileSync(dbPath, "utf8")).toBe("corrupt");
+  });
+});
 
 // ─────────────────────────────────────────────────────────
 // Slice 1 — session events SQLite DB (canonical) + sidecars

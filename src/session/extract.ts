@@ -78,6 +78,8 @@ export interface HookInput {
   tool_response?: string;
   /** Optional structured output from the tool (may carry isError) */
   tool_output?: { isError?: boolean; is_error?: boolean };
+  /** A native adapter has no outcome evidence; output text cannot supply it. */
+  status_unknown?: boolean;
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -94,7 +96,17 @@ function safeStringAny(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+function explicitToolError(input: HookInput): boolean | undefined {
+  const output = input.tool_output;
+  if (output?.isError === true || output?.is_error === true) return true;
+  if (output?.isError === false || output?.is_error === false) return false;
+  return undefined;
+}
+
 function isToolError(input: HookInput): boolean {
+  const explicit = explicitToolError(input);
+  if (explicit !== undefined) return explicit;
+  if (input.status_unknown) return false;
   const response = String(input.tool_response ?? "");
   // PreToolUse rewrites curl/wget/inline-HTTP/WebFetch commands into
   //   echo "context-mode: <guidance text including 'retry', 'fails', 'error'>"
@@ -867,9 +879,10 @@ function extractSkill(input: HookInput): SessionEvent[] {
  * Constraints discovered through error events — tool failures reveal
  * platform/environment limitations worth remembering.
  */
-function extractConstraint(input: HookInput): SessionEvent[] {
+export function extractConstraint(input: HookInput): SessionEvent[] {
   // Only fire on error events — constraints are discovered through failures
-  if (!input.tool_response?.includes("Error") && !input.tool_output?.isError) return [];
+  if (input.status_unknown || explicitToolError(input) === false) return [];
+  if (explicitToolError(input) !== true && !input.tool_response?.includes("Error")) return [];
 
   const response = String(input.tool_response || "");
   const patterns = [/not supported/i, /cannot/i, /does not support/i, /FAIL/i, /refused/i, /permission denied/i, /incompatible/i];
@@ -1326,6 +1339,7 @@ function extractWebFetchMetadata(input: HookInput): SessionEvent[] {
  * NO exit_code field exists in the SDK.
  */
 function extractBashOutcome(input: HookInput): SessionEvent[] {
+  if (input.status_unknown) return [];
   if (input.tool_name !== "Bash") return [];
   const resp = input.tool_response;
   if (typeof resp !== "string" || resp.length === 0) return [];
@@ -2544,6 +2558,7 @@ function extractData(message: string): SessionEvent[] {
 let lastError: { tool: string; error: string; callsSince: number } | null = null;
 
 function extractErrorResolution(input: HookInput): SessionEvent[] {
+  if (input.status_unknown) return [];
   const { tool_name, tool_response } = input;
   const response = String(tool_response ?? "");
 
@@ -2782,16 +2797,27 @@ export function extractUserEvents(message: string): SessionEvent[] {
  * compute MCP integration counts and primary-model adoption per org.
  * mcp_servers list is truncated to first 8 names.
  */
-export function extractCodexEvents(input: HookInput): SessionEvent[] {
+export function canCaptureCodexTool(input: HookInput): boolean {
   const name = input.tool_name ?? "";
-  if (/(?:^|__)ctx_[a-z_]+$/.test(name)) return [];
+  if (/(?:^|__)ctx_[a-z_]+$/.test(name)) return false;
   const args = JSON.stringify(input.tool_input ?? {});
   const privateOperation = /windsurf-code-search|(?:pennix\s+(?:secrets?|credentials?)\b)|(?:\.ssh[/\\])|(?:auth\.json)|(?:secrets\.(?:toml|json))|(?:\.(?:env|npmrc|pypirc)\b)|(?:password|passwd|private[_-]?key|api[_-]?key|access[_-]?token|authorization)["']?\s*[=:]/i.test(args);
   // Native orchestration and opaque MCP payloads can contain secrets or unverified candidates.
-  if (privateOperation || name.startsWith("mcp__") || ["functions.exec", "exec", "write_stdin", "request_user_input"].includes(name)) {
-    return [{ type: "tool_status", category: "tool", priority: 3, data: JSON.stringify({tool: name, failed: isToolError(input)}) }];
+  return !(privateOperation || name.startsWith("mcp__") || ["functions.exec", "exec", "write_stdin", "request_user_input"].includes(name));
+}
+
+export function extractCodexEvents(input: HookInput): SessionEvent[] {
+  const name = input.tool_name ?? "";
+  if (/(?:^|__)ctx_[a-z_]+$/.test(name)) return [];
+  if (!canCaptureCodexTool(input)) {
+    return [{ type: "tool_status", category: "tool", priority: 3, data: JSON.stringify({tool: name, failed: explicitToolError(input)}) }];
   }
-  return extractEvents(input);
+  const events = extractEvents({...input, status_unknown: explicitToolError(input) === undefined});
+  // Native command failures are recorded once, after their outer result is persisted.
+  if (["Bash", "Shell", "exec_command", "functions.exec_command"].includes(name)) {
+    return events.filter(e => !["error", "constraint", "error-resolution"].includes(e.category));
+  }
+  return events;
 }
 
 export function extractSessionSettings(input: unknown): SessionEvent[] {
