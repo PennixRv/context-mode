@@ -172,11 +172,13 @@ try {
   recoveryApp = await openApp("recovery");
   const trusted = await recoveryApp.rpc("hooks/list", {cwds: [recoveryApp.project]});
   assert.ok(trusted.data.flatMap(x => x.hooks).every(h => h.trustStatus === "trusted"));
-  const recoveryThread = (await recoveryApp.rpc("thread/start", {cwd: recoveryApp.project, approvalPolicy: "never", sandboxPolicy: {type: "readOnly", networkAccess: true}})).thread;
+  const recoverySandboxPolicy = process.env.CI === "true"
+    ? {type: "dangerFullAccess"}
+    : {type: "readOnly", networkAccess: true};
+  const recoveryThread = (await recoveryApp.rpc("thread/start", {cwd: recoveryApp.project, approvalPolicy: "never", sandboxPolicy: recoverySandboxPolicy})).thread;
   let notificationOffset = recoveryApp.notifications.length;
-  // Keep filesystem read-only; the disposable fixture permits localhost networking
-  // without asking CI's restricted network namespace to configure loopback.
-  await recoveryApp.rpc("turn/start", {threadId: recoveryThread.id, sandboxPolicy: {type: "readOnly", networkAccess: true}, input: [{type: "text", text: "RECOVERY_PROBE run native success and failure.", text_elements: []}]});
+  // Keep local verification read-only; CI's restricted runner cannot create bwrap namespaces.
+  await recoveryApp.rpc("turn/start", {threadId: recoveryThread.id, sandboxPolicy: recoverySandboxPolicy, input: [{type: "text", text: "RECOVERY_PROBE run native success and failure.", text_elements: []}]});
   assert.equal((await recoveryApp.wait("turn/completed", notificationOffset)).params.turn.status, "completed");
   const {SessionDB, resolveSessionDbPath} = await import(join(packageRoot, "build/session/db.js"));
   const db = new SessionDB({dbPath: resolveSessionDbPath({projectDir: recoveryApp.project, sessionsDir: join(recoveryHome, "data/sessions")})});
