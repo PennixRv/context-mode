@@ -1,6 +1,6 @@
 {
   "name": "@pennixrv/context-mode",
-  "version": "1.0.169-pennix.4",
+  "version": "1.0.169-pennix.5",
   "type": "module",
   "description": "Pennix workflow integration of Context Mode: bounded execution, FTS5 search and local session continuity for Codex.",
   "author": "Mert Koseoğlu",

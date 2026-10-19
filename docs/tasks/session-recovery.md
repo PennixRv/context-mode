@@ -1,6 +1,6 @@
 # Codex 会话恢复与状态采集修复
 
-根协调任务：`codex-workflow-optimization/.trellis/tasks/10-19-context-mode-session-boundary`。用户已批准该任务封口方案 revision 1；本组件基线为 `2cb3b93e6dfa57510b13dc20eb5a7b3aac6ce6bb`、`1.0.169-pennix.2`，发行目标为 `1.0.169-pennix.4`，沿用本 fork 的 main/tag/CI 发布链。
+根协调任务：`codex-workflow-optimization/.trellis/tasks/10-19-context-mode-session-boundary`。用户已批准该任务封口方案 revision 1；本组件基线为 `2cb3b93e6dfa57510b13dc20eb5a7b3aac6ce6bb`、`1.0.169-pennix.2`，发行目标为 `1.0.169-pennix.5`，沿用本 fork 的 main/tag/CI 发布链。
 
 ## 行为差距与修改范围
 

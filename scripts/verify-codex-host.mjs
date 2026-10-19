@@ -172,7 +172,7 @@ try {
   recoveryApp = await openApp("recovery");
   const trusted = await recoveryApp.rpc("hooks/list", {cwds: [recoveryApp.project]});
   assert.ok(trusted.data.flatMap(x => x.hooks).every(h => h.trustStatus === "trusted"));
-  const recoveryThread = (await recoveryApp.rpc("thread/start", {cwd: recoveryApp.project, approvalPolicy: "never", sandbox: "read-only"})).thread;
+  const recoveryThread = (await recoveryApp.rpc("thread/start", {cwd: recoveryApp.project, approvalPolicy: "never", sandboxPolicy: {type: "readOnly", networkAccess: true}})).thread;
   let notificationOffset = recoveryApp.notifications.length;
   // Keep filesystem read-only; the disposable fixture permits localhost networking
   // without asking CI's restricted network namespace to configure loopback.
