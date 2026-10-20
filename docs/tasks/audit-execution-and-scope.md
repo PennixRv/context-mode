@@ -24,7 +24,7 @@
 
 源码验证：新增回归先复现失败，再验证通过；完整测试 201 个文件、4503 项通过、30 项既有跳过。`npm run typecheck`、pretest build/bundle/drift 通过。原生 `verify-codex-host.mjs` 的 Codex CLI、app-server 身份链和压缩后失败事件恢复均通过；该隔离验证不替代安装后的当前宿主现场证据。
 
-四项合并为同一发行物。首个 `v1.0.169-pennix.9` CI 在测试阶段失败，runner 未安装可选 zsh，尚未发布 npm；修正回归可移植性后采用新补丁候选 `1.0.169-pennix.10`，保留旧 tag。本机 sh/zsh 两项均实际通过；CI 仅对不存在的可选 zsh 显式跳过。发行前核对远端及版本未占用。沿本 fork 的 npm 版本/manifest 同步、main/tag/CI 链，CI 验证同一 tarball 后发布 scoped 包 `@pennixrv/context-mode` 的 beta。以当前 README、Pennix 维护记录和 CI 为合同，不执行遗留上游 ops 文档的 unscoped 本地 publish、自动多代理、next 合并或分支清理。
+四项合并为同一发行物。首个 `v1.0.169-pennix.9` CI 在测试阶段失败，runner 未安装可选 zsh；`.10` 因 `it.each` 回调不提供 context、缺少 zsh 时调用 skip 失败，均未进入 npm publish。改用已有 `it.skipIf`；本机完整路由领域 99 项通过，受控 PATH 排除 zsh 时 sh 通过、zsh 明确跳过，类型检查通过。采用新补丁候选 `1.0.169-pennix.11`，保留两个失败 tag。发行前核对远端及版本未占用。沿本 fork 的 npm 版本/manifest 同步、main/tag/CI 链，CI 验证同一 tarball 后发布 scoped 包 `@pennixrv/context-mode` 的 beta。以当前 README、Pennix 维护记录和 CI 为合同，不执行遗留上游 ops 文档的 unscoped 本地 publish、自动多代理、next 合并或分支清理。
 
 根任务负责制品版本/ref/integrity 核验、当前机器 `pennix update context-mode` 和必要的 `pennix repair context-mode`，保留其他 MCP/Hook 和用户自有资产。安装候选必须与本任务制品一致，失败保留原生 journal；不手改 lock/receipt。
 

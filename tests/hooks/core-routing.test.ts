@@ -83,24 +83,25 @@ describe("routePreToolUse", () => {
   // ─── Bash routing ──────────────────────────────────────
 
   describe("Bash tool", () => {
-    it.each(["sh", "zsh"])("prints build redirection as literal text in %s (F-010)", (shell, context) => {
-      if (shell === "zsh" && spawnSync(shell, ["--version"]).error?.code === "ENOENT") {
-        context.skip();
-      }
-      const dir = mkdtempSync(join(tmpdir(), "cm-build-literal-"));
-      try {
-        const marker = join(dir, "executed");
-        const command = `mvn test '$(touch ${marker})' '\`touch ${marker}\`' "quoted" \\path\nnext`;
-        const decision = routePreToolUse("Bash", { command });
-        expect(decision?.action).toBe("modify");
-        const printed = spawnSync(shell, ["-c", String(decision!.updatedInput!.command)], { encoding: "utf8" });
-        expect(printed.status).toBe(0);
-        expect(printed.stdout).toContain(JSON.stringify(`${command} 2>&1 | tail -30`));
-        expect(existsSync(marker)).toBe(false);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
+    for (const shell of ["sh", "zsh"]) {
+      it.skipIf(shell === "zsh" && spawnSync(shell, ["--version"]).error?.code === "ENOENT")(
+        `prints build redirection as literal text in ${shell} (F-010)`, () => {
+          const dir = mkdtempSync(join(tmpdir(), "cm-build-literal-"));
+          try {
+            const marker = join(dir, "executed");
+            const command = `mvn test '$(touch ${marker})' '\`touch ${marker}\`' "quoted" \\path\nnext`;
+            const decision = routePreToolUse("Bash", { command });
+            expect(decision?.action).toBe("modify");
+            const printed = spawnSync(shell, ["-c", String(decision!.updatedInput!.command)], { encoding: "utf8" });
+            expect(printed.status).toBe(0);
+            expect(printed.stdout).toContain(JSON.stringify(`${command} 2>&1 | tail -30`));
+            expect(existsSync(marker)).toBe(false);
+          } finally {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        },
+      );
+    }
 
     it("denies curl commands with modify action", () => {
       const result = routePreToolUse("Bash", {
