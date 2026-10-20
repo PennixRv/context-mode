@@ -53,6 +53,20 @@ beforeAll(async () => {
 
 // ─── Shared test decisions ───────────────────────────────
 
+describe("literal build redirection guidance (F-010)", () => {
+  it("retains structured guidance for deny-only hosts and the legacy formatter", async () => {
+    const { formatDecision } = await import("../../hooks/core/formatters.mjs");
+    const reason = 'context-mode: Build tool redirected. literal \'$(touch never)\' "quotes"';
+    const decision = {action: "modify", reason, updatedInput: {command: `printf '%s\\n' '${reason.replace(/'/g, "'\\''")}'`}};
+    for (const platform of ["claude-code", "codex", "antigravity-cli"]) {
+      const output = formatDecision(platform, decision) as any;
+      expect(output.hookSpecificOutput?.permissionDecisionReason ?? output.reason).toBe(reason);
+    }
+    const legacy = claudeCodeFormat(decision) as any;
+    expect(legacy.hookSpecificOutput.permissionDecisionReason).toBe(reason);
+  });
+});
+
 const denyDecision = {
   action: "deny",
   reason: "WebFetch blocked. Use fetch_and_index instead.",

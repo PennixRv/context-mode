@@ -35,7 +35,7 @@ export const formatters = {
     //
     // Other adapters (gemini-cli, vscode-copilot, etc.) keep their own modify
     // semantics — their hosts implement updatedInput differently or not at all.
-    modify: (updatedInput) => {
+    modify: (updatedInput, { redirectReason } = {}) => {
       const ui = updatedInput ?? {};
       const isBashCommandRedirect = "command" in ui;
       if (!isBashCommandRedirect) {
@@ -46,14 +46,12 @@ export const formatters = {
           },
         };
       }
-      // routing.mjs wraps the redirect guidance in `echo "..."` form.
-      // Extract the quoted payload as the deny reason. Fall back to a generic
-      // ADR-0003 CASE A message if the shape doesn't match.
+      // Preserve structured guidance; accept legacy echo redirects too.
       const cmd = ui.command ?? "";
       const m = cmd.match(/^echo\s+"(.+)"$/s);
-      const reason = m
+      const reason = redirectReason ?? (m
         ? m[1]
-        : "Redirected to ctx_execute / ctx_fetch_and_index. Call ctx_execute(language, code) to fetch and derive your answer in one round trip, or call ctx_fetch_and_index(url, source) when you want to query the response later via ctx_search. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).";
+        : "Redirected to ctx_execute / ctx_fetch_and_index. Call ctx_execute(language, code) to fetch and derive your answer in one round trip, or call ctx_fetch_and_index(url, source) when you want to query the response later via ctx_search. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).");
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
@@ -169,7 +167,7 @@ export const formatters = {
     // carrying the same guidance, so the bytes-flood guard never silently
     // passes through. `codexSupportsRewrite` is detected at runtime by the
     // codex hook (hooks/core/codex-caps.mjs) and threaded in via formatDecision.
-    modify: (updatedInput, { codexSupportsRewrite } = {}) => {
+    modify: (updatedInput, { codexSupportsRewrite, redirectReason } = {}) => {
       if (codexSupportsRewrite) {
         return {
           hookSpecificOutput: {
@@ -187,7 +185,7 @@ export const formatters = {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: codexRedirectReason(ui.command),
+          permissionDecisionReason: redirectReason ?? codexRedirectReason(ui.command),
         },
       };
     },
@@ -239,15 +237,15 @@ export const formatters = {
     // the per-tool redirect guidance routing carried in `updatedInput.command`
     // (an `echo "<guidance>"` payload that already uses agy's context-mode/<tool>
     // surface) instead of a generic line; fall back to the generic redirect.
-    modify: (updatedInput) => {
+    modify: (updatedInput, { redirectReason } = {}) => {
       const cmd = updatedInput?.command ?? updatedInput?.CommandLine ?? "";
       const m = String(cmd).match(/^echo\s+"([\s\S]*)"\s*$/);
       const guidance = m ? m[1].replace(/\\(["\\])/g, "$1") : "";
       return {
         decision: "deny",
         reason:
-          guidance ||
-          "context-mode: redirected. Use the context-mode MCP tools (ctx_execute / ctx_fetch_and_index / ctx_search) so raw bytes stay out of the conversation.",
+          redirectReason ?? (guidance ||
+          "context-mode: redirected. Use the context-mode MCP tools (ctx_execute / ctx_fetch_and_index / ctx_search) so raw bytes stay out of the conversation."),
       };
     },
     context: (additionalContext) => ({
@@ -349,7 +347,7 @@ export function formatDecision(platform, decision, opts = {}) {
     // Pass the reason to ask() too — platforms whose ask formatter ignores it
     // (legacy `ask: () => …`) are unaffected; copilot-cli surfaces it.
     case "ask": return fmt.ask(decision.reason);
-    case "modify": return fmt.modify(decision.updatedInput, opts);
+    case "modify": return fmt.modify(decision.updatedInput, { ...opts, redirectReason: decision.reason });
     case "context": return fmt.context(decision.additionalContext, opts);
     default: return null;
   }

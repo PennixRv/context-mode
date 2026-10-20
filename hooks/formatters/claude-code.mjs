@@ -82,14 +82,12 @@ export function formatDecision(decision) {
           },
         };
       }
-      // routing.mjs wraps the redirect guidance in `echo "..."` form.
-      // Extract the quoted payload as the deny reason. Fall back to a generic
-      // ADR-0003 CASE A message if the shape doesn't match.
+      // Preserve structured guidance; accept legacy echo redirects too.
       const cmd = ui.command ?? "";
       const m = cmd.match(/^echo\s+"(.+)"$/s);
-      const reason = m
+      const reason = decision.reason ?? (m
         ? m[1]
-        : "Redirected to ctx_execute / ctx_fetch_and_index. Call ctx_execute(language, code) to fetch and derive your answer in one round trip, or call ctx_fetch_and_index(url, source) when you want to query the response later via ctx_search. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).";
+        : "Redirected to ctx_execute / ctx_fetch_and_index. Call ctx_execute(language, code) to fetch and derive your answer in one round trip, or call ctx_fetch_and_index(url, source) when you want to query the response later via ctx_search. Both have full network access. Retry the same call on a transient DNS error (EAI_AGAIN, ETIMEDOUT, ENETUNREACH).");
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",

@@ -2866,13 +2866,13 @@ import {
   type BatchCommand,
 } from "../../src/server.js";
 
-interface MockResult { stdout: string; stderr?: string; timedOut?: boolean; }
+interface MockResult { stdout: string; stderr?: string; timedOut?: boolean; exitCode?: number; }
 
 function mkMockExecutor(
   handler: (code: string, timeout: number | undefined, cwd: string | undefined) => Promise<MockResult> | MockResult,
 ): { execute: (input: { language: "shell"; code: string; timeout: number | undefined; cwd?: string }) => Promise<MockResult> } {
   return {
-    execute: async ({ code, timeout, cwd }) => Promise.resolve(handler(code, timeout, cwd)),
+    execute: async ({ code, timeout, cwd }) => ({ exitCode: 0, ...await handler(code, timeout, cwd) }),
   };
 }
 
@@ -3155,6 +3155,79 @@ describe("runBatchCommands parallel path (concurrency>1)", () => {
   });
 });
 
+describe("audit batch execution regressions", () => {
+  test.each([1, 3])("preserves exit statuses and shell soft failures at concurrency=%i (F013)", async (concurrency) => {
+    const values = [
+      { stdout: "ok", stderr: "", exitCode: 0 },
+      { stdout: "", stderr: "", exitCode: 7 },
+      { stdout: "matches", stderr: "notice", exitCode: 1 },
+      { stdout: "", stderr: "", exitCode: 1 },
+      { stdout: "partial", stderr: "", exitCode: 0, timedOut: true },
+    ];
+    const result = await runBatchCommands(
+      values.map((_, i) => ({ label: String(i), command: String(i) })),
+      { concurrency, timeout: 5000, nodeOptsPrefix: "" },
+      { execute: async ({ code }) => values[Number(code)] },
+    );
+    expect(result.results.map((r) => r.status)).toEqual(["success", "nonzero_exit", "soft_failure", "nonzero_exit", "timed_out"]);
+    expect(result.results.map((r) => r.exitCode)).toEqual([0, 7, 1, 1, 0]);
+    expect(result.isError).toBe(true);
+    expect(result.outputs[4]).toContain("partial");
+  });
+
+  test("serial executor error preserves finished output and marks unexecuted siblings (F013)", async () => {
+    const calls: string[] = [];
+    const result = await runBatchCommands(
+      ["done", "broken", "later"].map((command) => ({ label: command, command })),
+      { concurrency: 1, timeout: undefined, nodeOptsPrefix: "" },
+      { execute: async ({ code }) => {
+        calls.push(code);
+        if (code === "broken") throw new Error("spawn EAGAIN");
+        return { stdout: "finished output", exitCode: 0 };
+      } },
+    );
+    expect(calls).toEqual(["done", "broken"]);
+    expect(result.results.map((r) => r.status)).toEqual(["success", "executor_error", "skipped"]);
+    expect(result.outputs[0]).toContain("finished output");
+    expect(result.outputs[1]).toContain("spawn EAGAIN");
+    expect(result.isError).toBe(true);
+  });
+
+  test.each([1, 2])("unknown exit code is not success at concurrency=%i (F013)", async (concurrency) => {
+    const result = await runBatchCommands([{ label: "unknown", command: "x" }],
+      { concurrency, timeout: undefined, nodeOptsPrefix: "" },
+      { execute: async () => ({ stdout: "partial" }) });
+    expect(result.results[0]).toMatchObject({ status: "unknown", exitCode: null });
+    expect(result.isError).toBe(true);
+  });
+
+  test.each([1, 3])("POSIX prefix supports compound shell and quoted preload paths at concurrency=%i (F019)", async (concurrency) => {
+    const dir = mkdtempSync(join(tmpdir(), "cm-batch-options-"));
+    try {
+      const preload = join(dir, "pre load's.cjs");
+      writeFileSync(preload, "process.env.CM_PRELOAD_PROBE = 'loaded';");
+      const node = `${JSON.stringify(process.execPath)} -e 'console.log(process.env.CM_PRELOAD_PROBE)'`;
+      const commands = [
+        `for i in one two; do ${node}; done`,
+        `if true; then ${node}; fi`,
+        `true\n${node}`,
+        `${JSON.stringify(process.execPath)} <<'NODE'\nconsole.log(process.env.CM_PRELOAD_PROBE)\nNODE`,
+        node,
+      ];
+      const result = await runBatchCommands(commands.map((command, i) => ({ label: String(i), command })),
+        { concurrency, timeout: 5000, nodeOptsPrefix: buildBatchNodeOptionsPrefix("sh", preload) },
+        { execute: async ({ code }) => {
+          const r = spawnSync("sh", ["-c", code], { encoding: "utf8" });
+          return { stdout: r.stdout, stderr: r.stderr, exitCode: r.status ?? 1 };
+        } });
+      expect(result.outputs.every((output) => output.includes("loaded"))).toBe(true);
+      expect(result.isError).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("runBatchCommands edge cases", () => {
   test("empty commands array returns empty outputs", async () => {
     const exec = mkMockExecutor(() => ({ stdout: "" }));
@@ -3183,7 +3256,7 @@ describe("runBatchCommands edge cases", () => {
 
   test("buildBatchNodeOptionsPrefix formats POSIX shell assignment", () => {
     const prefix = buildBatchNodeOptionsPrefix("bash", "/tmp/cm fs'preload.js");
-    expect(prefix).toBe("NODE_OPTIONS='--require /tmp/cm fs'\\''preload.js' ");
+    expect(prefix).toBe("export NODE_OPTIONS='--require \"/tmp/cm fs'\\''preload.js\"'; ");
   });
 
   test("buildBatchNodeOptionsPrefix formats PowerShell assignment", () => {
@@ -6154,8 +6227,8 @@ describe("ctx_batch_execute query_scope (issue #696)", () => {
   test("formatBatchQueryResults default scope keeps batch-local tip", async () => {
     const { formatBatchQueryResults } = await import("../../src/server.js");
     const store = new ContentStore(":memory:");
-    store.index({ content: "# Section A\n\nValidation of frontmatter is critical.\n", source: "batch:cmd1" });
-    const lines = formatBatchQueryResults(store, ["validation"], "batch:cmd1");
+    const indexed = store.index({ content: "# Section A\n\nValidation of frontmatter is critical.\n", source: "batch:cmd1" });
+    const lines = formatBatchQueryResults(store, ["validation"], indexed.sourceId);
     const text = lines.join("\n");
     expect(text).toMatch(/Results are scoped to this batch only/);
     expect(text).toMatch(/query_scope:\s*"global"/);
@@ -6164,8 +6237,8 @@ describe("ctx_batch_execute query_scope (issue #696)", () => {
   test("formatBatchQueryResults global scope drops batch tip and notes global scope", async () => {
     const { formatBatchQueryResults } = await import("../../src/server.js");
     const store = new ContentStore(":memory:");
-    store.index({ content: "# Section A\n\nValidation of frontmatter is critical.\n", source: "other:source" });
-    const lines = formatBatchQueryResults(store, ["validation"], "batch:cmd1", undefined, "global");
+    const indexed = store.index({ content: "# Section A\n\nValidation of frontmatter is critical.\n", source: "other:source" });
+    const lines = formatBatchQueryResults(store, ["validation"], indexed.sourceId, undefined, "global");
     const text = lines.join("\n");
     expect(text).toMatch(/query_scope:\s*"global"/);
     expect(text).not.toMatch(/Results are scoped to this batch only/);

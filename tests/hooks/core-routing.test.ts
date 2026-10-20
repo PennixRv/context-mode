@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   writeFileSync,
   mkdirSync,
@@ -83,6 +83,24 @@ describe("routePreToolUse", () => {
   // ─── Bash routing ──────────────────────────────────────
 
   describe("Bash tool", () => {
+    it("prints build redirection as literal text in sh and zsh (F-010)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "cm-build-literal-"));
+      try {
+        const marker = join(dir, "executed");
+        const command = `mvn test '$(touch ${marker})' '\`touch ${marker}\`' "quoted" \\path\nnext`;
+        const decision = routePreToolUse("Bash", { command });
+        expect(decision?.action).toBe("modify");
+        for (const shell of ["sh", "zsh"]) {
+          const printed = spawnSync(shell, ["-c", String(decision!.updatedInput!.command)], { encoding: "utf8" });
+          expect(printed.status).toBe(0);
+          expect(printed.stdout).toContain(JSON.stringify(`${command} 2>&1 | tail -30`));
+          expect(existsSync(marker)).toBe(false);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("denies curl commands with modify action", () => {
       const result = routePreToolUse("Bash", {
         command: "curl https://example.com",

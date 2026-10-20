@@ -57,6 +57,78 @@ beforeAll(async () => {
 afterAll(async () => { await client.close(); rmSync(root, {recursive: true, force: true}); });
 
 describe("Codex native identity and MCP composition", () => {
+  test.each([1, 2])("batch tool reports silent failure even without search matches at concurrency=%i (F013)", async (concurrency) => {
+    for (const queries of [["missing-audit-vocabulary"], []]) {
+      const result = await call(threads[0], "ctx_batch_execute", {
+        commands: [
+          {label: "finished", command: "printf 'finished-evidence\\n'"},
+          {label: "failed", command: "exit 7"},
+        ],
+        queries, concurrency,
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/finished: .*success; exit code: 0/);
+      expect(textOf(result)).toMatch(/failed: .*nonzero_exit; exit code: 7/);
+      const saved = await call(threads[0], "ctx_search", {queries: ["finished-evidence"]});
+      expect(textOf(saved)).toContain("finished-evidence");
+    }
+    const soft = await call(threads[0], "ctx_batch_execute", {
+      commands: [{label: "soft", command: "printf 'useful-result\\n'; exit 1"}],
+      queries: [], concurrency,
+    });
+    expect(soft.isError).not.toBe(true);
+    expect(textOf(soft)).toContain("soft_failure; exit code: 1");
+  });
+
+  test.each([1, 2])("batch tool runs compound shell at concurrency=%i (F019)", async (concurrency) => {
+    const result = await call(threads[0], "ctx_batch_execute", {
+      commands: [{label: "compound", command: "for i in first second; do printf '%s\\n' \"$i\"; done"}],
+      queries: ["second"], concurrency,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(textOf(result)).toContain("success; exit code: 0");
+    expect(textOf(result)).toContain("second");
+  });
+
+  test("execute intent is bound to this output, excluding historical and :error sources (F014)", async () => {
+    for (const suffix of ["", "; exit 7"]) {
+      await call(threads[1], "ctx_execute", {
+        language: "shell", code: `printf '%s\\n' '${"OLDINTENTONLY history evidence\n".repeat(240)}'${suffix}`, intent: "OLDINTENTONLY",
+      });
+    }
+    const current = await call(threads[0], "ctx_execute", {
+      language: "shell", code: `printf '%s\\n' '${"CURRENTINTENTONLY current evidence\n".repeat(240)}'`, intent: "OLDINTENTONLY",
+    });
+    expect(current.isError).not.toBe(true);
+    expect(textOf(current)).toContain("No sections matched intent");
+    const shared = await call(threads[0], "ctx_search", { queries: ["OLDINTENTONLY"] });
+    expect(textOf(shared)).toContain("OLDINTENTONLY");
+  });
+
+  test("batch source IDs isolate colliding labels while explicit global remains shared (F014)", async () => {
+    const label = "collision".repeat(12);
+    await call(threads[1], "ctx_batch_execute", {
+      commands: [{label: `${label}-old`, command: "printf 'OLDBATCHONLY history\\n'"}], queries: ["OLDBATCHONLY"],
+    });
+    const current = await call(threads[0], "ctx_batch_execute", {
+      commands: [{label: `${label}-new`, command: "printf 'CURRENTBATCHONLY fresh\\n'"}], queries: ["OLDBATCHONLY", "CURRENTBATCHONLY"],
+    });
+    expect(textOf(current)).toContain("No matching sections found.");
+    expect(textOf(current)).not.toContain("OLDBATCHONLY history");
+    expect(textOf(current)).toContain("CURRENTBATCHONLY fresh");
+    const global = await call(threads[0], "ctx_batch_execute", {
+      commands: [{label: "global", command: "true"}], queries: ["OLDBATCHONLY"], query_scope: "global",
+    });
+    expect(textOf(global)).toContain("OLDBATCHONLY history");
+    const simultaneous = await Promise.all(["CONCURRENTALPHA", "CONCURRENTBETA"].map(word => call(threads[0], "ctx_batch_execute", {
+      commands: [{label, command: `printf '${word}\\n'`}], queries: ["CONCURRENTALPHA", "CONCURRENTBETA"],
+    })));
+    expect(textOf(simultaneous[0])).toContain("\n\nCONCURRENTALPHA\n");
+    expect(textOf(simultaneous[0])).not.toContain("\n\nCONCURRENTBETA\n");
+    expect(textOf(simultaneous[1])).toContain("\n\nCONCURRENTBETA\n");
+    expect(textOf(simultaneous[1])).not.toContain("\n\nCONCURRENTALPHA\n");
+  });
+
   test("only the exact native thread determines cwd; missing or ambiguous identity fails", () => {
     for (const thread of threads) expect(resolveCodexThreadContext(thread.sessionId, codexHome).projectDir).toBe(thread.projectDir);
     expect(() => resolveCodexThreadContext(undefined, codexHome)).toThrow(/threadId/);

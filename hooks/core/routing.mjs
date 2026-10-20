@@ -808,11 +808,12 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     // These produce extremely verbose output that should stay in sandbox.
     // Word-boundary guard prevents matching `gradle-wrapper-config`, `mvnDocker`, etc.
     if (/(^|\s|&&|\||\;)(\.\/gradlew|gradlew|gradle|\.\/mvnw|mvnw|mvn|\.\/sbt|sbt)(\s|$)/i.test(stripped)) {
-      const safeCmd = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const message = `context-mode: Build tool redirected. Call ${t("ctx_execute")}(language: "shell", code: ${JSON.stringify(`${command} 2>&1 | tail -30`)}) to run the build and print only the tail — the verbose build log stays in the sandbox instead of entering your conversation. For more targeted output, replace "tail -30" with "grep -E '(error|warning|FAIL|✗|×)'" or similar, so only the lines that matter come back.`;
       return mcpRedirect({
         action: "modify",
+        reason: message,
         updatedInput: {
-          command: `echo "context-mode: Build tool redirected. Call ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") to run the build and print only the tail — the verbose build log stays in the sandbox instead of entering your conversation. For more targeted output, replace \\"tail -30\\" with \\"grep -E '(error|warning|FAIL|✗|×)'\\" or similar, so only the lines that matter come back."`,
+          command: `printf '%s\\n' '${message.replace(/'/g, "'\\''")}'`,
         },
       }, mcpToolsAvailable);
     }

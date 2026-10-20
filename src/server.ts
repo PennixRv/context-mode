@@ -1294,18 +1294,15 @@ export type BatchQueryScope = "batch" | "global";
 export function formatBatchQueryResults(
   store: ContentStore,
   queries: string[],
-  source: string,
+  sourceId: number,
   maxOutput = 80 * 1024,
   scope: BatchQueryScope = "batch",
 ): string[] {
   const sections: string[] = [];
   let outputSize = 0;
 
-  // When scope is "global", searchWithFallback receives `undefined` for the
-  // source filter, which makes it query the entire persistent index instead
-  // of only the chunks just produced by this batch's commands. Default
-  // remains "batch" to preserve the historical behavior.
-  const searchSource = scope === "global" ? undefined : source;
+  // Labels repeat across sessions and can collide after truncation.
+  const searchSourceId = scope === "global" ? undefined : sourceId;
 
   for (const query of queries) {
     if (outputSize > maxOutput) {
@@ -1313,7 +1310,7 @@ export function formatBatchQueryResults(
       continue;
     }
 
-    const results = store.searchWithFallback(query, 3, searchSource, undefined, "exact", undefined, automaticSessionSource());
+    const results = store.searchWithFallback(query, 3, undefined, undefined, "exact", undefined, automaticSessionSource(), searchSourceId);
     sections.push(`## ${query}`);
     sections.push("");
     if (results.length > 0) {
@@ -1349,6 +1346,13 @@ export interface BatchCommand { label: string; command: string; }
 export interface BatchRunResult {
   outputs: string[];
   timedOut: boolean;
+  results: BatchCommandResult[];
+  isError: boolean;
+}
+
+interface BatchCommandResult {
+  status: "success" | "soft_failure" | "nonzero_exit" | "timed_out" | "executor_error" | "skipped" | "unknown";
+  exitCode: number | null;
 }
 
 export interface BatchRunOptions {
@@ -1365,7 +1369,16 @@ export interface BatchRunOptions {
 }
 
 interface BatchExecutor {
-  execute(input: { language: "shell"; code: string; timeout: number | undefined; cwd?: string }): Promise<{ stdout: string; timedOut?: boolean }>;
+  execute(input: { language: "shell"; code: string; timeout: number | undefined; cwd?: string }): Promise<{ stdout: string; stderr?: string; exitCode?: number; timedOut?: boolean }>;
+}
+
+function classifyBatchResult(result: { stdout: string; stderr?: string; exitCode?: number; timedOut?: boolean }): BatchCommandResult {
+  const exitCode = typeof result.exitCode === "number" && Number.isInteger(result.exitCode) ? result.exitCode : null;
+  if (result.timedOut) return { status: "timed_out", exitCode };
+  if (exitCode === null) return { status: "unknown", exitCode };
+  if (exitCode === 0) return { status: "success", exitCode };
+  const { isError } = classifyNonZeroExit({ language: "shell", exitCode, stdout: result.stdout, stderr: result.stderr ?? "" });
+  return { status: isError ? "nonzero_exit" : "soft_failure", exitCode };
 }
 
 function quotePosixSingle(value: string): string {
@@ -1389,7 +1402,7 @@ export function buildBatchNodeOptionsPrefix(shellPath: string, preloadPath: stri
     return `set "NODE_OPTIONS=${option.replace(/"/g, '""')}" && `;
   }
 
-  return `NODE_OPTIONS=${quotePosixSingle(option)} `;
+  return `export NODE_OPTIONS=${quotePosixSingle(`--require ${JSON.stringify(preloadPath)}`)}; `;
 }
 
 /**
@@ -1486,6 +1499,13 @@ export async function runBatchCommands(
   executor: BatchExecutor,
 ): Promise<BatchRunResult> {
   const { timeout, concurrency, nodeOptsPrefix, cwd, onFsBytes } = opts;
+  const results: BatchCommandResult[] = [];
+  const finish = (outputs: string[], timedOut: boolean): BatchRunResult => ({
+    outputs: outputs.map((output, i) => `${output}\nStatus: ${results[i].status}; exit code: ${results[i].exitCode ?? "unknown"}\n`),
+    results,
+    timedOut,
+    isError: results.some((r) => r.status !== "success" && r.status !== "soft_failure"),
+  });
 
   if (concurrency <= 1) {
     // Serial path — shared timeout budget, cascading skip on timeout.
@@ -1502,33 +1522,48 @@ export async function runBatchCommands(
         const remaining = timeout - elapsed;
         if (remaining <= 0) {
           outputs.push(`# ${cmd.label}\n\n(skipped — batch timeout exceeded)\n`);
+          results.push({ status: "skipped", exitCode: null });
           timedOut = true;
           continue;
         }
         perCmdTimeout = remaining;
       }
-      const result = await executor.execute({
-        language: "shell",
-        code: `${nodeOptsPrefix}${cmd.command}`,
-        timeout: perCmdTimeout,
-        cwd,
-      });
+      let result: Awaited<ReturnType<BatchExecutor["execute"]>>;
+      try {
+        result = await executor.execute({
+          language: "shell",
+          code: `${nodeOptsPrefix}${cmd.command}`,
+          timeout: perCmdTimeout,
+          cwd,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        outputs.push(formatCommandOutput(cmd.label, cmd.command, `(executor error: ${message})`));
+        results.push({ status: "executor_error", exitCode: null });
+        for (let j = i + 1; j < commands.length; j++) {
+          outputs.push(`# ${commands[j].label}\n\n(skipped — previous executor error)\n`);
+          results.push({ status: "skipped", exitCode: null });
+        }
+        break;
+      }
       outputs.push(formatCommandOutput(cmd.label, cmd.command, combineExecOutput(result), onFsBytes));
+      results.push(classifyBatchResult(result));
       if (result.timedOut) {
         timedOut = true;
         for (let j = i + 1; j < commands.length; j++) {
           outputs.push(`# ${commands[j].label}\n\n(skipped — batch timeout exceeded)\n`);
+          results.push({ status: "skipped", exitCode: null });
         }
         break;
       }
     }
-    return { outputs, timedOut };
+    return finish(outputs, timedOut);
   }
 
   // Parallel path — delegated to the shared runPool primitive.
   // Each job returns { output, timedOut }; runPool handles in-flight cap,
   // throw isolation (Promise.allSettled semantics), and order preservation.
-  const jobs: PoolJob<{ output: string; timedOut: boolean }>[] = commands.map((cmd) => ({
+  const jobs: PoolJob<{ output: string; result: BatchCommandResult }>[] = commands.map((cmd) => ({
     run: async () => {
       const result = await executor.execute({
         language: "shell",
@@ -1542,7 +1577,7 @@ export async function runBatchCommands(
       const output = result.timedOut
         ? formatted.replace(/\n$/, "") + `\n(timed out after ${timeout ?? "?"}ms)\n`
         : formatted;
-      return { output, timedOut: !!result.timedOut };
+      return { output, result: classifyBatchResult(result) };
     },
   }));
 
@@ -1553,14 +1588,16 @@ export async function runBatchCommands(
     const r = settled[i];
     if (r.status === "fulfilled") {
       outputs[i] = r.value.output;
-      if (r.value.timedOut) timedOut = true;
+      results.push(r.value.result);
+      if (r.value.result.status === "timed_out") timedOut = true;
     } else {
       // Isolated executor throw (spawn EAGAIN, ENOMEM, EMFILE, …) — siblings keep running.
       const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
       outputs[i] = `# ${commands[i].label}\n\n(executor error: ${message})\n`;
+      results.push({ status: "executor_error", exitCode: null });
     }
   }
-  return { outputs, timedOut };
+  return finish(outputs, timedOut);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1916,7 +1953,7 @@ function intentSearch(
   const indexed = persistent.indexPlainText(stdout, source, undefined, currentAttribution());
 
   // Search the persistent store directly (porter → trigram → fuzzy)
-  let results = persistent.searchWithFallback(intent, maxResults, source, undefined, "like", undefined, automaticSessionSource());
+  const results = persistent.searchWithFallback(intent, maxResults, undefined, undefined, "exact", undefined, automaticSessionSource(), indexed.sourceId);
 
   // Extract distinctive terms as vocabulary hints for the LLM
   const distinctiveTerms = persistent.getDistinctiveTerms(indexed.sourceId);
@@ -3660,9 +3697,8 @@ EXAMPLE: ctx_batch_execute(
         )),
       queries: z.preprocess(coerceJsonArray, z
         .array(z.string())
-        .min(1)
         .describe(
-          "Search queries to extract information from indexed output. Use 5-8 comprehensive queries. " +
+          "Search queries to extract information from indexed output. Pass [] for execution statuses and indexing without retrieval. " +
           "Each returns top 5 matching sections with full content. " +
           "This is your ONLY chance — put ALL your questions here. No follow-up calls needed.",
         )),
@@ -3718,7 +3754,7 @@ EXAMPLE: ctx_batch_execute(
       // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
       // Concurrency>1 switches to a worker pool with per-command timeouts.
       const effTimeout = resolveExecTimeout(timeout);
-      const { outputs: perCommandOutputs, timedOut } = await runBatchCommands(
+      const { outputs: perCommandOutputs, timedOut, results, isError } = await runBatchCommands(
         commands,
         {
           timeout: effTimeout,
@@ -3762,8 +3798,8 @@ EXAMPLE: ctx_batch_execute(
       // Placed before "## Indexed Sections" so it scans top-down with
       // the human asking "what just happened" (Issues #717 + #736).
       const commandsInventory: string[] = ["## Commands", ""];
-      for (const c of commands) {
-        commandsInventory.push(`- ${c.label}: \`${truncateCommandForEcho(c.command)}\``);
+      for (const [i, c] of commands.entries()) {
+        commandsInventory.push(`- ${c.label}: \`${truncateCommandForEcho(c.command)}\` — ${results[i].status}; exit code: ${results[i].exitCode ?? "unknown"}`);
       }
 
       // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
@@ -3780,7 +3816,7 @@ EXAMPLE: ctx_batch_execute(
       // When the caller passes query_scope: "global", searches reach the entire
       // persistent index in the same round trip. Cross-source search remains
       // available via explicit ctx_search() as well.
-      const queryResults = formatBatchQueryResults(store, queries, source, undefined, query_scope);
+      const queryResults = formatBatchQueryResults(store, queries, indexed.sourceId, undefined, query_scope);
 
       // Get searchable terms for edge cases where follow-up is needed
       const distinctiveTerms = store.getDistinctiveTerms
@@ -3803,6 +3839,7 @@ EXAMPLE: ctx_batch_execute(
 
       return trackResponse("ctx_batch_execute", {
         content: [{ type: "text" as const, text: output }],
+        isError,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

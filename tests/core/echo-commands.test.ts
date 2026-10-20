@@ -39,13 +39,13 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const mcpEntry = resolve(__dirname, "..", "..", "start.mjs");
 
-interface MockResult { stdout: string; stderr?: string; timedOut?: boolean; }
+interface MockResult { stdout: string; stderr?: string; timedOut?: boolean; exitCode?: number; }
 
 function mkMockExecutor(
   handler: (code: string, timeout: number | undefined) => Promise<MockResult> | MockResult,
 ): { execute: (input: { language: "shell"; code: string; timeout: number | undefined }) => Promise<MockResult> } {
   return {
-    execute: async ({ code, timeout }) => Promise.resolve(handler(code, timeout)),
+    execute: async ({ code, timeout }) => ({ exitCode: 0, ...await handler(code, timeout) }),
   };
 }
 

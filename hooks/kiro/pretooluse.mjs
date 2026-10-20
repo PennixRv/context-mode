@@ -37,8 +37,9 @@ switch (decision.action) {
 
   case "modify":
     // Kiro CLI cannot modify tool input — deny with redirect message
-    // The updatedInput.command contains an echo "..." wrapper — extract inner message
-    if (typeof decision.updatedInput?.command === "string") {
+    if (decision.reason) {
+      process.stderr.write(decision.reason);
+    } else if (typeof decision.updatedInput?.command === "string") {
       const msg = decision.updatedInput.command
         .replace(/^echo\s+"?/, "")
         .replace(/"?\s*$/, "");

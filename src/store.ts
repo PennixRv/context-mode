@@ -494,7 +494,7 @@ export class ContentStore {
 
     // Search path (hot)
     // Filter automatic recovery sources before LIMIT; ordinary indexes stay shared.
-    const prepareSearch = (sql: string) => this.#db.prepare(sql.replace("ORDER BY rank", "AND (sources.label NOT GLOB 'session-events:*' OR sources.label = COALESCE(?, sources.label)) ORDER BY rank"));
+    const prepareSearch = (sql: string) => this.#db.prepare(sql.replace("ORDER BY rank", "AND (sources.label NOT GLOB 'session-events:*' OR sources.label = COALESCE(?, sources.label)) AND sources.id = COALESCE(?, sources.id) ORDER BY rank"));
     this.#stmtSearchPorter = prepareSearch(`
       SELECT
         chunks.title,
@@ -1030,6 +1030,7 @@ export class ContentStore {
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
     automaticSessionSource?: string,
+    sourceId?: number,
   ): SearchResult[] {
     const sanitized = sanitizeQuery(query, mode);
 
@@ -1054,7 +1055,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    params.splice(params.length - 1, 0, automaticSessionSource ?? null);
+    params.splice(params.length - 1, 0, automaticSessionSource ?? null, sourceId ?? null);
     return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
@@ -1068,6 +1069,7 @@ export class ContentStore {
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
     automaticSessionSource?: string,
+    sourceId?: number,
   ): SearchResult[] {
     const sanitized = sanitizeTrigramQuery(query, mode);
     if (!sanitized) return [];
@@ -1093,7 +1095,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    params.splice(params.length - 1, 0, automaticSessionSource ?? null);
+    params.splice(params.length - 1, 0, automaticSessionSource ?? null, sourceId ?? null);
     return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
@@ -1155,12 +1157,13 @@ export class ContentStore {
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
     automaticSessionSource?: string,
+    sourceId?: number,
   ): SearchResult[] {
     const K = 60; // Standard RRF constant
     const fetchLimit = Math.max(limit * 2, 10);
 
-    const porterResults = this.search(query, fetchLimit, source, "OR", contentType, sourceMatchMode, automaticSessionSource);
-    const trigramResults = this.searchTrigram(query, fetchLimit, source, "OR", contentType, sourceMatchMode, automaticSessionSource);
+    const porterResults = this.search(query, fetchLimit, source, "OR", contentType, sourceMatchMode, automaticSessionSource, sourceId);
+    const trigramResults = this.searchTrigram(query, fetchLimit, source, "OR", contentType, sourceMatchMode, automaticSessionSource, sourceId);
 
     const scoreMap = new Map<string, { result: SearchResult; score: number }>();
     const key = (r: SearchResult) => `${r.source}::${r.title}`;
@@ -1253,6 +1256,7 @@ export class ContentStore {
     sourceMatchMode: SourceMatchMode = "like",
     sessionIdAllowSet?: Set<string>,
     automaticSessionSource?: string,
+    sourceId?: number,
   ): SearchResult[] {
     // Step 0: Auto-refresh stale file-backed sources before searching
     this.#refreshStaleSources();
@@ -1266,7 +1270,7 @@ export class ContentStore {
     const sessionFilter = this.#makeSessionFilter(sessionIdAllowSet);
 
     // Step 1: RRF fusion (porter OR + trigram OR → merge)
-    const rrfResults = this.#rrfSearch(query, fetchLimit, source, contentType, sourceMatchMode, automaticSessionSource);
+    const rrfResults = this.#rrfSearch(query, fetchLimit, source, contentType, sourceMatchMode, automaticSessionSource, sourceId);
     const rrfFiltered = sessionFilter ? rrfResults.filter(sessionFilter) : rrfResults;
     if (rrfFiltered.length > 0) {
       const reranked = this.#applyProximityReranking(rrfFiltered.slice(0, limit), query);
@@ -1286,7 +1290,7 @@ export class ContentStore {
     const correctedQuery = correctedWords.join(" ");
 
     if (correctedQuery !== original) {
-      const fuzzyResults = this.#rrfSearch(correctedQuery, fetchLimit, source, contentType, sourceMatchMode, automaticSessionSource);
+      const fuzzyResults = this.#rrfSearch(correctedQuery, fetchLimit, source, contentType, sourceMatchMode, automaticSessionSource, sourceId);
       const fuzzyFiltered = sessionFilter ? fuzzyResults.filter(sessionFilter) : fuzzyResults;
       if (fuzzyFiltered.length > 0) {
         const reranked = this.#applyProximityReranking(fuzzyFiltered.slice(0, limit), correctedQuery);

@@ -39,6 +39,34 @@ function createStore(): ContentStore {
 // 1. Search Wiring
 // ═══════════════════════════════════════════════════════════
 
+describe("exact current-source isolation (F014)", () => {
+  test.each(["authentication", "connectionPo", "kuberntes"])("filters %s before candidate LIMIT across all search layers", (query) => {
+    const store = createStore();
+    try {
+      for (let i = 0; i < 60; i++) store.index({
+        source: "execute:shell",
+        content: `# Historical ${i}\nauthentication connectionPool kubernetes HISTORICALONLY`,
+        attribution: {sessionId: `past-${i}`},
+      });
+      const current = store.index({
+        source: "execute:shell",
+        content: `# Current\nauthentication connectionPool kubernetes CURRENTONLY ${"padding ".repeat(100)}`,
+        attribution: {sessionId: "current"},
+      });
+      const results = store.searchWithFallback(query, 1, undefined, undefined, "exact", undefined, undefined, current.sourceId);
+      expect(results).toHaveLength(1);
+      expect(results[0].content).toContain("CURRENTONLY");
+      expect(results[0].content).not.toContain("HISTORICALONLY");
+      expect(store.searchWithFallback("HISTORICALONLY", 3, undefined, undefined, "exact", undefined, undefined, current.sourceId)).toEqual([]);
+      expect(store.searchWithFallback("HISTORICALONLY", 3).length).toBeGreaterThan(0);
+      for (const type of [undefined, "prose"] as const) {
+        expect(store.search("authentication", 1, "execute:shell", "OR", type, "exact", undefined, current.sourceId)[0].content).toContain("CURRENTONLY");
+        expect(store.searchTrigram("connectionPo", 1, "execute:shell", "OR", type, "like", undefined, current.sourceId)[0].content).toContain("CURRENTONLY");
+      }
+    } finally { store.close(); }
+  });
+});
+
 describe("Fix 1: searchWithFallback cascade on persistent store", () => {
   test("searchWithFallback: porter layer returns results with matchLayer='rrf'", () => {
     const store = createStore();
@@ -710,7 +738,7 @@ describe("Multi-source isolation (batch_execute path)", () => {
   test("batch_execute formatter never inlines previous indexed content", () => {
     const store = createStore();
 
-    store.index({
+    const current = store.index({
       content: "# Current Batch\n\nOnly current batch details live here.",
       source: "batch: current",
     });
@@ -719,7 +747,7 @@ describe("Multi-source isolation (batch_execute path)", () => {
       source: "docs: auth",
     });
 
-    const output = formatBatchQueryResults(store, ["JWT tokens"], "batch: current").join("\n");
+    const output = formatBatchQueryResults(store, ["JWT tokens"], current.sourceId).join("\n");
     assert.ok(output.includes("No matching sections found."), "Expected scoped batch result to stay empty");
     assert.ok(!output.includes("previously indexed content"), "Should not mention cross-source fallback");
     assert.ok(!output.includes("JWT tokens expire after 24 hours"), "Should not inline stale cross-source text");
@@ -730,7 +758,7 @@ describe("Multi-source isolation (batch_execute path)", () => {
   test("batch_execute formatter does not leak overlapping batch labels", () => {
     const store = createStore();
 
-    store.index({
+    const current = store.index({
       content: "# Current Build\n\nCurrent batch contains only build timing details.",
       source: "batch:Build",
     });
@@ -739,7 +767,7 @@ describe("Multi-source isolation (batch_execute path)", () => {
       source: "batch:Build,Test",
     });
 
-    const output = formatBatchQueryResults(store, ["JWT tokens"], "batch:Build").join("\n");
+    const output = formatBatchQueryResults(store, ["JWT tokens"], current.sourceId).join("\n");
     assert.ok(output.includes("No matching sections found."), "Expected exact batch label filtering");
     assert.ok(!output.includes("JWT tokens expire after 24 hours"), "Should not leak overlapping older batch label content");
 
@@ -749,7 +777,7 @@ describe("Multi-source isolation (batch_execute path)", () => {
   test("batch_execute formatter returns matches from the current batch", () => {
     const store = createStore();
 
-    store.index({
+    const current = store.index({
       content: "# Current Batch\n\nJWT tokens expire after 12 hours for the current batch.",
       source: "batch: current",
     });
@@ -758,7 +786,7 @@ describe("Multi-source isolation (batch_execute path)", () => {
       source: "docs: auth",
     });
 
-    const output = formatBatchQueryResults(store, ["JWT tokens"], "batch: current").join("\n");
+    const output = formatBatchQueryResults(store, ["JWT tokens"], current.sourceId).join("\n");
     assert.ok(output.includes("Current Batch"), "Expected current batch heading in formatter output");
     assert.ok(output.includes("12 hours for the current batch"), "Expected current batch content in formatter output");
     assert.ok(!output.includes("24 hours"), "Should not leak older source content when current batch matches");

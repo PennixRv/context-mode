@@ -189,6 +189,7 @@ describe("ContextModePlugin", () => {
 
       it("ctx_batch_execute accepts well-formed args without crashing", async () => {
         const projectDir = join(tempDir, "issue-621-baseline");
+        mkdirSync(projectDir, { recursive: true });
         const plugin = await createTestPlugin(projectDir);
         const result = await plugin.tool!.ctx_batch_execute.execute(
           {
@@ -203,10 +204,12 @@ describe("ContextModePlugin", () => {
         const output = typeof result === "string" ? result : result.output;
         // Should succeed (no "commands.map is not a function" error).
         expect(output).toContain("Executed");
+        expect(output).toContain("issue621-baseline");
       });
 
       it("ctx_batch_execute coerces JSON-stringified commands array (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-json-string");
+        mkdirSync(projectDir, { recursive: true });
         const plugin = await createTestPlugin(projectDir);
         // Simulate OpenCode delivering JSON-stringified array — the
         // coerceCommandsArray preprocessor must turn this back into an
@@ -222,10 +225,12 @@ describe("ContextModePlugin", () => {
         );
         const output = typeof result === "string" ? result : result.output;
         expect(output).toContain("Executed");
+        expect(output).toContain("issue621-coerced");
       });
 
       it("ctx_batch_execute coerces plain-string commands into {label,command} (#621)", async () => {
         const projectDir = join(tempDir, "issue-621-string-cmds");
+        mkdirSync(projectDir, { recursive: true });
         const plugin = await createTestPlugin(projectDir);
         // coerceCommandsArray also lifts bare strings into {label,command}.
         const result = await plugin.tool!.ctx_batch_execute.execute(
@@ -240,6 +245,7 @@ describe("ContextModePlugin", () => {
         );
         const output = typeof result === "string" ? result : result.output;
         expect(output).toContain("Executed");
+        expect(output).toContain("issue621-string-cmd");
       });
 
       it("ctx_batch_execute surfaces actionable error when commands is missing (#621)", async () => {
