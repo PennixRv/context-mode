@@ -233,24 +233,18 @@ describe("createExternalMcpGuidance (#529)", () => {
     const t = createToolNamer("kiro");
     const guidance = createExternalMcpGuidance(t);
     expect(guidance).toContain("@context-mode/ctx_execute");
-    expect(guidance).toContain("@context-mode/ctx_fetch_and_index");
-    expect(guidance).toContain("@context-mode/ctx_search");
   });
 
   it("uses opencode-style tool names for opencode platform", () => {
     const t = createToolNamer("opencode");
     const guidance = createExternalMcpGuidance(t);
     expect(guidance).toContain("context-mode_ctx_execute");
-    expect(guidance).toContain("context-mode_ctx_fetch_and_index");
-    expect(guidance).toContain("context-mode_ctx_search");
   });
 
   it("uses zed-style tool names for zed platform", () => {
     const t = createToolNamer("zed");
     const guidance = createExternalMcpGuidance(t);
     expect(guidance).toContain("mcp:context-mode:ctx_execute");
-    expect(guidance).toContain("mcp:context-mode:ctx_fetch_and_index");
-    expect(guidance).toContain("mcp:context-mode:ctx_search");
   });
 
   it("mentions the routing intent so the model knows what to do", () => {
@@ -258,10 +252,9 @@ describe("createExternalMcpGuidance (#529)", () => {
     const guidance = createExternalMcpGuidance(t);
     // Identifies the situation
     expect(guidance).toContain("External MCP tools");
-    // Points to the right tools — losing any of these defeats the guidance
+    // Keep executor naming, without suggesting MCP forwarding or replacing the source with a fetch.
     expect(guidance).toMatch(/ctx_execute/);
-    expect(guidance).toMatch(/ctx_fetch_and_index/);
-    expect(guidance).toMatch(/ctx_search/);
+    expect(guidance).not.toMatch(/pipe it through|ctx_fetch_and_index/);
   });
 });
 
@@ -300,12 +293,6 @@ describe("backward compat static exports", () => {
   it("EXTERNAL_MCP_GUIDANCE uses claude-code naming and matches the factory (#529)", () => {
     expect(EXTERNAL_MCP_GUIDANCE).toContain(
       "mcp__plugin_context-mode_context-mode__ctx_execute",
-    );
-    expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
-    );
-    expect(EXTERNAL_MCP_GUIDANCE).toContain(
-      "mcp__plugin_context-mode_context-mode__ctx_search",
     );
     // Drift guard: the static export must equal the factory output with the
     // default (claude-code) namer — they share a single template.

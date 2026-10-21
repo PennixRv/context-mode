@@ -848,6 +848,10 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   // smaller reads stay on the existing one-shot guidance nudge.
   if (canonical === "Read") {
     const filePath = getReadFilePath(toolInput);
+    // External native reads are not execute_file opportunities; permissions stay with the host.
+    if (filePath && security && !security.evaluateProjectContainment(filePath, projectDir).allowed) {
+      return null;
+    }
     if (filePath) {
       try {
         const st = statSync(filePath);

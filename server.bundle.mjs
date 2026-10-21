@@ -772,7 +772,7 @@ Use ctx_search(queries: ["..."]) to query this content. Use source: "${r.label}"
 `).length,s=Buffer.byteLength(t),i=wn(),a=i.indexPlainText(t,n,void 0,ze()),c=i.searchWithFallback(e,r,void 0,void 0,"exact",void 0,Uu(),a.sourceId),u=i.getDistinctiveTerms(a.sourceId);if(c.length===0){let d=[`Indexed ${a.totalChunks} sections from "${n}" into knowledge base.`,`No sections matched intent "${e}" in ${o}-line output (${(s/1024).toFixed(1)}KB).`];return u.length>0&&(d.push(""),d.push(`Searchable terms: ${u.join(", ")}`)),d.push(""),d.push("Use ctx_search(queries: [...]) to explore the indexed content."),d.join(`
 `)}let l=[`Indexed ${a.totalChunks} sections from "${n}" into knowledge base.`,`${c.length} sections matched "${e}" (${o} lines, ${(s/1024).toFixed(1)}KB):`,""];for(let d of c){let f=d.content.split(`
 `)[0].slice(0,120);l.push(`  - ${d.title}: ${f}`)}return u.length>0&&(l.push(""),l.push(`Searchable terms: ${u.join(", ")}`)),l.push(""),l.push("Use ctx_search(queries: [...]) to retrieve full content of any section."),l.join(`
-`)}Ne.registerTool("ctx_execute_file",{title:"Run code over a file (executes code, reads the given path)",annotations:{readOnlyHint:!1,destructiveHint:!0,idempotentHint:!1,openWorldHint:!0},description:`Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation \u2014 the file bytes stay in the sandbox.
+`)}Ne.registerTool("ctx_execute_file",{title:"Run code over a file (executes code, reads the given path)",annotations:{readOnlyHint:!1,destructiveHint:!0,idempotentHint:!1,openWorldHint:!0},description:`Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation \u2014 the file bytes stay in the sandbox. The path must be inside the resolved project or explicitly allowed by the host's Read rules; deny rules still apply. This path guard does not make the general executor a host filesystem sandbox.
 
 Think-in-Code applied to file-level analysis: Reading the whole file means every byte enters your conversation memory and costs reasoning capacity for the rest of the session. Running code over it here lets you keep the raw bytes out and only the derived answer in. Same principle as ctx_execute, scoped to one named file via the FILE_CONTENT variable.
 
@@ -783,9 +783,11 @@ WHEN:
   - The derivation may itself produce a large output you want recall-by-topic on later \u2014 pass an \`intent\` string; outputs over ~5KB are auto-indexed and only matching sections come back, retrievable via ctx_search
 
 WHEN NOT:
-  - You intend to EDIT the file \u2014 use Read so the subsequent Edit can match the exact text
-  - You only need one specific line and you know its offset \u2014 Read with offset/limit is the simplest path
-  - The file is small AND you will consume all of it for understanding/editing \u2014 Read directly
+  - You are loading project-external AGENTS.md, SKILL.md or their required references \u2014 use native full reads directly, rather than trying this tool first
+  - The operation requires native editing, interaction, MCP or continuation semantics \u2014 use that host interface
+  - A path is refused \u2014 preserve the refusal; do not change cwd, switch executors or add permissions to bypass it
+
+Known paths, exact text and small project files can still use this tool. For a mandatory full read, print every required byte and page without an intent filter; an indexed preview or search snippet is not a full read. Obtain exact current text before native editing.
 
 RETURNS:
   Only what your code prints. The FILE_CONTENT variable holds the raw bytes inside the sandbox; nothing else leaves. When \`intent\` is set and output exceeds the auto-index threshold, the response carries searchable section titles + previews instead of the raw stdout.

@@ -107,7 +107,7 @@ describe("antigravity-cli hooks", () => {
         workspacePaths: [CWD],
         toolCall: {
           name: "view_file",
-          args: { AbsolutePath: "/repo/src/app.ts" },
+          args: { AbsolutePath: join(CWD, "src", "app.ts") },
         },
       },
       home,

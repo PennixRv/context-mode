@@ -29,9 +29,9 @@ ${toolSearchBootstrap ? `
 ` : ''}
   <tool_selection_hierarchy>
     0. MEMORY: ${t("ctx_search")}(sort: "timeline")
-       - On resume or compaction, query prior decisions, errors, plans, user prompts before asking the user — auto-captured session memory is searchable.
+       - Query missing historical decisions or errors when needed. Continue from sufficient current context without repeating startup or state checks; captured history is not current authority.
     1. GATHER: ${t("ctx_batch_execute")}(commands, queries)
-       - Primary research tool. Runs commands in parallel, auto-indexes each output, and (when queries are passed) returns matching sections in the same round trip — no follow-up search call.
+       - Runs selected independent shell commands in parallel, auto-indexes each output, and (when queries are passed) returns matching sections in the same round trip. Choose the evidence source first: an approved symbol graph for structure, exact text for literals, or bounded semantic search for candidates without code anchors. This executor does not dispatch other MCP tools or replace a code index.
        - Each command: {label: "section header", command: "shell command"}; the label becomes the FTS5 chunk title — descriptive labels improve search.
     2. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
        - Multiple related questions about anything already indexed (your captures + session memory). Batch every question in one array; the ranking pipeline runs per-query and the round-trip cost is paid once.
@@ -40,8 +40,9 @@ ${toolSearchBootstrap ? `
   </tool_selection_hierarchy>
 
   <when_not_to_use>
-    - You intend to PROCESS the output (filter, count, parse, aggregate) → use ${t("ctx_batch_execute")} or ${t("ctx_execute")}. Bash stays correct when you intend to OBSERVE a short fixed output (git status on a clean tree, whoami, pwd) or when you are mutating state (git, mkdir, rm, mv, navigation).
-    - You want to analyze, summarize, or extract from a file → use ${t("ctx_execute_file")}. Read stays correct when you intend to Edit the file (Edit needs the exact bytes in your conversation to match against).
+    - Local text reads, exact searches and equivalent non-interactive commands default to ${t("ctx_execute_file")}, ${t("ctx_execute")} or ${t("ctx_batch_execute")}; a known path or command side effect alone does not change transport. Preserve owner identity, permissions, exit status and receipts. Short fixed outputs may use native tools.
+    - Loading project-external AGENTS.md, SKILL.md or their required references → use native full reads directly. In-project mandatory full reads must return every required page; summaries or search hits do not satisfy them. Before editing, obtain the exact current text through an allowed read, then use native editing.
+    - Host-native MCP, interaction and continuations → keep their real host interfaces; do not simulate or forward their protocols through an executor. Use the owner interface when this executor cannot preserve required runtime semantics.
     - WebFetch → use ${t("ctx_fetch_and_index")}; full network access, results indexed for ${t("ctx_search")}, raw page bytes never enter your conversation.
     - ${t("ctx_execute")} and ${t("ctx_execute_file")} are analysis and processing tools, not editing interfaces. Their subprocess may access the project working directory and cause host file side effects; do not use them for file writes.
   </when_not_to_use>
@@ -77,7 +78,7 @@ ${includeCommands ? `
 }
 
 export function createReadGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    Reading to Edit the file? Read is correct — Edit needs the exact bytes in your conversation to match against.\n    Reading to analyze, summarize, or extract from the file? Use ' + t("ctx_execute_file") + '(path, language, code) — the bytes stay in the sandbox and only what your code prints enters your conversation.\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    Project file reads and analysis, including known paths and exact text for editing, default to ' + t("ctx_execute_file") + '(path, language, code). Mandatory full reads must return all required text and pages; summaries and indexed snippets do not count. Use native editing after obtaining exact current text.\n    Load project-external AGENTS.md, SKILL.md and their required references with native full reads directly. The file tool checks project containment and host Read rules; explicitly allowed external data remains supported. Do not change cwd or use another executor to bypass a refusal.\n  </tip>\n</context_guidance>';
 }
 
 export function createGrepGuidance(t) {
@@ -85,11 +86,11 @@ export function createGrepGuidance(t) {
 }
 
 export function createBashGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    When you intend to PROCESS the output (filter, count, parse, aggregate), use ' + t("ctx_batch_execute") + '(commands, queries) for multiple commands or ' + t("ctx_execute") + '(language: "javascript", code: "...") for one — the raw output stays in the sandbox and only what you print enters your conversation. Shell stays the right surface when you intend to OBSERVE a short fixed output or when you are mutating state (git, mkdir, rm, mv, navigation); if you use ' + t("ctx_execute") + '(language: "shell"), write syntax for the host shell.\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    Equivalent non-interactive commands default to ' + t("ctx_batch_execute") + '(commands, queries) for independent work or ' + t("ctx_execute") + '(language, code), with filtering and analysis inside. Preserve the real owner CLI, cwd, identity, permissions, exit status and complete required receipts; dependent writes stay sequential. Short fixed outputs may use native tools. Host MCP, interaction, editing and continuations keep their native interfaces. If using language: "shell", write syntax for the host shell.\n  </tip>\n</context_guidance>';
 }
 
 export function createExternalMcpGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    External MCP tools commonly return large payloads (channel history, file content, search results) that enter your conversation in full. When you intend to filter, count, or aggregate that data, pipe it through ' + t("ctx_execute") + '(language, code) — the raw payload stays in the sandbox and only the derived answer enters your conversation. For docs-style fetches you will want to query later, prefer ' + t("ctx_fetch_and_index") + '(url, source) then ' + t("ctx_search") + '(queries).\n  </tip>\n</context_guidance>';
+  return '<context_guidance>\n  <tip>\n    External MCP tools: call their native host interfaces directly and use their filters, limits or approved file-output options before delivery. Copying an already delivered payload into ' + t("ctx_execute") + ' does not recover conversation space. If the owner provides an equivalent real CLI, execute that command in context-mode before output enters the conversation, preserving its protocol and receipts. Process or index acquired material only under its source contract; context-mode does not forward MCP calls, select providers or turn candidates into facts.\n  </tip>\n</context_guidance>';
 }
 
 // ── Backward compat: static exports defaulting to claude-code ──

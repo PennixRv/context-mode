@@ -2013,7 +2013,7 @@ server.registerTool(
       idempotentHint: false,
       openWorldHint: true,
     },
-    description: `Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation — the file bytes stay in the sandbox.
+    description: `Read a file into a sandboxed FILE_CONTENT variable and run code over it. Only what you console.log() enters your conversation — the file bytes stay in the sandbox. The path must be inside the resolved project or explicitly allowed by the host's Read rules; deny rules still apply. This path guard does not make the general executor a host filesystem sandbox.
 
 Think-in-Code applied to file-level analysis: Reading the whole file means every byte enters your conversation memory and costs reasoning capacity for the rest of the session. Running code over it here lets you keep the raw bytes out and only the derived answer in. Same principle as ctx_execute, scoped to one named file via the FILE_CONTENT variable.
 
@@ -2024,9 +2024,11 @@ WHEN:
   - The derivation may itself produce a large output you want recall-by-topic on later — pass an \`intent\` string; outputs over ~5KB are auto-indexed and only matching sections come back, retrievable via ctx_search
 
 WHEN NOT:
-  - You intend to EDIT the file — use Read so the subsequent Edit can match the exact text
-  - You only need one specific line and you know its offset — Read with offset/limit is the simplest path
-  - The file is small AND you will consume all of it for understanding/editing — Read directly
+  - You are loading project-external AGENTS.md, SKILL.md or their required references — use native full reads directly, rather than trying this tool first
+  - The operation requires native editing, interaction, MCP or continuation semantics — use that host interface
+  - A path is refused — preserve the refusal; do not change cwd, switch executors or add permissions to bypass it
+
+Known paths, exact text and small project files can still use this tool. For a mandatory full read, print every required byte and page without an intent filter; an indexed preview or search snippet is not a full read. Obtain exact current text before native editing.
 
 RETURNS:
   Only what your code prints. The FILE_CONTENT variable holds the raw bytes inside the sandbox; nothing else leaves. When \`intent\` is set and output exceeds the auto-index threshold, the response carries searchable section titles + previews instead of the raw stdout.

@@ -308,7 +308,7 @@ describe("Read", () => {
   test("Read + file_path: hookSpecificOutput with additionalContext nudge", () => {
     const result = runHook({
       tool_name: "Read",
-      tool_input: { file_path: "/some/path/to/file.ts" },
+      tool_input: { file_path: join(process.cwd(), "package.json") },
     });
     assertHookSpecificOutput(result, "additionalContext");
     const parsed = JSON.parse(result.stdout);
@@ -643,7 +643,7 @@ describe("Plugin Tool Name Format in ROUTING_BLOCK", () => {
   });
 
   test("Read nudge uses plugin-format execute_file tool name", () => {
-    const result = runHook({ tool_name: "Read", tool_input: { file_path: "/some/file.ts" } });
+    const result = runHook({ tool_name: "Read", tool_input: { file_path: join(process.cwd(), "package.json") } });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     const ctx = parsed.hookSpecificOutput.additionalContext;

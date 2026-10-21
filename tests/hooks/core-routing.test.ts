@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   rmSync,
   utimesSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -372,6 +373,45 @@ describe("routePreToolUse", () => {
   // ─── Read routing ──────────────────────────────────────
 
   describe("Read tool", () => {
+    describe("project boundary guidance", () => {
+      let fixture: string;
+      let project: string;
+
+      beforeAll(async () => {
+        expect(await initSecurity(resolve(process.cwd(), "build"))).toBe(true);
+      });
+
+      beforeEach(() => {
+        fixture = mkdtempSync(join(tmpdir(), "ctx-read-boundary-"));
+        project = join(fixture, "project");
+        mkdirSync(project);
+      });
+
+      afterEach(() => rmSync(fixture, { recursive: true, force: true }));
+
+      it("leaves external instructions, references and data to native Read without consuming the in-project nudge", () => {
+        for (const name of ["AGENTS.md", "SKILL.md", "required-reference.md", "data.log"]) {
+          const path = join(fixture, name);
+          writeFileSync(path, "x".repeat(60_000));
+          expect(routePreToolUse("Read", { file_path: path }, project)).toBeNull();
+        }
+        const inside = routePreToolUse("Read", { file_path: "source.ts" }, project);
+        expect(inside?.action).toBe("context");
+        expect(inside?.additionalContext).toContain("ctx_execute_file");
+      });
+
+      it("does not nudge a sibling-prefix path or a symlink escaping the project", () => {
+        const sibling = join(fixture, "project-other");
+        mkdirSync(sibling);
+        const outside = join(sibling, "AGENTS.md");
+        writeFileSync(outside, "external instructions");
+        symlinkSync(outside, join(project, "instructions.md"));
+        for (const path of [outside, join(project, "instructions.md"), "../project-other/AGENTS.md"]) {
+          expect(routePreToolUse("Read", { file_path: path }, project)).toBeNull();
+        }
+      });
+    });
+
     it("returns context action with READ_GUIDANCE", () => {
       const result = routePreToolUse("Read", {
         file_path: "/some/file.ts",
