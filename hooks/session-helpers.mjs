@@ -18,8 +18,8 @@
  * artifacts instead of pre-built bundles.
  */
 
-import { join, dirname, isAbsolute } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -350,9 +350,7 @@ export function getProjectDir(opts = CLAUDE_OPTS) {
 export function getInputProjectDir(input, opts = CLAUDE_OPTS) {
   if (opts.requireSessionId) {
     const context = _sessionDb.resolveCodexThreadContext(input?.session_id);
-    if (typeof input?.cwd !== "string" || !isAbsolute(input.cwd) || realpathSync(input.cwd) !== context.projectDir) {
-      throw new Error("Codex hook cwd does not match its native thread metadata.");
-    }
+    // Execution may enter submodules; session storage stays with the native thread.
     return context.projectDir;
   }
   if (typeof input?.cwd === "string" && input.cwd.length > 0) {

@@ -170,6 +170,37 @@ describe("Codex native identity and MCP composition", () => {
     expect(textOf(other)).toContain("unique-composition-marker-2");
   });
 
+  test.each(["src", "Trellis", "Trellis/docs-site"])("native thread ownership survives execution in %s", (directory) => {
+    const thread = threads[0];
+    const cwd = join(thread.projectDir, directory);
+    mkdirSync(cwd, {recursive: true});
+    const pre = hook("pretooluse", thread, {
+      cwd, tool_name: "exec_command", tool_input: {cmd: "pwd", workdir: cwd},
+    }).hookSpecificOutput;
+    expect(pre.permissionDecision).not.toBe("deny");
+    const prompt = `working-directory-marker:${directory}`;
+    hook("userpromptsubmit", thread, {cwd, prompt});
+    hook("posttooluse", thread, {
+      cwd, tool_name: "exec_command", tool_input: {cmd: "pwd", workdir: cwd}, tool_response: cwd,
+    });
+    const sessionsDir = join(data, "sessions");
+    const db = new SessionDB({dbPath: resolveSessionDbPath({projectDir: thread.projectDir, sessionsDir})});
+    try {
+      expect(db.getEvents(thread.sessionId).some(event => event.type === "user_prompt" && event.data.includes(prompt))).toBe(true);
+    } finally { db.close(); }
+    expect(existsSync(resolveSessionDbPath({projectDir: cwd, sessionsDir}))).toBe(false);
+  });
+
+  test.each([undefined, "invalid-thread", randomUUID()])("changed cwd never replaces invalid native identity %s", (session_id) => {
+    const thread = threads[0];
+    const pre = hook("pretooluse", thread, {
+      session_id, cwd: join(thread.projectDir, "Trellis"),
+      tool_name: "exec_command", tool_input: {cmd: "pwd"},
+    }).hookSpecificOutput;
+    expect(pre.permissionDecision).toBe("deny");
+    expect(pre.permissionDecisionReason).toContain("could not verify the native Codex context");
+  });
+
   test("six hooks use matching native identity; recovery is consumed only by its owner", async () => {
     const [a, b] = threads;
     hook("sessionstart", a, {source: "startup"});
