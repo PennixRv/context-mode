@@ -9,17 +9,16 @@
 //   3. spawn release-out/server.mjs --agent <agent> (the built server bundle; D-M7-arch-6 calls it
 //      "server.bundle.mjs", build/build.mjs writes server.mjs) and call MCP ctx_doctor (before), ctx_upgrade,
 //      ctx_doctor (after)
-//   4. assert: D4 after the upgrade is PASS, or WARN only for this agent's report-only leftovers (Gemini shared
-//      data dir: the prompt is declined, the dir is kept; VS Code .vscode/mcp.json entry; Kiro steering doc);
-//      VS Code: both session-data paths are in the D4 row before the upgrade; Kiro: KIRO.md is flagged, never
-//      deleted
+//   4. Pennix: D4 retains its WARN findings; ctx_upgrade names Lifecycle and preserves host files.
+//      Seeded legacy configuration/data remain byte-identical; doctor may create native runtime files.
 //   5. remove the planted global bin (stands for `npm uninstall -g context-mode`, R3 order: last)
 //   6. run every hook command from release-out/hooks/<agent>.json (the hook entries the install writes) with
 //      the GP3 fixture on stdin; expect exit 0
 // Output: one JSON line {ok, agent, steps:[{step, ok, detail}]}; exit 0 when ok, else 1.
 // Rules: no src/ import (GS4); deletes only the temp dir it made.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,19 +35,26 @@ const FIXTURE_FALLBACK_AGENT = "claude-code"; // agents with no recorded fixture
 const INIT = { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "e2e-v1-migration", version: "0" } };
 const HOOK_TIMEOUT_MS = 30000;
 const ROW_SEP = " | ";
-const DATA_DIR_REASON = "old context-mode data dir "; // V1_REASON.dataDir text start
 const D4_PREFIX = "| D4 "; // report.ts rowLine: "| " + id + " " + label
 const WORKSPACE_FOLDER_FLAG = "--workspace-folder"; // VS Code project source (D-M1-5)
 
 // impl/15 §3.2: the six agents whose v1 hooks (or v1 data) the R8 set rehearses.
 const CASE_AGENTS = Object.freeze(["claude-code", "codex", "gemini", "copilot-cli", "vscode", "kiro"]);
 
-// Report-only leftovers per agent: literal path parts the D4 detail names (ADR-0011, A37, B28).
-const KEPT = Object.freeze({
-  gemini: [path.join(".gemini", "context-mode")],
-  vscode: [path.join(".vscode", "mcp.json")],
-  kiro: [path.join(".kiro", "steering", "KIRO.md")],
-});
+// Pennix keeps legacy configuration/data untouched until the corresponding owner migrates or removes it.
+function hostSnapshot(home) {
+  const files = {};
+  function visit(dir) {
+    for (const name of readdirSync(dir).sort()) {
+      const file = path.join(dir, name);
+      if (file === path.join(home, ".context-mode", "projects")) continue; // the running bundle owns its new project DB
+      if (statSync(file).isDirectory()) visit(file);
+      else files[path.relative(home, file)] = createHash("sha256").update(readFileSync(file)).digest("hex");
+    }
+  }
+  visit(home);
+  return files;
+}
 
 const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined; };
 const agent = process.argv[2];
@@ -121,10 +127,17 @@ async function main() {
   execFileSync("git", ["init", "-q", project]);
   const bin = v1GlobalBin(home);
   step("plant", existsSync(bin), bin);
+  const codexHome = path.join(home, ".codex");
+  const threadId = randomUUID();
+  if (agent === "codex") {
+    mkdirSync(path.join(codexHome, "sessions"), { recursive: true });
+    writeFileSync(path.join(codexHome, "sessions", `rollout-fixture-${threadId}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id: threadId, cwd: project } }) + "\n");
+  }
+  const hostBefore = hostSnapshot(home);
 
   const env = {
     PATH: v1NpmBinDir(home) + path.delimiter + (process.env.PATH ?? ""),
-    HOME: home, USERPROFILE: home, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
+    HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
     npm_config_prefix: v1NpmPrefix(home),
     ...(agent === "claude-code" ? { CLAUDE_PROJECT_DIR: project } : {}),
   };
@@ -135,14 +148,17 @@ async function main() {
   const c = spawnBundle(SERVER_BUNDLE, env, ["--agent", agent, ...(agent === "vscode" ? [WORKSPACE_FOLDER_FLAG, project] : [])]);
   process.chdir(prevCwd);
   let before = "", upgrade = "", after = "", upgradeErr = false;
+  const call = (name) => c.request("tools/call", { name, arguments: {}, ...(agent === "codex" ? { _meta: { threadId } } : {}) });
   try {
     await c.request("initialize", INIT);
     c.notify("notifications/initialized");
-    before = text(await c.request("tools/call", { name: "ctx_doctor", arguments: {} }));
-    const u = await c.request("tools/call", { name: "ctx_upgrade", arguments: {} });
+    before = text(await call("ctx_doctor"));
+    const upgradeBefore = hostSnapshot(home);
+    const u = await call("ctx_upgrade");
     upgrade = text(u);
     upgradeErr = u?.isError === true;
-    after = text(await c.request("tools/call", { name: "ctx_doctor", arguments: {} }));
+    step("upgrade-host-files-preserved", JSON.stringify(hostSnapshot(home)) === JSON.stringify(upgradeBefore), "ctx_upgrade changes no host file");
+    after = text(await call("ctx_doctor"));
   } catch (err) {
     step("mcp", false, String(err?.message ?? err));
   } finally {
@@ -150,33 +166,15 @@ async function main() {
   }
   if (steps.some((s) => !s.ok)) return finish(temp);
 
-  // Step 4: D4 before lists old entries; after is clean except the report-only ones.
+  // Step 4: diagnostics retain the findings; ctx_upgrade hands off without changing host files.
   const d4Before = d4Row(before);
   // D-D4-WARN-1 (#1304): 1.x leftovers are WARN with the fix, not FAIL.
   step("doctor-before-d4-warn", d4Before?.status === "WARN", d4Before?.line ?? before.split("\n")[0]);
-  step("upgrade", !upgradeErr && upgrade.length > 0, upgrade.split("\n").slice(0, 3).join(" / "));
+  step("upgrade-owner", !upgradeErr && upgrade.includes("pennix"), upgrade.split("\n").slice(0, 3).join(" / "));
   const d4After = d4Row(after);
-  const kept = KEPT[agent] ?? [];
-  if (d4After === null) step("doctor-after-d4", false, "no D4 row: " + after.split("\n")[0]);
-  else if (d4After.status === "PASS") step("doctor-after-d4", kept.length === 0, d4After.line);
-  else {
-    const detail = d4After.detail;
-    const reasons = detail.split("; ").filter(Boolean);
-    const unexpected = reasons.filter((r) => !kept.some((k) => r.includes(k) || r.includes(path.basename(k))));
-    step("doctor-after-d4", unexpected.length === 0, unexpected.length ? "unexpected: " + unexpected.join("; ") : detail);
-  }
-  for (const k of kept) {
-    const where = k.startsWith(".vscode") || k.startsWith(".kiro") ? path.join(project, k) : path.join(home, k);
-    step(`kept ${k}`, existsSync(where) && (d4After?.detail ?? "").includes(path.basename(k)), where);
-  }
-  if (agent === "vscode") {
-    const sessions = [path.join(project, ".github", "context-mode", "sessions"), path.join(home, ".vscode", "context-mode", "sessions")];
-    // The D4 detail joins reasons only (doctor-config.ts), so each path shows as one data-dir reason there and
-    // by name in the ctx_upgrade change table (D-M7-V2-1).
-    const dataReasons = (d4Before?.detail ?? "").split("; ").filter((r) => r.startsWith(DATA_DIR_REASON)).length;
-    step("vscode-both-session-paths", dataReasons >= sessions.length && sessions.every((s) => upgrade.includes(s)),
-      `${dataReasons} data-dir reasons; ` + sessions.join(", "));
-  }
+  step("doctor-after-d4", d4After?.status === "WARN" && d4After?.detail === d4Before?.detail, d4After?.line ?? "no D4 row");
+  const hostAfter = hostSnapshot(home);
+  step("host-files-preserved", Object.entries(hostBefore).every(([file, hash]) => hostAfter[file] === hash), "all seeded config and legacy data retain their bytes; doctor may create native runtime files");
 
   // Step 5: npm uninstall -g (R3: last).
   rmSync(bin, { force: true });

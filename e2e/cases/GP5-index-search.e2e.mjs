@@ -132,9 +132,15 @@ test("[M2] GP5/V24-cyrillic-and-accented-latin-recall", async () => {
 test("[M2] GP5/fetch-error-one-line-cause", async () => {
   const reply = await withClient((c) => c.request("tools/call", { name: "ctx_index", arguments: { url: "http://cm-v2-unreachable.invalid.test/x" } }));
   assert.equal(reply.isError, true);
-  assert.ok(/^Fetch failed:/.test(reply.content?.[0]?.text ?? ""));
-  assert.ok(!(reply.content?.[0]?.text ?? "").includes("\n    at "));
-  golden("fetch-error-one-line-cause", reply);
+  const message = reply.content?.[0]?.text ?? "";
+  assert.ok(!message.includes("\n    at "));
+  // Some DNS/proxy environments resolve reserved names to a private address; SSRF rejection is correct.
+  if (message.startsWith("Blocked private address")) {
+    assert.equal(message, "Blocked private address cm-v2-unreachable.invalid.test. Fix: use a public URL.");
+  } else {
+    assert.match(message, /^Fetch failed:/);
+    golden("fetch-error-one-line-cause", reply);
+  }
 });
 
 // --- M2-E2 ported cases below -------------------------------------------------------------

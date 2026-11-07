@@ -212,6 +212,7 @@ jobs:
       - run: node build/build.mjs --generated-only
       - run: npm run typecheck
       - run: node --test 'tests/**/*.test.mjs'
+      - run: node e2e/cases/run.mjs --milestone M7
       - run: node build/prompt-lint.mjs --out release-out
       - run: node build/check-readme.mjs
       - run: node build/check-install-docs.mjs

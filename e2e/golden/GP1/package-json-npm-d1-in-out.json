@@ -22,7 +22,7 @@
       "context-mode": "cli.mjs"
     },
     "bugs": {
-      "url": "https://github.com/mksglu/context-mode/issues"
+      "url": "https://github.com/PennixRv/context-mode/issues"
     },
     "description": "Context window saver for 10 coding agents. Local and free: sandboxed code execution, FTS5 search, session continuity.",
     "engines": {
@@ -54,7 +54,7 @@
       "server.mjs",
       "skills"
     ],
-    "homepage": "https://github.com/mksglu/context-mode#readme",
+    "homepage": "https://github.com/PennixRv/context-mode#readme",
     "keywords": [
       "claude-code",
       "codex",
@@ -74,7 +74,7 @@
     ],
     "license": "Elastic-2.0",
     "main": "./opencode/plugin.js",
-    "name": "context-mode",
+    "name": "@pennixrv/context-mode",
     "pi": {
       "extensions": [
         "./pi/index.js"
@@ -85,7 +85,7 @@
     },
     "repository": {
       "type": "git",
-      "url": "git+https://github.com/mksglu/context-mode.git"
+      "url": "git+https://github.com/PennixRv/context-mode.git"
     },
     "type": "module"
   },

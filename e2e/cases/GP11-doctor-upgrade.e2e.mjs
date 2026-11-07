@@ -205,7 +205,7 @@ describe("GP11 release build audit", () => {
       assert.ok(!("private" in pkg), "release-out/package.json has private (ADR-0019 D1 publishes it)");
       assert.deepEqual(pkg.bin, { "context-mode": "cli.mjs" }, "release-out/package.json bin");
       assert.deepEqual(pkg.engines, { node: ">=24.15.0" }, "release-out/package.json engines");
-      assert.deepEqual(pkg.repository, { type: "git", url: "git+https://github.com/mksglu/context-mode.git" }, "release-out/package.json repository");
+      assert.deepEqual(pkg.repository, DEV.repository, "release-out/package.json repository");
       for (const k of ["description", "keywords", "license", "homepage", "bugs"]) assert.deepEqual(pkg[k], DEV[k], `release-out/package.json ${k} differs from package.json`);
     }
   });
@@ -313,29 +313,29 @@ describe("GP11 doctor and upgrade", () => {
     assert.equal(timeout, 42);
   });
 
-  test("[M5] GP11/v1-entries-removed: upgrade removes a leftover v1 mcpServers.context-mode entry", async (t) => {
+  test("[M5] GP11/v1-entries-owner: upgrade leaves legacy config for Lifecycle migration", async (t) => {
     const { home, repo, spawn } = fixture(t);
     const dir = path.join(home, ".claude");
     mkdirSync(dir, { recursive: true });
     const settingsFile = path.join(dir, "settings.json");
     writeFileSync(settingsFile, JSON.stringify({ mcpServers: { "context-mode": { command: "node", args: ["v1/server.js"] } } }), "utf8");
+    const before = readFileSync(settingsFile, "utf8");
     const c = await spawn();
-    await call(c, "ctx_upgrade", { mode: "upgrade" });
+    const reply = await call(c, "ctx_upgrade", { mode: "upgrade" });
+    assert.match(text(reply), /pennix/);
     await c.close();
-    const after = JSON.parse(readFileSync(settingsFile, "utf8"));
-    const flat = JSON.stringify(after.mcpServers ?? {});
-    assert.ok(!flat.includes("v1/server.js"));
+    assert.equal(readFileSync(settingsFile, "utf8"), before);
   });
 
   test("[M5] GP11/no-baked-paths: ctx_upgrade never writes the build host's own path into config", async (t) => {
     const { home, repo, spawn } = fixture(t);
     mkdirSync(path.join(home, ".claude"), { recursive: true });
     const c = await spawn();
-    await call(c, "ctx_upgrade", { mode: "upgrade" });
+    const reply = await call(c, "ctx_upgrade", { mode: "upgrade" });
+    assert.match(text(reply), /pennix/);
     await c.close();
     const settingsFile = path.join(home, ".claude", "settings.json");
-    const after = readFileSync(settingsFile, "utf8");
-    assert.ok(!after.includes(SERVER_BUNDLE.replace(repo, "")) || true);
+    assert.equal(existsSync(settingsFile), false, "ctx_upgrade must not create host config");
   });
 
   test("[M5] GP11/rollback: a failed upgrade write leaves config valid and parseable", async (t) => {
@@ -359,19 +359,17 @@ describe("GP11 doctor and upgrade", () => {
     assert.ok(typeof text(reply) === "string");
   });
 
-  test("[M5] GP11/uninstall-stops-server: ctx_upgrade mode uninstall replies, then the server exits and leaves no owner file (D-M5-R1-1)", async (t) => {
+  test("[M5] GP11/uninstall-owner: ctx_upgrade preserves the running server and project data", async (t) => {
     const { home, spawn } = fixture(t);
     const c = await spawn();
     await call(c, "ctx_execute", { language: "javascript", code: "1" }); // open the project DB, write the owner file
     const reply = await call(c, "ctx_upgrade", { mode: "uninstall" });
-    assert.ok(text(reply).includes("| server | running | stopped after this reply |"));
-    await new Promise((r) => setTimeout(r, 1000)); // well past the stop delay
-    await c.close(); // resolves at once when the process has already exited
+    assert.match(text(reply), /pennix/);
+    const stats = await call(c, "ctx_stats", {});
+    assert.equal(stats.isError, false, text(stats));
     const projects = path.join(home, ".context-mode", "projects");
-    for (const key of readdirSync(projects)) {
-      const owners = path.join(projects, key, "owners");
-      assert.deepEqual(existsSync(owners) ? readdirSync(owners) : [], []);
-    }
+    assert.ok(readdirSync(projects).length > 0, "project data remains until owner cleanup");
+    await c.close();
   });
 
   // ADR-0014 §2, impl/13 §6 E2E proof, DEVIATIONS D-M6-arch-6 / D-M6-I2-1: the intake check's ALLOWED_KEYS
