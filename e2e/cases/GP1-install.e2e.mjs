@@ -663,11 +663,15 @@ import { vscodeMcpFile } from "../harness/vscode-user-dir.mjs";
       const home = mkdtempSync(path.join(tmpdir(), "cm-gp1u-home-"));
       const repo = mkdtempSync(path.join(tmpdir(), "cm-gp1u-repo-"));
       execFileSync("git", ["init", "-q"], { cwd: repo });
-      const settings = file === null ? vscodeMcpFile(home, process.env) : path.join(home, ...file);
+      const env = {
+        ...process.env, HOME: home, USERPROFILE: home, TMPDIR: home, CLAUDE_PROJECT_DIR: repo,
+        XDG_CONFIG_HOME: path.join(home, ".config"), APPDATA: path.join(home, "AppData", "Roaming"),
+        CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
+      };
+      const settings = file === null ? vscodeMcpFile(home, env) : path.join(home, ...file);
       mkdirSync(path.dirname(settings), { recursive: true });
       writeFileSync(settings, JSON.stringify(user, null, 2), "utf8");
       const before = readFileSync(settings, "utf8");
-      const env = { ...process.env, HOME: home, USERPROFILE: home, TMPDIR: home, CLAUDE_PROJECT_DIR: repo };
       const c = spawnBundle(SERVER_BUNDLE, env, ["--agent", agent, "--workspace-folder", repo]);
       t.after(() => {
         c.kill();
