@@ -209,6 +209,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - run: node build/build.mjs --generated-only
       - run: npm run typecheck
       - run: node --test 'tests/**/*.test.mjs'
       - run: node build/prompt-lint.mjs --out release-out
