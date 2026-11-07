@@ -13,14 +13,18 @@ const fixtures = [join(home, ".claude/plugins/installed_plugins.json"), join(hom
 for (const path of fixtures) { mkdirSync(resolve(path, ".."), {recursive: true}); writeFileSync(path, "preserve this host file\n"); }
 const env = {...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome};
 try {
-  const installed = spawnSync("npm", ["install", "--global", "--prefix", prefix, "--no-audit", "--no-fund", tarball], {env, encoding: "utf8", timeout: 180_000});
+  const installed = spawnSync("npm", ["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball], {env, encoding: "utf8", timeout: 180_000});
   assert.equal(installed.status, 0, installed.stdout + installed.stderr);
   fixtures.forEach(path => assert.equal(readFileSync(path, "utf8"), "preserve this host file\n"));
   const packageRoot = join(prefix, "lib/node_modules/@pennixrv/context-mode");
   const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
   const expected = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.name, expected.name); assert.equal(pkg.version, expected.version);
-  assert.equal(realpathSync(join(prefix, "bin/context-mode")), join(packageRoot, "cli.bundle.mjs"));
+  assert.equal(realpathSync(join(prefix, "bin/context-mode")), join(packageRoot, "cli.mjs"));
+  assert.equal(pkg.scripts, undefined);
+  assert.equal(pkg.dependencies, undefined);
+  const checked = spawnSync(process.execPath, [resolve(import.meta.dirname, "release/check-npm-tarball.mjs"), packageRoot, tarball], {env, encoding: "utf8", timeout: 30_000});
+  assert.equal(checked.status, 0, checked.stdout + checked.stderr);
   const version = spawnSync(join(prefix, "bin/context-mode"), ["--version"], {env, encoding: "utf8", timeout: 5000});
   assert.equal(version.status, 0, version.stderr); assert.equal(version.stdout.trim(), expected.version);
   const host = spawnSync(process.execPath, [resolve(import.meta.dirname, "verify-codex-host.mjs"), packageRoot], {env, encoding: "utf8", timeout: 60_000});
