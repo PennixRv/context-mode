@@ -63,8 +63,7 @@ const COPILOT_DIR = ".copilot";
 const KIRO_DIR = AGENT_HOME_DIR.kiro[0];
 const OPENCODE_HOME_SEGS = AGENT_HOME_DIR.opencode;
 
-/** D-N5-CODEX-HOME-1: a path under HOME as the agent reads it. Codex reads config.toml, hooks.json and skills/
- *  from $CODEX_HOME (default ~/.codex), so a ".codex/..." path moves under CODEX_HOME when it is set. */
+/** D-N5-CODEX-HOME-1: config, hooks and the legacy Skill paths follow CODEX_HOME; new Skills use ~/.agents/skills. */
 function agentPath(ctx: SetupContext, id: AgentId, rel: string | readonly string[]): string {
   const segs = typeof rel === "string" ? rel.split("/") : [...rel];
   const codexHome = ctx.env[CODEX_HOME_ENV];
@@ -116,6 +115,7 @@ export interface CheckRow {
   hookFiles: HookFile[];
   hookInstall: HookInstall;
   skillInstall: SkillInstall;
+  legacySkills?: SkillFile[];
   /** ADR-0020 hook-runs: the hook bundle for this agent, also for in-process agents (doctor sample event). */
   hookRunCommand: string[];
   /** D-HF-COPILOT-ENABLED-1: Copilot CLI's user settings.json, whose `disabledHooks` list stops a hook from running. */
@@ -317,6 +317,8 @@ export function buildRegistry(ctx: SetupContext): CheckRow[] {
     const command = `${bareNode ? HOST_NODE_COMMAND : `"${hookCommand[0]}"`} "${hookCommand[1]}" ${AGENT_FLAG} ${id}`;
     const hookInstall = hookInstallFor(ctx, getAdapter(id), command);
     const skillInstall = skillInstallFor(ctx, row);
+    const legacySkills = id === "codex" && skillInstall.kind === "dir" ? skillInstall.files.map((f) => ({ ...f,
+      file: agentPath(ctx, id, [CODEX_DIR, SKILLS_DIR_NAME, f.name, SKILL_FILE]) })) : [];
     const copilotSettings = id === "copilot-cli" ? agentPath(ctx, id, [COPILOT_DIR, "settings.json"]) : undefined;
     const writes = [
       ...(copilotSettings ? [copilotSettings] : []),
@@ -324,6 +326,7 @@ export function buildRegistry(ctx: SetupContext): CheckRow[] {
       ...(hookInstall.kind === "package" ? [] : [hookInstall.file]),
       ...(hookInstall.kind === "file" && hookInstall.trust ? [hookInstall.trust] : []),
       ...(skillInstall.kind === "dir" ? skillInstall.files.map((f) => f.file) : []),
+      ...legacySkills.map((f) => f.file),
     ];
     const out: CheckRow = {
       id, installMode: row.installMode, serverCommand: serverCmd(ctx, id), config, cli: cliFor(ctx, id),
@@ -331,6 +334,7 @@ export function buildRegistry(ctx: SetupContext): CheckRow[] {
       allowedWrites: [...new Set(writes.map((f) => path.resolve(f)))],
       goldenPayload: golden(row, ctx.home),
     };
+    if (legacySkills.length) out.legacySkills = legacySkills;
     if (copilotSettings) out.copilotSettings = copilotSettings;
     if (row.installMode !== "in-process") out.hookCommand = hookCommand;
     const copy = copyFor(ctx, id);

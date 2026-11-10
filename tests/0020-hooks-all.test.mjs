@@ -4,7 +4,7 @@
 import { describe, test } from "node:test";
 import { CONC } from "./_lib/concurrency.mjs";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -12,8 +12,8 @@ import { spawnSync } from "node:child_process";
 import { getAdapter } from "../src/adapters/table.ts";
 import { TOOL_ORDER } from "../src/core/contracts/constants.ts";
 import { generateManifests } from "../build/manifests.ts";
-import { buildRegistry, printPlan, runRemove, runSetup, hookCommandString } from "../src/setup/index.ts";
-import { SETUP_NODE } from "../src/setup/registry.ts";
+import { buildRegistry, printPlan, runRemove, runSetup, hookCommandString, runDoctor } from "../src/setup/index.ts";
+import { SETUP_NODE, renderSkill } from "../src/setup/registry.ts";
 import { hookSample } from "../src/setup/hook-sample.ts";
 
   // serial: runSetup and runDoctor share in-process state; the tests fail when they overlap
@@ -261,7 +261,7 @@ createInterface({ input: process.stdin }).on("line", (l) => {
   // later same-name skill, and its tool names differ from VS Code's (context-mode-ctx_* vs mcp_context-mode_ctx_*). So
   // copilot-cli owns ~/.copilot/skills and vscode owns ~/.agents/skills; each SKILL.md names one host's tool, and setup of one
   // agent never rewrites the other's skill. Supersedes the shared-dir form of D-HQ-COPILOT-NAMES-2.
-  test("D-HQ-COPILOT-NAMES-3: copilot-cli and vscode each own a skills dir; each SKILL.md names only its host's tool; doctor passes skills for both", async (t) => {
+  test("Copilot CLI owns its Skills while VS Code shares rendered Skills with Codex; doctor passes both", async (t) => {
     const s = sandbox(t);
     const { runDoctor } = await import("../src/setup/index.ts");
     const dirs = { "copilot-cli": ".copilot", vscode: ".agents" };
@@ -271,8 +271,8 @@ createInterface({ input: process.stdin }).on("line", (l) => {
         const text = readFileSync(path.join(s.home, dirs[id], "skills", name, "SKILL.md"), "utf8");
         const tool = name.replace("ctx-", "ctx_");
         const other = getAdapter(id === "vscode" ? "copilot-cli" : "vscode").toolNamePrefix;
-        assert.ok(text.includes("Call the " + getAdapter(id).toolNamePrefix + tool + " tool "), id + " " + name + " names its own tool: " + text);
-        assert.equal(text.includes(" or "), false, id + " " + name + " hedges: " + text);
+        assert.ok(text.includes(getAdapter(id).toolNamePrefix + tool), id + " " + name + " names its own tool: " + text);
+        assert.equal(text.includes(" or "), id === "vscode", id + " uses the shared directory's tool names");
         assert.equal(text.includes(other + tool), false, id + " " + name + " names the other host's tool");
       }
     }
@@ -282,8 +282,8 @@ createInterface({ input: process.stdin }).on("line", (l) => {
 
   // N5 (2.0.0-next.5 live run): with CODEX_HOME set apart from HOME/.codex, setup wrote HOME/.codex/config.toml while
   // `codex mcp list` reads CODEX_HOME/config.toml, so setup failed and rolled back. Codex reads its config, hooks.json
-  // and skills from CODEX_HOME (default ~/.codex), so setup writes all three there.
-  test("[D-N5-CODEX-HOME-1] setup writes codex config.toml, hooks.json and skills under CODEX_HOME when it is set", async (t) => {
+  // follows CODEX_HOME for config and hooks; command Skills use the shared user discovery root.
+  test("setup keeps Codex config and hooks under CODEX_HOME while sharing user Skills", async (t) => {
     const s = sandbox(t);
     const codexHome = path.join(s.root, "codex-home");
     const env = { ...s.env, CODEX_HOME: codexHome };
@@ -292,8 +292,58 @@ createInterface({ input: process.stdin }).on("line", (l) => {
     assert.ok(readFileSync(path.join(codexHome, "config.toml"), "utf8").includes("[mcp_servers.context-mode]"), "MCP entry in CODEX_HOME/config.toml");
     const cmds = commands(JSON.parse(readFileSync(path.join(codexHome, "hooks.json"), "utf8")));
     assert.ok(cmds.includes(hookCmd(s.pkgDir, "codex")), "hook command in CODEX_HOME/hooks.json");
-    for (const name of SKILLS) assert.ok(existsSync(path.join(codexHome, "skills", name, "SKILL.md")), name + " under CODEX_HOME/skills");
+    for (const name of SKILLS) {
+      const text = readFileSync(path.join(s.home, ".agents/skills", name, "SKILL.md"), "utf8");
+      assert.ok(text.includes("mcp__context_mode__"));
+      assert.ok(text.includes("mcp_context-mode_"));
+      assert.equal(existsSync(path.join(codexHome, "skills", name, "SKILL.md")), false);
+    }
     assert.equal(existsSync(path.join(s.home, ".codex")), false, "nothing written to HOME/.codex");
+  });
+
+  test("setup retires only exact legacy Skills and doctor exposes their old paths", async (t) => {
+    const s = sandbox(t);
+    for (const name of SKILLS) {
+      const file = path.join(s.home, ".codex/skills", name, "SKILL.md");
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, renderSkill(readFileSync(path.join(s.pkgDir, "pi/skills", name, "SKILL.md"), "utf8"), getAdapter("codex").toolNamePrefix));
+    }
+    const before = await runDoctor({ ...s, agents: ["codex"] });
+    assert.ok(before.agents[0].changes.some((c) => c.file?.includes(".codex/skills") && c.after === null));
+    const installed = await runSetup({ ...s, agents: ["codex"], runId: "migration" });
+    assert.equal(installed.exitCode, 0, JSON.stringify(installed));
+    for (const name of SKILLS) assert.equal(existsSync(path.join(s.home, ".codex/skills", name, "SKILL.md")), false);
+    const removed = runRemove({ home: s.home, env: s.env });
+    assert.equal(removed.preserved.length, 3);
+    for (const name of SKILLS) {
+      assert.ok(existsSync(path.join(s.home, ".agents/skills", name, "SKILL.md")));
+      assert.equal(existsSync(path.join(s.home, ".codex/skills", name, "SKILL.md")), false);
+    }
+  });
+
+  test("modified legacy Skills block setup before any shared target is written", async (t) => {
+    const s = sandbox(t);
+    const file = path.join(s.home, ".codex/skills/ctx-doctor/SKILL.md");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "user modifications");
+    const result = await runSetup({ ...s, agents: ["codex"], runId: "modified" });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.agents[0].reason, /ownership unknown/);
+    assert.equal(readFileSync(file, "utf8"), "user modifications");
+    assert.equal(existsSync(path.join(s.home, ".agents/skills/ctx-doctor/SKILL.md")), false);
+  });
+
+  test("broken shared Skill symlinks block setup without touching the link target", async (t) => {
+    if (process.platform === "win32") return t.skip("symlink creation requires Windows developer mode");
+    const s = sandbox(t);
+    const file = path.join(s.home, ".agents/skills/ctx-doctor/SKILL.md");
+    const target = path.join(s.root, "missing-target");
+    mkdirSync(path.dirname(file), { recursive: true });
+    symlinkSync(target, file);
+    const result = await runSetup({ ...s, agents: ["codex"], runId: "symlink" });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.agents[0].reason, /symlink/);
+    assert.equal(existsSync(target), false);
   });
 
   // N6 (2.0.0-next.5 live run): Codex 0.156.1 deferred our MCP tools behind tool_search, so the model dumped the

@@ -25,7 +25,7 @@ name: ctx-doctor
 description: Check that context-mode is installed and working, as a table.
 disable-model-invocation: true
 ---
-Call the mcp_context-mode_ctx_doctor tool and show its table to the user unchanged. If a row failed, list the fixes it names, in order.
+Call the mcp__context_mode__ctx_doctor or mcp_context-mode_ctx_doctor tool and show its table to the user unchanged. If a row failed, list the fixes it names, in order.
 
 Skill: put this in <HOME>/.agents/skills/ctx-stats/SKILL.md:
 
@@ -34,7 +34,7 @@ name: ctx-stats
 description: Show how much context context-mode saved, as a detailed report.
 disable-model-invocation: true
 ---
-Call the mcp_context-mode_ctx_stats tool and show the text block of its reply to the user unchanged, inside a code block so the columns stay aligned. Add one sentence under it that names the largest saving.
+Call the mcp__context_mode__ctx_stats or mcp_context-mode_ctx_stats tool and show the text block of its reply to the user unchanged, inside a code block so the columns stay aligned. Add one sentence under it that names the largest saving.
 
 Skill: put this in <HOME>/.agents/skills/ctx-upgrade/SKILL.md:
 
@@ -43,6 +43,6 @@ name: ctx-upgrade
 description: Show the Pennix Lifecycle route for updating context-mode.
 disable-model-invocation: true
 ---
-Call the mcp_context-mode_ctx_upgrade tool and show its owner guidance. Installation, updates and removal use Pennix Lifecycle through pennix-component-lifecycle. Diagnostics remain available separately and can perform upstream database self-healing.
+Call the mcp__context_mode__ctx_upgrade or mcp_context-mode_ctx_upgrade tool and show its owner guidance. Installation, updates and removal use Pennix Lifecycle through pennix-component-lifecycle. Diagnostics remain available separately and can perform upstream database self-healing.
 
 Then restart the agent and check it: context-mode doctor --agents vscode

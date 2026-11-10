@@ -10,7 +10,7 @@ import { CODEX_TRUST_PATH, CODEX_UNTRUSTED_FIX, codexTrustEntries, listPluginHoo
 import type { PluginHook } from "./codex-trust.ts";
 import { listCopilotHooks } from "./copilot-hooks.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -150,7 +150,7 @@ function parseFail(_row: CheckRow, file: string): string { return `${file} does 
 
 // ---------- plan ----------
 
-interface FileEdit { file: string; before: string | undefined; after: string; changes: Change[]; plain?: boolean; }
+interface FileEdit { file: string; before: string | undefined; after: string | undefined; changes: Change[]; plain?: boolean; }
 interface Plan { edits: FileEdit[]; cli: string[][]; refresh: string[][]; }
 
 type Json = Record<string, unknown>;
@@ -340,10 +340,32 @@ function planSkills(row: CheckRow, edits: FileEdit[]): void {
   const s = row.skillInstall;
   if (s.kind !== "dir") return;
   for (const f of s.files) {
+    skillPathSafe(f.file);
     if (!existsSync(f.src)) throw new Error(`preflight: ${f.src} is missing`);
     const after = renderSkill(readFileSync(f.src, "utf8"), s.prefixes);
     const before = readRaw(f.file);
+    const source = readFileSync(f.src, "utf8");
+    if (before !== undefined && before !== after && !s.prefixes.some((p) => before === renderSkill(source, p))) {
+      throw new Error(`skill modified or ownership unknown: ${f.file}; preserved`);
+    }
     if (before !== after) edits.push({ plain: true, file: f.file, before, after, changes: [{ file: f.file, path: f.name, before: before === undefined ? null : "old", after: "SKILL.md" }] });
+  }
+  for (const f of row.legacySkills ?? []) {
+    skillPathSafe(f.file);
+    const before = readRaw(f.file);
+    if (before === undefined) continue;
+    if (before !== renderSkill(readFileSync(f.src, "utf8"), getAdapter(row.id).toolNamePrefix) || readdirSync(path.dirname(f.file)).some((name) => name !== SKILL_FILE)) {
+      throw new Error(`legacy skill modified or ownership unknown: ${f.file}; preserved`);
+    }
+    edits.push({ plain: true, file: f.file, before, after: undefined,
+      changes: [{ file: f.file, path: f.name, before: "legacy SKILL.md", after: null }] });
+  }
+}
+
+function skillPathSafe(file: string): void {
+  for (let p = file; ; p = path.dirname(p)) {
+    if (lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`skill path contains symlink: ${p}`);
+    if (path.dirname(p) === p) break;
   }
 }
 
@@ -1056,7 +1078,9 @@ async function setupRow(row: CheckRow, ctx: SetupContext, run: Run, dryRun: bool
       assertWritable(row, e.file);
       const raw = readRaw(e.file); // the backup holds the bytes as they were, BOM and CRLF included
       run.record({ agent: row.id, file: e.file, existed: raw !== undefined }, raw);
-      atomicWrite(e.file, e.plain || raw === undefined ? e.after : withLayout(e.after, hostLayout(raw)));
+      if ((e.plain || raw === undefined ? raw : hostText(raw)) !== e.before) throw new Error(`file changed during setup: ${e.file}`);
+      if (e.after === undefined) unlinkWithRetry(e.file);
+      else atomicWrite(e.file, e.plain || raw === undefined ? e.after : withLayout(e.after, hostLayout(raw)));
     }
     for (const args of plan.cli) {
       const r = runBin(row.cli!.bin, args, ctx.env, row.cli!.input ?? "", INSTALL_TIMEOUT_MS);
@@ -1152,7 +1176,7 @@ function isTrust(row: CheckRow, c: Change): boolean {
 }
 
 /** setup --remove: undo every recorded run, newest first, so each touched file gets its pre-setup bytes back. */
-export function runRemove(opts: { home: string; env?: SetupContext["env"] }): { exitCode: number; restored: number; error?: string } {
+export function runRemove(opts: { home: string; env?: SetupContext["env"] }): { exitCode: number; restored: number; preserved?: string[]; error?: string } {
   const env = opts.env ?? process.env;
   const root = dataRootOf(env, opts.home); // #1318 D-DATA-DIR-ENV-1
   const base = path.join(root, BACKUP_DIR);
@@ -1160,15 +1184,28 @@ export function runRemove(opts: { home: string; env?: SetupContext["env"] }): { 
   const held = takeLock(root, "remove");
   if (held) return { exitCode: 1, restored: 0, error: held };
   let restored = 0;
+  const preserved = new Set<string>();
   try {
     const runs = readdirSync(base).map((r) => path.join(base, r)).filter((d) => existsSync(path.join(d, MANIFEST)))
       .sort().reverse();
     for (const dir of runs) {
       const m = JSON.parse(readFileSync(path.join(dir, MANIFEST), "utf8")) as Manifest;
-      undo(dir, m.entries, env);
-      restored += m.entries.length;
+      const shared = path.join(opts.home, ".agents", "skills");
+      const legacy = path.join(env.CODEX_HOME || path.join(opts.home, ".codex"), "skills");
+      const entries = m.entries.filter((e) => {
+        if (!e.file || !COMMAND_SKILLS.includes(path.basename(path.dirname(e.file)))) return true;
+        const root = path.dirname(path.dirname(e.file));
+        if (root !== shared && root !== legacy) return true;
+        const current = path.join(shared, path.basename(path.dirname(e.file)), SKILL_FILE);
+        if (!existsSync(current)) return true;
+        // Unknown host profiles can still consume the shared file; do not restore retired legacy copies either.
+        preserved.add(current);
+        return false;
+      });
+      undo(dir, entries, env);
+      restored += entries.length;
       renameWithRetry(path.join(dir, MANIFEST), path.join(dir, MANIFEST_DONE));
     }
   } finally { rmSync(path.join(root, LOCK_FILE), { force: true }); }
-  return { exitCode: 0, restored };
+  return { exitCode: 0, restored, ...(preserved.size ? { preserved: [...preserved] } : {}) };
 }

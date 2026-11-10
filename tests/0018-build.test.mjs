@@ -717,7 +717,7 @@ describe("ADR-0019 build: host skills", () => {
   test("[D-N5-SKILL-1] the built package's ctx-stats skill names each host's real tool once, never a doubled prefix", () => {
     for (const row of ADAPTERS) {
       const { texts } = shipped(out, row.id);
-      assert.ok(texts["ctx-stats"].includes("Call the " + CTX_STATS_NAME[row.id] + " tool "), `${row.id}: ${texts["ctx-stats"]}`);
+      assert.ok(texts["ctx-stats"].includes(CTX_STATS_NAME[row.id] + (row.id === "codex" ? " or " : " tool ")), `${row.id}: ${texts["ctx-stats"]}`);
     }
   });
 

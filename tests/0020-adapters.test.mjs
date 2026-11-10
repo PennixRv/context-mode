@@ -245,7 +245,7 @@ describe("ADR-0020 adapters", () => {
     };
     const SKILL_CHANNEL = {
       "claude-code": { kind: "package", path: "skills" }, // D-R33-CC-SKILLS-1: shared with gemini and qwen
-      codex: { kind: "home-dir", path: ".codex/skills" },
+      codex: { kind: "home-dir", path: ".agents/skills" },
       gemini: { kind: "package", path: "skills" },
       qwen: { kind: "package", path: "skills" }, // D-HQ-SKILLS-3: <extension>/skills, shared with gemini
       "copilot-cli": { kind: "home-dir", path: ".copilot/skills" },

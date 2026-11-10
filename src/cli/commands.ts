@@ -261,6 +261,7 @@ async function remove(ui: Ui): Promise<number> {
   const r = runRemove({ home: ui.ctx.home, env: ui.ctx.env });
   if (ui.f.json) out(JSON.stringify(r));
   else out(`Restored ${r.restored} file(s).`);
+  if (!ui.f.json && r.preserved?.length) out(`Preserved shared user skills for other or unknown host profiles: ${r.preserved.join(", ")}`);
   if (r.error) err(`FAIL remove: ${r.error}. Fix: context-mode setup --remove --yes`);
   return r.exitCode;
 }

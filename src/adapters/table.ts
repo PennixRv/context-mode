@@ -39,7 +39,7 @@ export const ADAPTERS: readonly AdapterRow[] = Object.freeze([
     id: "codex", installMode: "config-mcp", projectSource: "arg:--agent+cwd", toolNamePrefix: codex.TOOL_NAME_PREFIX,
     nativeTools: { shell: ["Bash"], edit: ["apply_patch"] }, execReadOnlyHint: true, eventMap: CLAUDE_EVENTS,
     compactDelivery: "sessionstart", compactSummary: "none", hookTimeoutMs: HOOK_TIMEOUT_MS, denyChannel: "deny-reason",
-    hookChannel: { kind: "home-file", path: ".codex/hooks.json" }, skillChannel: { kind: "home-dir", path: ".codex/skills" }, // ADR-0020
+    hookChannel: { kind: "home-file", path: ".codex/hooks.json" }, skillChannel: { kind: "home-dir", path: ".agents/skills" }, // Shared user discovery; config and hooks still follow CODEX_HOME.
     decode: codex.decode, encode: codex.encode,
   },
   {
