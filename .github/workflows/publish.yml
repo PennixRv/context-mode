@@ -3,6 +3,12 @@ name: Publish Pennix npm package
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing immutable tag to build and publish'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,8 +19,12 @@ jobs:
     if: github.repository == 'PennixRv/context-mode'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -25,7 +35,7 @@ jobs:
           python-version: '3.12'
       - name: Check release identity
         run: |
-          node --input-type=module -e 'import assert from "node:assert/strict"; import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json")); assert.equal(p.name,"@pennixrv/context-mode"); assert.match(p.version,/^\d+\.\d+\.\d+-pennix\.\d+$/); assert.equal(process.env.GITHUB_REF_NAME,`v${p.version}`);'
+          node --input-type=module -e 'import assert from "node:assert/strict"; import fs from "node:fs"; const p=JSON.parse(fs.readFileSync("package.json")); assert.equal(p.name,"@pennixrv/context-mode"); assert.match(p.version,/^\d+\.\d+\.\d+-pennix\.\d+$/); assert.equal(process.env.RELEASE_TAG,`v${p.version}`);'
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: node build/build.mjs --generated-only && node --test 'tests/**/*.test.mjs'
@@ -36,7 +46,7 @@ jobs:
       - name: Pack and verify the release artifact
         run: |
           mkdir -p "$RUNNER_TEMP/context-mode-package"
-          node build/build.mjs --out release-out --sha "$GITHUB_SHA" --version "${GITHUB_REF_NAME#v}"
+          node build/build.mjs --out release-out --sha "$(git rev-parse HEAD)" --version "${RELEASE_TAG#v}"
           npm pack ./release-out --ignore-scripts --pack-destination "$RUNNER_TEMP/context-mode-package" --json > "$RUNNER_TEMP/context-mode-pack.json"
           artifact_path=$(node -p 'process.env.RUNNER_TEMP+"/context-mode-package/"+Object.values(require(process.env.RUNNER_TEMP+"/context-mode-pack.json"))[0].filename')
           node scripts/verify-tarball.mjs "$artifact_path"
