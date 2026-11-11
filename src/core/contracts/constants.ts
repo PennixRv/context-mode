@@ -149,8 +149,8 @@ export const SEARCH_WRAPPER_FILE = "search.mjs"; // ADR-0016 more: line target, 
 export const RUN_WRAPPER_AGENT = "claude-code"; // D-M3-X1-3: case B deny + rewrite is the Claude Code mechanism (ADR-0016 Q3)
 export const RUN_SESSION_PREFIX = "mcp:"; // §4 step 5, 00 A8: no MCP _meta, + a process-local id
 // D-CR2-SID-1: the env var a host sets in the MCP server process to the session id its hooks receive.
-// Claude Code 2.1.303 sets CLAUDE_CODE_SESSION_ID (probe: equals the hook payload session_id). A host not listed keeps mcp:<serverId>.
-export const HOST_SESSION_ENV: Readonly<Partial<Record<string, string>>> = Object.freeze({ "claude-code": "CLAUDE_CODE_SESSION_ID" });
+// Claude Code 2.1.303 and Copilot CLI 1.0.107 expose the hook session id to each MCP child; verified with concurrent ACP sessions.
+export const HOST_SESSION_ENV: Readonly<Partial<Record<string, string>>> = Object.freeze({ "claude-code": "CLAUDE_CODE_SESSION_ID", "copilot-cli": "COPILOT_AGENT_SESSION_ID" });
 
 // Runtime
 export const NODE_MIN = "24.15.0"; // S-NODE

@@ -15,3 +15,11 @@
 首个候选 `2.1.5-pennix.5` 的公开 CI 检查发现，本说明原路径不在仓库目标树白名单内。将说明移至既有 `docs/architecture/`，保持仓库卫生门禁；修订候选为 `2.1.5-pennix.6`，保留旧 tag，不覆盖发行身份。此次修订仅调整文档位置、发行版本及先前已准备的固定 tag dispatch，不修改运行时实现或身份协议。
 
 `pennix.6` 的版本递增遗漏源树插件 manifest，公开 CI 的两项版本检查拒绝发布。最终修订使用原生 `scripts/release/dev-version.mjs` 的 `setVersions` 同步全部五处版本来源为 `2.1.5-pennix.7`，完整本地门禁通过后再发布。保留前两次失败，不修改版本检查或旧 tag。
+
+## 原生 Copilot 会话归属修复
+
+`pennix.7` 已公开安装并能被两个 Teamwork 宿主调用，但现场标记核验发现 Copilot Hook 使用原生会话 ID，MCP 仍回退到 `mcp:<serverId>`。有界原生探针确认 Copilot CLI 1.0.107 的 MCP `_meta` 只有 progressToken；同一 ACP 进程中两个并发会话分别通过 `COPILOT_AGENT_SESSION_ID` 和 `COPILOT_SESSION_CWD` 向各自 MCP 子进程提供准确的原生会话 ID 和工作树，值与 session/new 回执一致。
+
+按根合同的归属缺陷处置，在既有 HOST_SESSION_ENV 映射中补齐 Copilot 原生字段，保持 `_meta.sessionId` 优先、其他宿主及缺省回退规则不变。不读取最近会话、不新增身份文件或协议、不扫描宿主历史；增加优先级、空值、跨宿主及真实双 MCP 连接回归。修订候选为 `2.1.5-pennix.8`，重新公开发行、原生安装并以实际 Hook/MCP 标记复核后才能接受。
+
+旧版已写入的 `mcp:*` 分区保留，不自动归并到某个原生会话。原生环境字段的现场支持证据限于上述 CLI 版本，缺失字段时仍使用既有回退，不按进程或文件时间猜测身份。

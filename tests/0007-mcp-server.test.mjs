@@ -140,6 +140,12 @@ describe("ADR-0004 server entry and exit guard", () => {
     assert.equal(sessionIdOf(undefined, "claude-code", env, "srv"), "280ff837-09ba-4152-bb02-89ec3a42eca9");
     assert.equal(sessionIdOf(undefined, "claude-code", {}, "srv"), "mcp:srv");
     assert.equal(sessionIdOf(undefined, "claude-code", { CLAUDE_CODE_SESSION_ID: "" }, "srv"), "mcp:srv");
+    const copilotEnv = { ...env, COPILOT_AGENT_SESSION_ID: "37336043-2459-4f11-8317-f8cb42ae10a2" };
+    assert.equal(sessionIdOf(undefined, "copilot-cli", copilotEnv, "srv"), copilotEnv.COPILOT_AGENT_SESSION_ID);
+    assert.equal(sessionIdOf({ sessionId: "explicit" }, "copilot-cli", copilotEnv, "srv"), "explicit");
+    assert.equal(sessionIdOf(undefined, "copilot-cli", { ...env, COPILOT_AGENT_SESSION_ID: "" }, "srv"), "mcp:srv");
+    assert.equal(sessionIdOf(undefined, "copilot-cli", env, "srv"), "mcp:srv");
+    assert.equal(sessionIdOf(undefined, "claude-code", copilotEnv, "srv"), env.CLAUDE_CODE_SESSION_ID);
     // A host without a session env keeps the process-local id.
     assert.equal(sessionIdOf(undefined, "gemini", env, "srv"), "mcp:srv");
     assert.equal(sessionIdOf(undefined, undefined, env, "srv"), "mcp:srv");
@@ -325,6 +331,28 @@ describe("ADR-0007 call shape on every host", () => {
     return spawnBundle(join(bundleDir, "server.mjs"), { HOME: root, USERPROFILE: root, CODEX_HOME: join(root, ".codex") }, ["--agent", "codex"], { cwd });
   };
   const hello = (client) => client.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "codex-mcp-client", version: "0" } });
+
+  test("Copilot MCP: concurrent native session envs keep their own sources without _meta.sessionId", async (t) => {
+    const cwd = join(root, "copilot-session-env");
+    mkdirSync(cwd);
+    execFileSync("git", ["init", "-q", cwd]);
+    const sessions = ["copilot-alpha", "copilot-beta"];
+    const clients = sessions.map(session => spawnBundle(join(bundleDir, "server.mjs"), { HOME: root, USERPROFILE: root, COPILOT_AGENT_SESSION_ID: session }, ["--agent", "copilot-cli"], { cwd }));
+    t.after(() => clients.forEach(client => client.kill()));
+    await Promise.all(clients.map(hello));
+    const call = async (i, name, args) => {
+      const result = await clients[i].request("tools/call", { name, arguments: args });
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      return result.content.map(c => c.text).join("\n");
+    };
+    await Promise.all(sessions.map((session, i) => call(i, "ctx_index", { content: "copper identity " + session, source: session })));
+    for (let i = 0; i < sessions.length; i++) {
+      const text = await call(i, "ctx_resume", {});
+      assert.ok(text.includes(sessions[i]), text);
+      assert.ok(!text.includes(sessions[1 - i]), text);
+    }
+    await Promise.all(clients.map(client => client.close()));
+  });
 
   test("server declares the codex/sandbox-state-meta capability, so Codex sends the workspace", async (t) => {
     const client = codexClient(repo);

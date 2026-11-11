@@ -19,10 +19,9 @@ const CLOSE_TIMEOUT_MS = 2000;
  *   roots/list (D-VSCODE-ROOTS-1), undefined = method not found
  * @returns {{request:Function, notify:Function, close:Function, kill:Function}}
  */
-// D-CR2-SID-2: the server reads the host session id from CLAUDE_CODE_SESSION_ID (D-CR2-SID-1). A case
-// run from inside a Claude Code session inherits that session's id; it is not the id of the host the case
-// models, so it is dropped. A case that sets its own value keeps it.
-const HOST_SESSION_VARS = ["CLAUDE_CODE_SESSION_ID"];
+// D-CR2-SID-2: a case may inherit its runner's native session id; that is not the host the case models.
+// Drop inherited values, while keeping a case's explicit value.
+const HOST_SESSION_VARS = ["CLAUDE_CODE_SESSION_ID", "COPILOT_AGENT_SESSION_ID"];
 function childEnv(env) {
   const out = { ...(env ?? process.env) };
   for (const k of HOST_SESSION_VARS) if (out[k] !== undefined && out[k] === process.env[k]) delete out[k];
