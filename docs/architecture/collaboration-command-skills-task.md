@@ -9,3 +9,7 @@
 ## 共享命令的宿主边界
 
 `~/.agents/skills` 中的三个命令 Skill 同时列出 Codex、VS Code 和 Copilot CLI 的工具名称；调用时必须选择当前宿主实际声明的工具。Copilot CLI 私有目录仍只渲染自己的工具名，未改变其配置、Hook 或同名 Skill 的原生发现顺序。自定义 `COPILOT_HOME` 继续由原生路径解析处理。
+
+## 发布检查修正
+
+首个候选 `2.1.5-pennix.5` 的公开 CI 检查发现，本说明原路径不在仓库目标树白名单内。将说明移至既有 `docs/architecture/`，保持仓库卫生门禁；修订候选为 `2.1.5-pennix.6`，保留旧 tag，不覆盖发行身份。此次修订仅调整文档位置、发行版本及先前已准备的固定 tag dispatch，不修改运行时实现或身份协议。
