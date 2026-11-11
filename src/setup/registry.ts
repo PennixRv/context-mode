@@ -89,11 +89,11 @@ export function renderSkill(text: string, prefix: string | readonly string[]): s
 
 const SKILL_NAME_JOIN = " or ";
 
-/** Every distinct tool name prefix of the agents whose skill channel is this home dir, in table order. */
+/** Copilot also discovers the shared user directory when its private Skill is absent. */
 function skillDirPrefixes(dirPath: string): string[] {
   const out: string[] = [];
   for (const r of ADAPTERS) {
-    if (r.skillChannel.kind === "home-dir" && r.skillChannel.path === dirPath && !out.includes(r.toolNamePrefix)) out.push(r.toolNamePrefix);
+    if (r.skillChannel.kind === "home-dir" && (r.skillChannel.path === dirPath || (dirPath === ".agents/skills" && r.id === "copilot-cli")) && !out.includes(r.toolNamePrefix)) out.push(r.toolNamePrefix);
   }
   return out;
 }

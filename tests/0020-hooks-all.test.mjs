@@ -273,7 +273,7 @@ createInterface({ input: process.stdin }).on("line", (l) => {
         const other = getAdapter(id === "vscode" ? "copilot-cli" : "vscode").toolNamePrefix;
         assert.ok(text.includes(getAdapter(id).toolNamePrefix + tool), id + " " + name + " names its own tool: " + text);
         assert.equal(text.includes(" or "), id === "vscode", id + " uses the shared directory's tool names");
-        assert.equal(text.includes(other + tool), false, id + " " + name + " names the other host's tool");
+        assert.equal(text.includes(other + tool), id === "vscode", id + " " + name + " keeps Copilot's shared fallback available");
       }
     }
     const d = await runDoctor({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["copilot-cli", "vscode"] });
@@ -296,6 +296,7 @@ createInterface({ input: process.stdin }).on("line", (l) => {
       const text = readFileSync(path.join(s.home, ".agents/skills", name, "SKILL.md"), "utf8");
       assert.ok(text.includes("mcp__context_mode__"));
       assert.ok(text.includes("mcp_context-mode_"));
+      assert.ok(text.includes("context-mode-ctx_"), "shared fallback names Copilot CLI tools");
       assert.equal(existsSync(path.join(codexHome, "skills", name, "SKILL.md")), false);
     }
     assert.equal(existsSync(path.join(s.home, ".codex")), false, "nothing written to HOME/.codex");
