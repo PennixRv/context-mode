@@ -322,6 +322,20 @@ describe("ADR-0019 cli", () => {
 
     // ---------- setup --print (owner 2026-10-25: users never type paths, JSON or scripts) ----------
 
+    test("Pennix read-only Codex plan keeps custom home paths and leaves environment injection to Lifecycle", (t) => {
+      const s = sandbox(t);
+      const custom = path.join(s.home, "custom codex 空格");
+      const before = snapshot(s.home);
+      const r = run(s, ["setup", "--print", "codex", "--json"], { env: { CODEX_HOME: custom } });
+      assert.equal(r.status, 0, r.stderr);
+      const plan = JSON.parse(r.stdout).print;
+      assert.equal(plan.steps[0].file, path.join(custom, "config.toml"));
+      assert.ok(plan.steps[0].block.includes("[mcp_servers.context-mode]"));
+      assert.ok(!plan.steps[0].block.includes("[mcp_servers.context-mode.env]"));
+      assert.equal(plan.steps[1].file, path.join(custom, "hooks.json"));
+      assert.deepEqual(snapshot(s.home), before);
+    });
+
     /** Absolute paths in --print output become <NODE>, <PKG>, <HOME> so one golden fits every machine. */
     function normPaths(text, s) {
       let t = text;

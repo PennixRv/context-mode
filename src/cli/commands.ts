@@ -273,6 +273,8 @@ async function remove(ui: Ui): Promise<number> {
 /** setup --print <id>: the manual step from the same registry row setup applies; writes nothing. */
 function printManual(ui: Ui, id: AgentId): number {
   const row = buildRegistry(ui.ctx).find((r) => r.id === id)!;
+  // Lifecycle validates this plan and injects CODEX_HOME/PATH itself; keep its existing declarative boundary.
+  if (id === "codex" && row.config) delete (row.config.value as Record<string, unknown>).env;
   const p = printPlan(row, ui.ctx.env);
   if (ui.f.json) out(JSON.stringify({ command: "setup", print: p }));
   else out(printText(p));
