@@ -135,6 +135,7 @@ const ALLOWED_FILES = [
   // v2 user docs outside docs/architecture and docs/install (cleanup-plan §2).
   "docs/how-it-works.md", "docs/tools.md", "docs/algorithms.md", "docs/performance.md", "docs/UPSTREAM-CREDITS.md",
   "docs/tasks/audit-execution-and-scope.md", "docs/tasks/code-search-routing.md", "docs/tasks/session-recovery.md",
+  "docs/tasks/input-growth-audit.md",
   // Root files.
   "README.md", "CONTRIBUTING.md", "LICENSE", "stats.json", "package.json", "package-lock.json", "tsconfig.json", ".gitignore", ".gitattributes",
   ...MAIN_TREE_FILES,
