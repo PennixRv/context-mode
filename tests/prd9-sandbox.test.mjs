@@ -534,6 +534,19 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     } finally { closeDb(db); }
     const found = await ctxSearch.handler({ queries: ["command 300"], source: label }, { ...ctx, signal: new AbortController().signal });
     assert.ok(found.text.includes("command 300:"), found.text);
+    const seen = new Set();
+    let offset = 0;
+    for (let guard = 0; guard < 100; guard++) {
+      const page = await ctxSearch.handler({ queries: [""], source: label, offset }, { ...ctx, signal: new AbortController().signal });
+      for (const match of page.text.matchAll(/command (\d+):/g)) {
+        assert.ok(!seen.has(Number(match[1])), "no status row repeats across pages");
+        seen.add(Number(match[1]));
+      }
+      const next = /More: .*offset:(\d+)/.exec(page.text);
+      if (next === null) break;
+      offset = Number(next[1]);
+    }
+    assert.equal(seen.size, 300, "the public source pointer pages every command status without snippet loss");
   });
 
   test("ctxBatch rejects an empty commands or queries array (min(1))", async () => {

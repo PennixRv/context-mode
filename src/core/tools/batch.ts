@@ -5,7 +5,7 @@
 // D-M2-T11-1, D-M2-R4-1 (ingest byte budget, #961).
 import { z } from "zod/v4";
 import {
-  BACKGROUND_HOLD_NOTE, CANCELLED_LINE, ECHO_MAX_BYTES, EXEC_TIMEOUT_MS, INDEX_WRITE_CHUNK, OUTPUT_CAP, RETENTION_SIZE_CAP_BYTES, SEARCH_PAGE_SIZE,
+  BACKGROUND_HOLD_NOTE, CANCELLED_LINE, ECHO_MAX_BYTES, EXEC_TIMEOUT_MS, INDEX_WRITE_CHUNK, OUTPUT_CAP, RETENTION_SIZE_CAP_BYTES, SEARCH_PAGE_SIZE, SNIPPET_MAX_BYTES,
 } from "../contracts/constants.ts";
 import { CtxError, formatError } from "../contracts/errors.ts";
 import type { BatchInput, Chunk, DbHandle, ToolContext, ToolReply } from "../contracts/types.ts";
@@ -263,7 +263,8 @@ export async function runBatch(input: unknown, ctx: ToolContext, boundMs: number
     let statusText = summary + LINE_SEP + statuses;
     if (bytes(statusText) > OUTPUT_CAP / 4) {
       const statusLabel = label + ":status";
-      const chunks = chunkText(statuses, "text");
+      // A position page returns snippets: keep each whole status within that budget so paging loses no rows.
+      const chunks = chunkText(statuses.split(LINE_SEP).join(BLOCK_SEP), "text", SNIPPET_MAX_BYTES);
       ftsInsert(db, {
         projectKey: ctx.project.projectKey, sessionId: ctx.sessionId, worktree: ctx.project.worktree,
         agent: ctx.project.agent, kind: "content", label: statusLabel, bytes: bytes(statuses),
