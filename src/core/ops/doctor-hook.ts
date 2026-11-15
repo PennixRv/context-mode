@@ -17,7 +17,7 @@ import {
 } from "../contracts/constants.ts";
 import type { AgentId } from "../contracts/agents.ts";
 import type { DbHandle, DoctorRow } from "../contracts/types.ts";
-import { runProcess } from "../sandbox/spawn.ts";
+import { runProcess, type RunResult } from "../sandbox/spawn.ts";
 import { getAdapter } from "../../adapters/table.ts";
 import { nodeLaunch } from "../sandbox/host-node.ts";
 import { CODEX_PLUGIN_ID, askPluginHooks, sameDir, untrustedPluginHooksDetail } from "../../setup/codex-trust.ts";
@@ -130,7 +130,7 @@ export function isReadShape(stdout: string): boolean {
 }
 
 // D-R41-READ-OFFSET-1 (#1314): a second probe sends the same Read with offset/limit; the hook must let it through whole.
-async function readProbe(i: HookCheckInput, timeoutMs: number, ranged: boolean): Promise<string> {
+async function readProbe(i: HookCheckInput, timeoutMs: number, ranged: boolean): Promise<RunResult> {
   const home = mkdtempSync(path.join(tmpdir(), "cm-d5-read-"));
   try {
     const node = nodeLaunch({ ...i.env, HOME: home, USERPROFILE: home });
@@ -138,7 +138,7 @@ async function readProbe(i: HookCheckInput, timeoutMs: number, ranged: boolean):
       cwd: i.bundleDir, env: node.env, signal: i.signal, timeoutMs,
       stdin: JSON.stringify(readProbePayload(i.worktree ?? home, ranged)),
     });
-    return r.stdout.toString("utf8");
+    return r;
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -156,7 +156,7 @@ function isPassThrough(stdout: string): boolean {
 // the hook must not deny it, Claude Code shows it as an image block.
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-async function mediaProbe(i: HookCheckInput, timeoutMs: number): Promise<string> {
+async function mediaProbe(i: HookCheckInput, timeoutMs: number): Promise<RunResult> {
   const home = mkdtempSync(path.join(tmpdir(), "cm-d5-media-"));
   try {
     const filePath = path.join(home, "d5-media-probe.png");
@@ -167,7 +167,7 @@ async function mediaProbe(i: HookCheckInput, timeoutMs: number): Promise<string>
       stdin: JSON.stringify({ session_id: "d5-media-probe", transcript_path: "", cwd: home, hook_event_name: "PreToolUse",
         tool_name: "Read", tool_use_id: "toolu_d5_media_probe", tool_input: { file_path: filePath } }),
     });
-    return r.stdout.toString("utf8");
+    return r;
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -175,7 +175,7 @@ async function mediaProbe(i: HookCheckInput, timeoutMs: number): Promise<string>
 
 // D-R48-OWN-FILE-1 (#1326): a fourth probe sends a PreToolUse Read of a skill reference over OUTPUT_CAP under a temp
 // CLAUDE_CONFIG_DIR (skills/<skill>/references/*.md); the hook must not deny it. The temp dir is the probe's own.
-async function ownProbe(i: HookCheckInput, timeoutMs: number): Promise<string> {
+async function ownProbe(i: HookCheckInput, timeoutMs: number): Promise<RunResult> {
   const home = mkdtempSync(path.join(tmpdir(), "cm-d5-own-"));
   try {
     const cfg = path.join(home, ".claude");
@@ -189,7 +189,7 @@ async function ownProbe(i: HookCheckInput, timeoutMs: number): Promise<string> {
       stdin: JSON.stringify({ session_id: "d5-own-probe", transcript_path: "", cwd: home, hook_event_name: "PreToolUse",
         tool_name: "Read", tool_use_id: "toolu_d5_own_probe", tool_input: { file_path: filePath } }),
     });
-    return r.stdout.toString("utf8");
+    return r;
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -203,18 +203,32 @@ function isDeny(stdout: string): boolean {
   return isObject(out) && isObject(out.hookSpecificOutput) && out.hookSpecificOutput.permissionDecision === "deny";
 }
 
-/** null when all Read probes pass, else the FAIL detail. */
+// Empty output is passthrough only after a complete native call, never after failed or cut transport.
+function probeComplete(r: RunResult): boolean {
+  return r.killed === null && r.held !== true && (r.exitCode === 0 || r.exitCode === 2);
+}
+
 async function readProbeDetail(i: HookCheckInput, timeoutMs: number): Promise<string | null> {
-  if (!isReadShape(await readProbe(i, timeoutMs, false))) return D5_READ_SHAPE_DETAIL;
-  if (!isPassThrough(await readProbe(i, timeoutMs, true))) return D5_READ_RANGE_DETAIL;
-  if (isDeny(await mediaProbe(i, timeoutMs))) return D5_READ_MEDIA_DETAIL;
-  if (isDeny(await ownProbe(i, timeoutMs))) return D5_READ_OWN_DETAIL;
+  const full = await readProbe(i, timeoutMs, false);
+  if (!probeComplete(full)) return D5_SHAPE_DETAIL;
+  if (!isReadShape(full.stdout.toString("utf8"))) return D5_READ_SHAPE_DETAIL;
+  const ranged = await readProbe(i, timeoutMs, true);
+  if (!probeComplete(ranged)) return D5_SHAPE_DETAIL;
+  if (!isPassThrough(ranged.stdout.toString("utf8"))) return D5_READ_RANGE_DETAIL;
+  const media = await mediaProbe(i, timeoutMs);
+  if (!probeComplete(media)) return D5_SHAPE_DETAIL;
+  if (isDeny(media.stdout.toString("utf8"))) return D5_READ_MEDIA_DETAIL;
+  const own = await ownProbe(i, timeoutMs);
+  if (!probeComplete(own)) return D5_SHAPE_DETAIL;
+  if (isDeny(own.stdout.toString("utf8"))) return D5_READ_OWN_DETAIL;
   return null;
 }
 
 /** #1333: ZCode sends the Claude PreToolUse shape and its Read shows png/jpeg/gif/webp as image blocks; D5 sends the media probe. */
 async function mediaProbeDetail(i: HookCheckInput, timeoutMs: number): Promise<string | null> {
-  return isDeny(await mediaProbe(i, timeoutMs)) ? D5_READ_MEDIA_DETAIL : null;
+  const r = await mediaProbe(i, timeoutMs);
+  if (!probeComplete(r)) return D5_SHAPE_DETAIL;
+  return isDeny(r.stdout.toString("utf8")) ? D5_READ_MEDIA_DETAIL : null;
 }
 
 /** R6: true when at least one journal row of any Codex session exists in this project's context.db. */
@@ -271,7 +285,7 @@ export async function codexStopDetail(i: HookCheckInput, timeoutMs: number): Pro
       cwd: i.bundleDir, env: node.env, signal: i.signal, timeoutMs, stdin: JSON.stringify(codexStopPayload(i.worktree ?? home)),
     });
     const logged = existsSync(path.join(home, HOOK_ERROR_LOG_FILE));
-    return !logged && isNativeShape(i.agent, r.stdout.toString("utf8"), r.exitCode, r.killed, "Stop") ? null : D5_STOP_DETAIL;
+    return !logged && probeComplete(r) && isNativeShape(i.agent, r.stdout.toString("utf8"), r.exitCode, r.killed, "Stop") ? null : D5_STOP_DETAIL;
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -319,7 +333,7 @@ export async function checkHookRoundTrip(i: HookCheckInput): Promise<DoctorRow> 
       stdin: JSON.stringify(payloadFor(i.agent, fixture.payload, i.worktree)),
     });
     hookWalls.push(now() - start);
-    if (!isNativeShape(i.agent, r.stdout.toString("utf8"), r.exitCode, r.killed, fixture.event)) return row("FAIL", D5_SHAPE_DETAIL, D5_FIX);
+    if (!probeComplete(r) || !isNativeShape(i.agent, r.stdout.toString("utf8"), r.exitCode, r.killed, fixture.event)) return row("FAIL", D5_SHAPE_DETAIL, D5_FIX);
     if (inProcess) return row("PASS", D5_IN_PROCESS_DETAIL);
     bareWalls.push(await bareMs());
     fastBare = Math.round(Math.min(...bareWalls));

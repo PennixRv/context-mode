@@ -1397,6 +1397,15 @@ describe("ADR-0010 doctor D5: hook round trip", { concurrency: CONC }, () => {
     assert.deepEqual(r, { id: "D5", label: C.DOCTOR_LABEL.D5, status: "FAIL", detail: C.D5_READ_SHAPE_DETAIL, fixCommand: C.D5_FIX });
   });
 
+  test("doctor never treats a failed empty Read subprobe as verified passthrough", async (t) => {
+    const dir = readBundle(t, JSON.stringify("pointer"));
+    const file = path.join(dir, C.HOOK_ENTRY_FILE);
+    writeFileSync(file, readFileSync(file, "utf8").replace('const p=JSON.parse(s);', 'const p=JSON.parse(s);if(p.hook_event_name==="PostToolUse")process.exit(7);'));
+    const r = await checkHookRoundTrip(input(dir));
+    assert.equal(r.status, "FAIL");
+    assert.equal(r.detail, C.D5_SHAPE_DETAIL);
+  });
+
   test("[M5] doctor-hook/D5-read-replace-in-Read-shape-PASSes (#1304)", async (t) => {
     const obj = JSON.stringify({ type: "text", file: { filePath: "/a", content: "c", numLines: 1, startLine: 1, totalLines: 1 } });
     const r = await checkHookRoundTrip(input(readBundle(t, obj)));
