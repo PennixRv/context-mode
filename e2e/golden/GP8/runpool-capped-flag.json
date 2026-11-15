@@ -3,7 +3,7 @@
     "content": [
       {
         "type": "text",
-        "text": "## job1\njob1\n## job2\njob2"
+        "text": "2/2 executed; 0 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\ncommand 2: exit 0\n## job1\njob1\n## job2\njob2"
       }
     ],
     "isError": false

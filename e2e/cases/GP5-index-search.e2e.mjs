@@ -1,7 +1,7 @@
 // GP5 — ctx_index / ctx_search (14-tests.md §4). M2 case.
 // Case source: TECH-SPEC §6.2 GP5 row. covers: src/core/tools/{index,search}.ts, src/core/index/.
 // Golden recall@5 per type fixed to DECISIONS-r7 values (BM25+RRF k=60, no MMR).
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +44,10 @@ const PROJECT = realpathSync(mkdtempSync(path.join(tmpdir(), "cm-gp5-proj-")));
 execFileSync("git", ["init", "-q", PROJECT]);
 const HOME = realpathSync(mkdtempSync(path.join(tmpdir(), "cm-gp5-home-")));
 const ENV = { ...process.env, HOME, USERPROFILE: HOME, CLAUDE_PROJECT_DIR: PROJECT };
+after(() => {
+  rmSync(HOME, { recursive: true, force: true });
+  rmSync(PROJECT, { recursive: true, force: true });
+});
 
 // impl/14 §4 steps 5-6: the shared golden check (UPDATE_GOLDEN=1 records), with this file's
 // project and home dirs replaced by <proj>/<home>.

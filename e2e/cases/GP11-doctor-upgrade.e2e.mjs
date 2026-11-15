@@ -519,7 +519,10 @@ describe("GP11 v1 upgrade against main", () => {
     assert.ok(want.startsWith("2."), want);
     const rel = path.join(tmp, "release-out");
     execFileSync(process.execPath, [path.join(ROOT, "build", "build.mjs"), "--out", rel, "--version", want], { cwd: ROOT, encoding: "utf8", stdio: "pipe" });
-    const tgz = JSON.parse(npm(["pack", "--json", "--pack-destination", pack], rel))[0].filename;
+    const packed = JSON.parse(npm(["pack", "--json", "--pack-destination", pack], rel));
+    const tgz = Object.values(packed)[0].filename;
+    // The fork has a different npm owner for the same bin; release the fixture's unscoped package first.
+    npm(["uninstall", "-g", "--prefix", prefix, "context-mode"]);
     npm(["i", "-g", "--prefix", prefix, path.join(pack, tgz)]);
     assert.equal(path.basename(realpathSync(bin)), "cli.mjs");
     assert.ok(execFileSync(bin, ["--version"], { env, encoding: "utf8" }).includes(want));

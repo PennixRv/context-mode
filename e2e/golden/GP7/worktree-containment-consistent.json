@@ -12,7 +12,7 @@
     "content": [
       {
         "type": "text",
-        "text": "## worktree data\nworktree data"
+        "text": "1/1 executed; 0 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\n## worktree data\nworktree data"
       }
     ],
     "isError": false

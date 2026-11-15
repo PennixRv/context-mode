@@ -2,7 +2,7 @@
   "content": [
     {
       "type": "text",
-      "text": "## zebraquartz\nalpha zebraquartz omega\n## alpha zebraquartz\nNo new section."
+      "text": "1/1 executed; 0 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\n## zebraquartz\nalpha zebraquartz omega\n## alpha zebraquartz\nNo new section."
     }
   ],
   "isError": false
