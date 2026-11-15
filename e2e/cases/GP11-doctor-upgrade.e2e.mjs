@@ -336,9 +336,10 @@ describe("GP11 doctor and upgrade", () => {
     const codexDir = path.join(home, ".codex");
     const env = { PATH: [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter), HOME: home, USERPROFILE: home,
       TMPDIR: home, XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: codexDir };
+    let cliOutput = "";
     const cli = (...args) => {
-      try { execFileSync(process.execPath, [CLI, ...args, "--agents", "codex", "--no-input", "--json"], { env, cwd: repo, stdio: "ignore" }); return 0; }
-      catch (e) { return e.status; }
+      try { cliOutput = execFileSync(process.execPath, [CLI, ...args, "--agents", "codex", "--no-input", "--json"], { env, cwd: repo, encoding: "utf8" }); return 0; }
+      catch (e) { cliOutput = `${e.stdout ?? ""}${e.stderr ?? ""}`; return e.status; }
     };
     assert.equal(cli("setup", "--yes"), 2, "Lifecycle owns setup");
     const plan = JSON.parse(execFileSync(process.execPath, [CLI, "setup", "--print", "codex", "--json"], { env, cwd: repo, encoding: "utf8" })).print;
@@ -347,10 +348,12 @@ describe("GP11 doctor and upgrade", () => {
       writeFileSync(step.file, step.block);
     }
     const toml = path.join(codexDir, "config.toml");
+    // The installation owner injects the native home after validating the read-only plan.
+    writeFileSync(toml, readFileSync(toml, "utf8") + '\n[mcp_servers.context-mode.env]\nCODEX_HOME = ' + JSON.stringify(codexDir) + '\n');
     const approvals = '\n[mcp_servers.context-mode.tools.ctx_execute]\napproval_mode = "auto"\n\n[mcp_servers.context-mode.tools.ctx_batch]\napproval_mode = "prompt"\n';
     writeFileSync(toml, readFileSync(toml, "utf8") + approvals);
     const tomlBefore = readFileSync(toml, "utf8");
-    assert.equal(cli("doctor"), 0, "the user's tool approval tables are no v1 leftover");
+    assert.equal(cli("doctor"), 0, "the user's tool approval tables are no v1 leftover: " + cliOutput);
     assert.equal(cli("setup", "--yes"), 2);
     assert.equal(readFileSync(toml, "utf8"), tomlBefore, "setup again keeps the approval tables");
 
