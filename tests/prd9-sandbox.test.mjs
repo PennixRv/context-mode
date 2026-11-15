@@ -833,6 +833,38 @@ describe("PRD-v2 section 9: runProcess settles on exit (D-1337-EXIT-SETTLE-1, #1
     assert.equal(r.stdout.toString("utf8").trim(), "plain");
   });
 
+  test("an EOF grace timer yields to queued pipe data before closing the streams", () => {
+    const code = `
+      import assert from 'node:assert/strict';
+      import cp from 'node:child_process';
+      import {syncBuiltinESMExports} from 'node:module';
+      import {EventEmitter} from 'node:events';
+      import {PassThrough} from 'node:stream';
+      import {mock} from 'node:test';
+      const child = Object.assign(new EventEmitter(), {stdin:new PassThrough(), stdout:new PassThrough(), stderr:new PassThrough(), exitCode:0});
+      cp.spawn = () => child;
+      syncBuiltinESMExports();
+      const {runProcess} = await import(process.argv[1]);
+      const {PIPE_EOF_GRACE_MS} = await import(process.argv[2]);
+      mock.timers.enable({apis:['setTimeout']});
+      const pending = runProcess(['fixture.exe'], {cwd:process.cwd(), env:{}, signal:new AbortController().signal, timeoutMs:5000});
+      child.emit('exit', 0);
+      mock.timers.tick(PIPE_EOF_GRACE_MS);
+      child.stdout.end('queued final bytes');
+      child.stderr.end();
+      child.emit('close', 0);
+      const r = await pending;
+      assert.equal(r.stdout.toString(), 'queued final bytes');
+      assert.equal(r.held, undefined);
+      mock.timers.reset();
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", code,
+      new URL("../src/core/sandbox/spawn.ts", import.meta.url).href,
+      new URL("../src/core/contracts/constants.ts", import.meta.url).href,
+    ], { encoding: "utf8", timeout: 10000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+
   test("a large output that is still flowing is kept whole next to a survivor", async () => {
     if (process.platform === "win32") return;
     const r = await run("seq 1 400000; sleep 30 &");

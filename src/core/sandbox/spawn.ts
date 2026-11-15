@@ -71,7 +71,7 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     const kill = (): void => {
       if (child.pid !== undefined) killTree(child.pid);
       // The direct child may already be gone while a survivor holds the pipes: bound the wait.
-      if (stopTimer === undefined) stopTimer = setTimeout(() => finishHeld(), KILL_GRACE_MS);
+      if (stopTimer === undefined) stopTimer = setTimeout(() => setImmediate(finishHeld), KILL_GRACE_MS);
     };
     const onAbort = (): void => {
       if (killedBy !== null || settled) return;
@@ -105,6 +105,10 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     // destroyed, and the process group is killed so a survivor cannot hold them (POSIX: the group outlives its leader).
     const finishHeld = (): void => {
       if (settled) return;
+      if (exited && child.stdout.readableEnded && child.stderr.readableEnded) {
+        settle(child.exitCode);
+        return;
+      }
       held = exited && killedBy === null;
       child.stdout.destroy();
       child.stderr.destroy();
@@ -112,10 +116,15 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
       settle(child.exitCode);
     };
     // A data chunk restarts the idle grace, so a large output that is still flowing is not cut.
+    let outputGeneration = 0;
     const bump = (): void => {
       if (!exited || settled) return;
       clearTimeout(graceTimer);
-      graceTimer = setTimeout(finishHeld, PIPE_EOF_GRACE_MS);
+      const generation = ++outputGeneration;
+      // Timers can run before queued pipe I/O on a busy host; give that I/O one poll before deciding EOF is held.
+      graceTimer = setTimeout(() => setImmediate(() => {
+        if (generation === outputGeneration) finishHeld();
+      }), PIPE_EOF_GRACE_MS);
     };
 
     child.stdout.on("data", (chunk: Buffer) => { stdoutChunks.push(chunk); bump(); });
@@ -126,8 +135,8 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     child.on("exit", () => {
       if (settled) return;
       exited = true;
-      graceTimer = setTimeout(finishHeld, PIPE_EOF_GRACE_MS);
-      drainTimer = setTimeout(finishHeld, PIPE_DRAIN_MAX_MS);
+      bump();
+      drainTimer = setTimeout(() => setImmediate(finishHeld), PIPE_DRAIN_MAX_MS);
     });
     // Step 7: spawn-level failure (ENOENT argv[0], missing cwd) resolves, never rejects.
     child.on("error", () => settle(null));

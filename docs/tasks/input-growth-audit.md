@@ -17,3 +17,5 @@
 Lifecycle 临时 HOME（含中文与空格）首次拒绝上游新增的计划 env，因为原生 owner 已独立注入 CODEX_HOME/PATH。修复仅位于本包 `setup --print codex` 的只读计划边界，保留原计划字段；上游 registry 与独立 engine 的 env 修复保留。新增自定义 HOME 原文/路径及不写文件的回归通过。相同候选 tarball 的 Lifecycle install、四 Hook 的真实 trust、no-op、外来配置保留、unconfigure 和 uninstall 全部通过；最终正式制品仍须重新绑定摘要验收。
 
 独立 Pennix Skills 的现有来源/载体路由足以覆盖本轮，未增加重复说明或修改安装集合。本轮没有 Lifecycle 源码、数据库 schema、工具输入或依赖变化。已知上游生成插件与来件夹具包含原有空白告警，不修改生成代码中的字符串空白；本轮自定义源码差异的 whitespace 检查通过。
+
+CI 的 D5 假成功进一步暴露进程退出后 EOF 宽限计时器与待处理 pipe I/O 的竞态。可控调度回归在修复前实际取得空 stdout，修复后保留 `queued final bytes`：计时器先让出一轮 I/O poll，期间新数据会使旧 idle 判定失效；两条流都已 EOF 时直接完成，不误标 held。原 250 毫秒空闲宽限、2000 毫秒最大 drain 与取消上限均保留。52 项定向检查同时覆盖正常尾部、后台后代、超时/取消、D5 原生 deny 和附加探针成功/失败。D5 不再丢弃附加探针 RunResult，空输出只有在成功且传输完整时才代表透传；不存在以忽略传输状态换取 PASS 的回退。

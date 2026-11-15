@@ -6,6 +6,8 @@
 
 本轮 batch 逐项退出与未执行状态独立于查询筛选；混合/未完成结果在现有 journal 中保持未知，完整全零才是整体成功。超时/取消保留已取得的诊断输出，长状态列表以独立索引来源恢复。具名来源无匹配后按位置返回必须明确标注 fallback，不能冒充命中。这些有意变更替代旧 D-BATCH-FRAMING-1 的无状态短回复及无标记来源回退；工具输入和数据库 schema 不变。
 
+退出后的 drain 定时器在判断 held 前必须让待处理 I/O 获得一次 poll；新到数据重置 idle 判断，真实 EOF 不冒充后台持管道。原最大 drain/取消界限保留。doctor 对附加透传探针核对成功退出、取消和 held 状态，再解释正文；空结果不证明探针成功。此合同由可控计时器/pipe 顺序回归及真实子进程正反例共同验证。
+
 运行架构、工具 API、共享数据根 `~/.context-mode`、项目共库、journal、2048 字节恢复状态、seq 原文、自动淘汰及数据库自愈遵循上游。旧 rollout 事件补采、session-events 投影、8192 字节恢复及主动索引永久保护均不迁入。原始 Codex 历史和独立 memories 保留。
 
 必要差异限定为 scoped 发行身份、Codex 原生线程元数据核验、submodule 项目解析、未知结果的真实报告和 Lifecycle 安装归属。Codex 每次 MCP 调用使用实际 threadId，核验唯一 rollout 的首条 session_meta；不采集后续事件。Codex 0.167.0 的原生 Bash Hook 只给出正文时，journal 保留正文并将结果留为未知，不能据此标记成功或恢复错误状态。
