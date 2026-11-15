@@ -13,6 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { claudeDirOf, codexDirOf, copilotDirOf, dataRootOf, geminiDirOf, kiroDirOf, opencodeDirOf } from "../core/project/config-dir.ts";
 import { AGENT_HOME_DIR, D2_NODE_DETAIL, D2_NODE_FIX, D2_SQLITE_DETAIL, D2_SQLITE_FIX, DB_FILE_NAME, MCP_ENV_FIELD, MCP_ENV_VARS_FIELD, MCP_TOOLS_FIELD, SETUP_MANIFEST_FILE, NATIVE_INSTALL, OPENCODE_CONFIG_FILES, OPENCODE_PLUGIN_KEY, OPENCODE_PLUGINS_KEY, OPENCODE_PLUGIN_PATH, PROJECTS_DIR_NAME, SERVER_KEY, TOOL_ORDER, UPGRADE_REPORT_ONLY_REASONS } from "../core/contracts/constants.ts";
@@ -221,7 +222,6 @@ const holdsOwn = (v: unknown, agent: string): boolean =>
 
 // ADR-0020 merge: objects merge key by key; in an array, an own item (it holds an own hook command, at any package
 // path) that differs from the wanted one is replaced, user items stay; scalars take the wanted value.
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 function mergeOwn(cur: unknown, want: unknown, agent: string): unknown {
   if (isObj(want)) {
     const base: Json = isObj(cur) ? { ...cur } : {};
@@ -229,8 +229,8 @@ function mergeOwn(cur: unknown, want: unknown, agent: string): unknown {
     return base;
   }
   if (Array.isArray(want)) {
-    const base = Array.isArray(cur) ? cur.filter((x) => !holdsOwn(x, agent) || want.some((w) => same(w, x))) : [];
-    for (const w of want) if (!base.some((x) => same(x, w))) base.push(w);
+    const base = Array.isArray(cur) ? cur.filter((x) => !holdsOwn(x, agent) || want.some((w) => isDeepStrictEqual(w, x))) : [];
+    for (const w of want) if (!base.some((x) => isDeepStrictEqual(x, w))) base.push(w);
     return base;
   }
   return want;

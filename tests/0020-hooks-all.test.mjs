@@ -243,6 +243,28 @@ createInterface({ input: process.stdin }).on("line", (l) => {
     assert.equal(existsSync(path.join(s.home, ".codex", "config.toml")), false, "created config.toml removed");
   });
 
+  test("Codex doctor keeps semantic hook equality, foreign order and trust indexes", async (t) => {
+    const s = sandbox(t);
+    const first = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["codex"], runId: "first" });
+    assert.equal(first.exitCode, 0);
+    const hooks = path.join(s.home, ".codex", "hooks.json");
+    const config = path.join(s.home, ".codex", "config.toml");
+    const doc = JSON.parse(readFileSync(hooks, "utf8"));
+    for (const groups of Object.values(doc.hooks)) for (const group of groups) {
+      group.hooks = group.hooks.map((h) => Object.fromEntries(Object.entries(h).reverse()));
+    }
+    doc.hooks.SessionStart.push({ hooks: [{ command: "echo foreign", type: "command" }] });
+    writeFileSync(hooks, JSON.stringify(doc, null, 2) + "\n");
+    for (const [key, { cmd, hash }] of Object.entries(codexTrust(hooks))) if (cmd === "echo foreign") {
+      writeFileSync(config, readFileSync(config, "utf8") + `\n[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(hash)}\n`);
+    }
+    const before = [readFileSync(hooks, "utf8"), readFileSync(config, "utf8")];
+    const result = await runDoctor({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["codex"] });
+    assert.equal(result.exitCode, 0, JSON.stringify(result.agents.map((a) => [a.reason, a.changes.map((c) => c.path)])));
+    assert.deepEqual(result.agents[0].changes, []);
+    assert.deepEqual([readFileSync(hooks, "utf8"), readFileSync(config, "utf8")], before);
+  });
+
   test("ADR-0020: codex doctor fails hook-registered when a trusted_hash does not match the hook", async (t) => {
     const s = sandbox(t);
     const { runDoctor } = await import("../src/setup/index.ts");
