@@ -113,18 +113,18 @@ function pageSize(input: CtxSearchInput): number {
 }
 
 // `extra` asks for hits past the page, so the caller knows whether a `More:` line has anything behind it.
-function page(db: DbHandle, q: string, input: CtxSearchInput, scope: SearchScope, ctx: ToolContext, offset: number, extra = 0): Hit[] {
+function page(db: DbHandle, q: string, input: CtxSearchInput, scope: SearchScope, ctx: ToolContext, offset: number, extra = 0): { hits: Hit[]; fallback: boolean } {
   const size = pageSize(input) + extra;
   if (input.source === DECISION_SOURCE && q.trim() === "") {
-    return ftsListSource(db, DECISION_SOURCE, scope, ctx.project, ctx.sessionId, size, offset);
+    return { hits: ftsListSource(db, DECISION_SOURCE, scope, ctx.project, ctx.sessionId, size, offset), fallback: false };
   }
   const hits = ftsQuery(db, q, scope, ctx.project, ctx.sessionId, size, offset, input.source);
   // H9 (D-HL-H9-1): the replace handle line names a source and uses the command as the query. When no query
   // word is in that source, the source's chunks are listed by position, so the handle line always returns rows.
-  if (hits.length > 0 || input.source === undefined) return hits;
+  if (hits.length > 0 || input.source === undefined) return { hits, fallback: false };
   const any = offset === 0 ? hits : ftsQuery(db, q, scope, ctx.project, ctx.sessionId, 1, 0, input.source);
-  if (any.length > 0) return hits;
-  return ftsListSource(db, input.source, scope, ctx.project, ctx.sessionId, size, offset);
+  if (any.length > 0) return { hits, fallback: false };
+  return { hits: ftsListSource(db, input.source, scope, ctx.project, ctx.sessionId, size, offset), fallback: true };
 }
 
 // D-M2-JSON-3: a `source` that holds a JSON array of objects answers with whole rows, BM25-ranked over the row
@@ -236,13 +236,16 @@ function relevance(db: DbHandle, given: CtxSearchInput, scope: SearchScope, ctx:
   const mem = ms.named || offset === 0 ? memoryChunks(ms.rows) : [];
   const count = (hits: Hit[], n: number): number => (ms.named ? Math.min(n, hits.length) : contentIn(hits, n));
   // One hit past the page: a `More:` line is printed only when a hit is left behind it (D-SEARCH-SMALL-1).
+  const fallbacks = new Set<string>();
   const fetched: Hit[][] = input.queries.map((q) => {
     if (ms.named) {
       const want = offset + size + 1;
       const content = indexed ? ftsQuery(db, q, scope, ctx.project, ctx.sessionId, want, 0, input.source) : [];
       return mergeMemory(content, memoryHits(mem, q, want)).slice(offset, want);
     }
-    const content = page(db, q, input, scope, ctx, offset, 1);
+    const result = page(db, q, input, scope, ctx, offset, 1);
+    if (result.fallback) fallbacks.add(q);
+    const content = result.hits;
     return mem.length === 0 ? content : mergeMemory(content, memoryHits(mem, q, MEMORY_HITS));
   });
   const take: number[] = fetched.map((h) => replyHits(h, size));
@@ -271,7 +274,7 @@ function relevance(db: DbHandle, given: CtxSearchInput, scope: SearchScope, ctx:
       more.push({ q, pos: offset });
       return;
     }
-    const head = "Query " + JSON.stringify(q) + ":";
+    const head = fallbacks.has(q) ? "No query matches for " + JSON.stringify(q) + "; source fallback by position:" : "Query " + JSON.stringify(q) + ":";
     lines.push(head);
     used += bytes(head) + 1;
     const again = new Map<string, number[]>(); // label -> chunk numbers already shown above
@@ -377,12 +380,18 @@ function answer(db: DbHandle, input: CtxSearchInput, scope: SearchScope, ctx: To
 
 async function handler(input: CtxSearchInput, ctx: ToolContext): Promise<ToolReply> {
   const sort = input.sort ?? "relevance";
-  // DECISIONS-r9 M23, ADR-0009 §8.1 rule 6.
-  if (sort === "timeline" && input.offset !== undefined) {
+  // DECISIONS-r9 M23, ADR-0009 §8.1 rule 6. 0 is the first page of either cursor, so only a non-zero
+  // value pages; whole-schema clients send offset:0 and after:0 (D-R54-SEARCH-ZERO-1, #1354).
+  if (sort === "timeline" && (input.offset ?? 0) !== 0) {
     return invalid("offset", 'drop offset; page a timeline with "after"');
   }
-  if (sort === "relevance" && input.after !== undefined) {
+  if (sort === "relevance" && (input.after ?? 0) !== 0) {
     return invalid("after", 'drop after, or pass sort:"timeline"');
+  }
+  // A blank source names no source: whole-schema clients send source:"" too (D-R54-SEARCH-ZERO-1, #1354).
+  if (input.source !== undefined && input.source.trim() === "") {
+    const { source: _blank, ...rest } = input;
+    input = rest;
   }
   const scope: SearchScope = input.scope ?? "worktree";
   const db = await openDb(ctx.project, { readOnly: true });

@@ -3,20 +3,21 @@
 // D3 diffs parsed data (never text): the MCP entry, the own hook entries (command + matcher composed from the
 // row), and the hook timeout. D4 folds detectV1's findings into one row. D5b flags Claude Code hooks that VS
 // Code's chat.useClaudeHooks re-runs in the same repo.
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   AGENT_ARG, AGENT_HOME_DIR, D3_NO_SETUP_FIX, NATIVE_INSTALL, V1_REASON, D3_ROOT_DETAIL, D3_ROOT_FIX, MCP_ARGS_FIELD, MCP_COMMAND_FIELD, PLUGIN_CACHE_DIR_NAME, SERVER_ENTRY_FILE, SERVER_KEY, CODEX_FEATURES_HOOKS_KEY, CONFIG_TOML_FILE, D3_DETAIL, D3_PARTS, D4_REASON_JOIN,
   D5B_DETAIL, D5B_FIX, DOCTOR_FIX_UPGRADE, DOCTOR_LABEL, DOCTOR_PASS_DETAIL, HOOK_COMMAND_FIELD, HOOK_COMMAND_SEP,
   HOOK_ENTRY_FILE, HOOK_SCRIPT_SEPS, HOOK_GROUP_HOOKS_FIELD, HOOKS_JSON_FILE, HOOK_HOST_FILE, HOOK_MATCHER_FIELD, HOST_CONFIG_DIR_NAME, HOST_NODE_COMMAND, EXE_SUFFIX,
   HOOKS_KEY, MCP_ANY_MATCH, POST_TOOL_USE, KIRO_ACTION_FIELD, KIRO_TOOL_MATCHERS, KIRO_TRIGGER_FIELD, MATCHER_ALT, MATCHER_ANY, MATCHER_CLOSE, MATCHER_OPEN,
-  OPENCODE_BASE_CONFIG_FILE, OPENCODE_GIT_SPEC, OPENCODE_NPM_SPEC_PREFIX, OPENCODE_MCP_COMMAND_FIELD, OPENCODE_PACKAGE_FIELD, OPENCODE_PLUGIN_KEY, OPENCODE_PLUGIN_PATH, OPENCODE_PLUGINS_KEY, OWN_MCP_ENTRY, OWN_TOOL_PREFIX, REGEX_ESCAPE,
+  OPENCODE_BASE_CONFIG_FILE, OPENCODE_CONFIG_FILES, OPENCODE_GIT_SPEC, OPENCODE_NPM_SPEC_PREFIX, OPENCODE_MCP_COMMAND_FIELD, OPENCODE_PACKAGE_FIELD, OPENCODE_PLUGIN_KEY, OPENCODE_PLUGIN_PATH, OPENCODE_PLUGINS_KEY, OWN_MCP_ENTRY, OWN_TOOL_PREFIX, REGEX_ESCAPE,
   REGEX_SPECIAL_CHARS, SETTINGS_FILE, SHELL_QUOTE, TOOL_HOOK_EVENTS, V1_PATH_SEPS, VSCODE_CLAUDE_HOOKS_SETTING,
   VSCODE_DIR_NAME, VSCODE_SETTINGS_FILE,
 } from "../contracts/constants.ts";
 import type { AdapterRow, AgentId, DoctorRow } from "../contracts/types.ts";
 import { hasReplace } from "../../adapters/table.ts";
 import { codexDirOf, copilotDirOf, homeDirOf, kiroDirOf, opencodeDirOf, ownMcpFileOf, piAgentDirOf } from "../project/config-dir.ts";
+import { hostText } from "./host-text.ts";
 import { detectV1, type V1Scope } from "./detect-v1.ts";
 import { hostConfigValueAt, isNodeCommand, mergeOwnEntries, opencodePluginFile, parseHostConfig, readHostConfig } from "./host-config.ts";
 import { marketplaceChoice, resolvePluginRoot } from "./plugin-root.ts";
@@ -179,13 +180,122 @@ function nativeMcpWrong(dir: string, row: AdapterRow): boolean {
 
 // D-OC2-D3-PLUGINS-1 (#1307): OpenCode loads context-mode from a list entry: "plugin" (1.x) or "plugins" (2.x), as the
 // npm spec ("context-mode@2.0.1", "context-mode@latest"), the release git spec, the package dir setup writes, or an
-// object with "package". On 2.x `opencode plugin add context-mode` writes the bare name; under 1.x "plugin" the bare
+// object with "package", or a tuple [spec, options]. On 2.x `opencode plugin add context-mode` writes the bare name; under 1.x "plugin" the bare
 // name is the v1 entry that D4 reports.
-function isOwnOpencodeEntry(entry: unknown, key: string, own: readonly string[]): boolean {
-  const spec = isObject(entry) ? entry[OPENCODE_PACKAGE_FIELD] : entry;
+function opencodeEntrySpec(entry: unknown): unknown {
+  // D-R49-DOCTOR-1339-2: the tuple form [spec, options] (the 1.x "plugin" schema; 2.x still reads it) names the spec first.
+  return isObject(entry) ? entry[OPENCODE_PACKAGE_FIELD] : Array.isArray(entry) ? entry[0] : entry;
+}
+/** D-R54-OC2-BARE-NATIVE-1 (#1344): the entry the host's own install writes, which OpenCode loads from npm: the npm spec
+ *  "context-mode@<tag>" under either key, or the bare name under the 2.x "plugins" key (`opencode plugin add context-mode`).
+ *  Setup and doctor share this one rule. */
+export function isNativeOpencodeEntry(entry: unknown, key: string): boolean {
+  const spec = opencodeEntrySpec(entry);
   if (typeof spec !== "string") return false;
-  if (spec === OPENCODE_GIT_SPEC || spec.startsWith(OPENCODE_NPM_SPEC_PREFIX) || own.includes(spec)) return true;
-  return key === OPENCODE_PLUGINS_KEY && spec === SERVER_KEY;
+  return spec.startsWith(OPENCODE_NPM_SPEC_PREFIX) || (key === OPENCODE_PLUGINS_KEY && spec === SERVER_KEY);
+}
+function isOwnOpencodeEntry(entry: unknown, key: string, own: readonly string[]): boolean {
+  const spec = opencodeEntrySpec(entry);
+  if (typeof spec !== "string") return false;
+  return spec === OPENCODE_GIT_SPEC || own.includes(spec) || isNativeOpencodeEntry(entry, key);
+}
+
+/** D-R54-OC-PLUGINS-DIR-1 (#1349): the string literals of a JS/TS source, read with a quote-aware scan (comments are
+ *  skipped, escapes kept as written). No regex: the plugin file is code, and only its quoted module names matter. */
+function stringLiterals(src: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "/" && src[i + 1] === "/") { const n = src.indexOf("\n", i); i = n < 0 ? src.length : n; continue; }
+    if (c === "/" && src[i + 1] === "*") { const n = src.indexOf("*/", i + 2); i = n < 0 ? src.length : n + 2; continue; }
+    if (c === "\"" || c === "'" || c === "`") {
+      let j = i + 1;
+      let s = "";
+      while (j < src.length && src[j] !== c) { if (src[j] === "\\") { s += src[j + 1] ?? ""; j += 2; continue; } s += src[j]; j++; }
+      out.push(s);
+      i = j + 1;
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+const OPENCODE_PLUGINS_DIR = "plugins"; // <config dir>/plugins and <project>/.opencode/plugins (OpenCode 2.2.6 loads each file)
+const OPENCODE_PROJECT_DIR = ".opencode"; // the project config dir OpenCode reads plugins from
+const OPENCODE_PLUGIN_EXTS = [".js", ".mjs", ".ts"];
+const OPENCODE_PLUGIN_INDEX = "index";
+const OPENCODE_DIR_FILE_MAX = 64 * 1024; // a re-export is one line; a large file is not a stub of ours
+const OWN_PLUGIN_MODULES = [SERVER_KEY, `${SERVER_KEY}/server`];
+
+const FILE_URL_PREFIX = "file://";
+const NODE_MODULES_DIR = "node_modules";
+const PACKAGE_JSON_FILE = "package.json";
+export const OPENCODE_PACKAGE_DIR_HINT = `${NODE_MODULES_DIR}/${SERVER_KEY}`; // named in the fix line when a dir file cannot resolve it
+
+/** The plugins dir roots OpenCode reads: the config dir and <project>/.opencode (D-R54-OC-PLUGINS-DIR-1). D3 and setup share it. */
+export function opencodePluginDirs(configDir: string, worktree: string): string[] {
+  return [configDir, opencodeProjectDir(worktree)];
+}
+
+/** <project>/.opencode: OpenCode loads its plugins dir only in that project (review round 2). */
+export function opencodeProjectDir(worktree: string): string {
+  return join(worktree, OPENCODE_PROJECT_DIR);
+}
+
+/** Node (and Bun) resolve a bare module name from node_modules next to the importing file or in a dir above it. */
+function packageResolves(fromDir: string): boolean {
+  for (let d = fromDir; ; d = dirname(d)) {
+    if (existsSync(join(d, NODE_MODULES_DIR, SERVER_KEY, PACKAGE_JSON_FILE))) return true;
+    if (dirname(d) === d) return false;
+  }
+}
+
+export interface OpencodeDirPlugin { file: string; loads: boolean; }
+
+/** D-R54-OC-PLUGINS-DIR-1 (#1349): each plugin file in an OpenCode plugins dir whose module names include the package
+ *  ("context-mode", "context-mode/server") or a path to our bundle's opencode/plugin.js. loads = OpenCode can resolve
+ *  that module: the package is in node_modules next to the file or above it, or the path names a file that exists.
+ *  A file with no resolvable module makes OpenCode log "failed to load plugin ... Cannot find package" (review round 1). */
+export function opencodeDirPlugins(dirs: readonly string[]): OpencodeDirPlugin[] {
+  const bundle = opencodePluginFile();
+  const ownFile = join(bundle, ...OPENCODE_PLUGIN_PATH).split("\\").join("/");
+  const isModule = (p: string) => OWN_PLUGIN_MODULES.includes(p);
+  const isPath = (p: string) => {
+    if (p === ownFile || p === `${FILE_URL_PREFIX}${ownFile}`) return true;
+    const seg = p.split("/");
+    const n = seg.length;
+    return n >= 3 && seg[n - 1] === "plugin.js" && seg[n - 2] === "opencode" && seg[n - 3] === SERVER_KEY;
+  };
+  const out: OpencodeDirPlugin[] = [];
+  for (const dir of dirs) {
+    const pdir = join(dir, OPENCODE_PLUGINS_DIR);
+    let names: string[];
+    try { names = readdirSync(pdir); } catch { continue; }
+    for (const name of names) {
+      const loose = OPENCODE_PLUGIN_EXTS.some((x) => name.endsWith(x)) ? [join(pdir, name)] : [];
+      const files = [...loose, ...OPENCODE_PLUGIN_EXTS.map((x) => join(pdir, name, `${OPENCODE_PLUGIN_INDEX}${x}`))];
+      for (const f of files) {
+        let text: string;
+        try { const b = readFileSync(f); if (b.length > OPENCODE_DIR_FILE_MAX) continue; text = b.toString("utf8"); } catch { continue; }
+        const lits = stringLiterals(text).map((s) => s.split("\\").join("/")).filter((p) => isModule(p) || isPath(p));
+        if (!lits.length) continue;
+        const loads = lits.some((p) => {
+          if (isModule(p)) return packageResolves(dirname(f));
+          const bare = p.startsWith(FILE_URL_PREFIX) ? p.slice(FILE_URL_PREFIX.length) : p;
+          return existsSync(isAbsolute(bare) ? bare : resolve(dirname(f), bare));
+        });
+        out.push({ file: f, loads });
+      }
+    }
+  }
+  return out;
+}
+
+/** The first plugins dir file of ours that OpenCode loads, or undefined. */
+export function opencodeDirPlugin(dirs: readonly string[]): string | undefined {
+  return opencodeDirPlugins(dirs).find((p) => p.loads)?.file;
 }
 
 /** D-R44-OC-D3-1 (#1310): a local MCP entry runs our server: command is a node (or a command array that starts with one),
@@ -197,14 +307,27 @@ function opencodeMcpOwn(entry: unknown): boolean {
   return isNodeCommand(node) && typeof script === "string" && lastSegment(script) === SERVER_ENTRY_FILE && flag === AGENT_ARG && agent === "opencode";
 }
 
-/** True when the OpenCode config (the .jsonc wins, #849) lists context-mode under "plugin" or "plugins", or runs its server as a local MCP entry. */
-function opencodeListed(file: string): boolean {
-  const { value } = readParsed("opencode", file);
+/** D-R49-DOCTOR-1339-2: OpenCode loads and merges every config file it finds (opencode.jsonc and opencode.json in the
+ *  config dir, and in the project). Each file that exists is read on its own; a missing file holds nothing. */
+function opencodeFileValue(file: string): unknown {
+  if (!existsSync(file)) return {};
+  return parseHostConfig("opencode", file, hostText(readFileSync(file, "utf8")), "jsonc");
+}
+
+function opencodeValueListed(value: unknown): boolean {
   const bundle = opencodePluginFile();
   const own = [bundle, join(bundle, ...OPENCODE_PLUGIN_PATH)]; // D-R44-OC-D3-1: the package dir, or the plugin file inside it
   if ([OPENCODE_PLUGIN_KEY, OPENCODE_PLUGINS_KEY].some((key) => list(isObject(value) ? value[key] : undefined).some((e) => isOwnOpencodeEntry(e, key, own)))) return true;
   const mcp = isObject(value) && isObject(value.mcp) ? value.mcp : {};
   return opencodeMcpOwn(mcp[SERVER_KEY]) || (isObject(mcp.servers) && opencodeMcpOwn(mcp.servers[SERVER_KEY]));
+}
+
+/** True when any OpenCode config file (config dir, then project) lists context-mode under "plugin" or "plugins", or runs its server as a local MCP entry. */
+function opencodeListed(file: string, worktree: string): boolean {
+  const dirs = [dirname(file), worktree];
+  if (dirs.some((dir) => OPENCODE_CONFIG_FILES.some((name) => opencodeValueListed(opencodeFileValue(join(dir, name)))))) return true;
+  // D-R54-OC-PLUGINS-DIR-1 (#1349): OpenCode also loads a plugin file from the plugins dir, no config entry needed.
+  return opencodeDirPlugin(opencodePluginDirs(dirname(file), worktree)) !== undefined;
 }
 
 function mcpWrong(row: AdapterRow, home: string, env: NodeJS.ProcessEnv, worktree: string): boolean {
@@ -216,7 +339,7 @@ function mcpWrong(row: AdapterRow, home: string, env: NodeJS.ProcessEnv, worktre
       resolvePluginRoot(row, env, worktree);
       return false;
     }
-    if (row.id === "opencode") return !opencodeListed(file);
+    if (row.id === "opencode") return !opencodeListed(file, worktree);
     const cur = readHostConfig(row.id, file);
     // D-DOC-RT-1: accept the entry setup writes (absolute node, OpenCode plugin file), not only the ctx_upgrade form.
     return mergeOwnEntries(row.id, cur.text, cur.format, row, { nodePath: true, listEntries: [opencodePluginFile()] }).edits.length > 0;

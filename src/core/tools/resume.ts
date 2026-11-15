@@ -14,7 +14,7 @@ import {
 } from "../contracts/constants.ts";
 import type { CtxResumeInput, ToolContext, ToolReply } from "../contracts/types.ts";
 import { renderState } from "../compaction/render.ts";
-import { readEventBySeq, readFirstPrompt, readLastPrompt, readSessionEvents } from "../journal/read.ts";
+import { readEventBySeq, readLastPrompt, readSessionEvents } from "../journal/read.ts";
 import { listSessionSources, queryUnits, recallQueryText, sourceHandle } from "../store/fts.ts";
 import { closeDb, openDb } from "../store/db.ts";
 
@@ -34,7 +34,9 @@ function reply(text: string, isError: boolean): ToolReply {
 
 async function handler(input: CtxResumeInput, ctx: ToolContext): Promise<ToolReply> {
   // Step 2: the server already resolved _meta.sessionId or "mcp:<serverId>" (D-M4-arch-3).
-  const sessionId = input.session ?? ctx.sessionId;
+  // A blank session counts as absent: JSON-schema clients send "" for the optional field (D-1353-RESUME-BLANK-1).
+  const given = input.session !== undefined && input.session.trim() !== "" ? input.session : undefined;
+  const sessionId = given ?? ctx.sessionId;
   if (sessionId === "") return reply(RESUME_NO_SESSION_LINE, true);
 
   const db = await openDb(ctx.project, { readOnly: true }); // step 3
@@ -52,12 +54,11 @@ async function handler(input: CtxResumeInput, ctx: ToolContext): Promise<ToolRep
     const newest = rows.at(-1);
     if (newest === undefined) return reply(RESUME_EMPTY_LINE, false);
     // D-CR3-RESUME-1: stored sources by short id, and the line units the post-compact recall query ranks
-    // (last prompt + session goal, one ranked query), labelled by short id.
+    // (last prompt only, one ranked query, D-1330-RECALL-PROMPT-1), labelled by short id.
     const sources = listSessionSources(db, sessionId, MAX_CANDIDATES)
       .map((r) => "source " + sourceHandle(r.id) + ": " + r.label + " (" + r.bytes + " B)");
-    const goal = readFirstPrompt(db, sessionId);
     const last = readLastPrompt(db, sessionId);
-    const units = queryUnits(db, sessionId, recallQueryText(last, goal), RECALL_UNIT_CANDIDATES)
+    const units = queryUnits(db, sessionId, recallQueryText(last), RECALL_UNIT_CANDIDATES)
       .map((u) => ({ ...u, label: sourceHandle(u.sourceId) }));
     const block = renderState(rows, newest.turn, { sources, units });
     // V21: renderState selects whole lines within STATE_BUDGET (= RESUME_CAP), so this never cuts;

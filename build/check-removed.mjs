@@ -131,6 +131,7 @@ const ALLOWED_FILES = [
   // Scripts.
   "scripts/gate.mjs", "scripts/ci-gs4-lint.mjs", "scripts/record-fixtures.mjs", "scripts/ci-install.mjs",
   "scripts/verify-tarball.mjs", "scripts/verify-codex-host.mjs", "scripts/cleanup-v1-data.mjs",
+  "scripts/v1-upgrade-stop.mjs", // #1363 D-V1-UPGRADE-STOP-1: package.json build stops a 1.0.x upgrade before any write
   // v2 user docs outside docs/architecture and docs/install (cleanup-plan §2).
   "docs/how-it-works.md", "docs/tools.md", "docs/algorithms.md", "docs/performance.md", "docs/UPSTREAM-CREDITS.md",
   "docs/tasks/audit-execution-and-scope.md", "docs/tasks/code-search-routing.md", "docs/tasks/session-recovery.md",

@@ -1820,7 +1820,7 @@ describe("PRD-v2 section 8: stage 1 (concurrent)", { concurrency: CONC }, () => 
           const out = await ctxBatch.handler({ commands: ["echo alpha", "echo beta"], queries: ["alpha"] }, ctxFor(root));
           assert.equal(out.isError, false);
           assert.equal(out.text.includes("command(s)"), false);
-          assert.ok(out.text.startsWith("## alpha\nalpha"));
+          assert.ok(out.text.includes("command 2: exit 0\n## alpha\nalpha"));
         } finally { rmSync(root, { recursive: true, force: true }); }
       });
 
@@ -2306,13 +2306,21 @@ describe("PRD-v2 section 8: stage 1 (concurrent)", { concurrency: CONC }, () => 
           const r = await ctxSearch.handler({ queries: ["cat big.log"], source: "big-out" }, ctxFor(root));
           assert.equal(r.isError, false, r.text);
           const lines = r.text.split("\n");
-          assert.equal(lines[0], 'Query "cat big.log":', r.text.slice(0, 300));
+          assert.equal(lines[0], 'No query matches for "cat big.log"; source fallback by position:', r.text.slice(0, 300));
           assert.ok(lines[1].startsWith("big-out #0: "), r.text.slice(0, 300));
           assert.ok(r.text.includes("big-out #1: "), r.text.slice(0, 300));
           assert.ok(!r.text.includes("other #"), r.text);
           // Words that do match keep the BM25 path.
           const hit = await ctxSearch.handler({ queries: ["gamma 17"], source: "big-out" }, ctxFor(root));
           assert.ok(hit.text.includes("alpha beta gamma 17"), hit.text.slice(0, 300));
+          assert.ok(hit.text.startsWith('Query "gamma 17":'), hit.text);
+          assert.ok(!hit.text.includes("fallback"), hit.text);
+          const unknown = await ctxSearch.handler({ queries: ["cat big.log"], source: "missing-source" }, ctxFor(root));
+          assert.match(unknown.text, /No hits.*0 source/);
+          const next = await ctxSearch.handler({ queries: ["cat big.log"], source: "big-out", offset: 1 }, ctxFor(root));
+          assert.ok(next.text.startsWith('No query matches for "cat big.log"; source fallback by position:'), next.text);
+          assert.ok(next.text.includes("big-out #1:"), next.text);
+          assert.ok(!next.text.includes("big-out #0:"), next.text);
           // No source: a query with no match is still zero hits.
           const none = await ctxSearch.handler({ queries: ["zzqq nothing"] }, ctxFor(root));
           assert.ok(none.text.startsWith("No hits"), none.text);

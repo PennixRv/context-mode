@@ -6,14 +6,14 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, existsSync, readFileSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import path, { join, sep } from "node:path";
+import path, { dirname, join, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { handleHook } from "../src/core/hooks/dispatch.ts";
 import { ctxSearch } from "../src/core/tools/search.ts";
 import { ctxStats } from "../src/core/tools/stats.ts";
 import { chunkText } from "../src/core/index/chunk.ts";
 import { getAdapter, ADAPTERS, hasRecall, hasReplace } from "../src/adapters/table.ts";
-import { COMPACT_POINTER_LINE, OUTPUT_CAP, REPLACE_TRIGGER_BYTES, REPLACE_RETURN_BYTES, REPLACE_CHUNK_BYTES, SYNC_INDEX_MAX_BYTES, PENDING_COMPACT_META_PREFIX, DECISION_OPTION_KEY, DECISION_SOURCE, RECALL_BUDGET_BYTES, RECALL_CLOSE_TAG, RECALL_OPEN_TAG, STATE_BUDGET, D5_LAST_HOOK_ERROR, MCP_HINT_EVERY, PARSE_ERROR_DENY_LINE, POLICY_UNREADABLE_LINE, REPLACE_HANDLE_LINE, REQUIRE_SECURITY_ENV, TOOL_ORDER, prefixToolNames } from "../src/core/contracts/constants.ts";
+import { SEARCH_TWIN_LINE, SEARCH_WRAPPER_FILE, COMPACT_POINTER_LINE, OUTPUT_CAP, REPLACE_TRIGGER_BYTES, REPLACE_RETURN_BYTES, REPLACE_CHUNK_BYTES, SYNC_INDEX_MAX_BYTES, PENDING_COMPACT_META_PREFIX, DECISION_OPTION_KEY, DECISION_SOURCE, RECALL_BUDGET_BYTES, RECALL_CLOSE_TAG, RECALL_OPEN_TAG, STATE_BUDGET, HOOK_TIMEOUT_MS,D5_LAST_HOOK_ERROR, MCP_HINT_EVERY, PARSE_ERROR_DENY_LINE, POLICY_UNREADABLE_LINE, REPLACE_HANDLE_LINE, REQUIRE_SECURITY_ENV, TOOL_ORDER, prefixToolNames } from "../src/core/contracts/constants.ts";
 import { answerDecisions, askOptionLabels, listOptionLabels, optionEchoDecision } from "../src/core/hooks/decision.ts";
 import { decode } from "../src/adapters/claude-code.ts";
 import { openDb, closeDb, withWrite, metaGet } from "../src/core/store/db.ts";
@@ -285,10 +285,13 @@ describe("PRD-v2 section 10: dispatch, replace and handle line (GP3, GP6)", () =
     const src = query("SELECT label, bytes_total FROM sources WHERE session_id = ?", p.session_id);
     // bytes_total is the sum of chunk bytes (store rule): the trailing newline is not a chunk byte.
     assert.equal(src.length, 1);
-    assert.equal(src[0].label, "subagent:Read:0");
+    // D-CC-POINTER-4 (#1342): the label carries the call id (here the adapter's hash id), so two calls stay two sources.
+    assert.ok(src[0].label.startsWith("subagent:Read:") && src[0].label !== "subagent:Read:0", src[0].label);
     assert.ok(src[0].bytes_total >= Buffer.byteLength(text) - 1, "the whole text is indexed, nothing cut");
     // Whole chunks only: the selected chunks, joined by one "\n", make up the body byte for byte.
-    const body = replaced.slice(0, replaced.lastIndexOf("\n" + CCP + "ctx_search(") < 0 ? replaced.length : replaced.lastIndexOf("\n" + CCP + "ctx_search("));
+    // D-CC-POINTER-1: a case C subagent gets a handle line with no ctx tool; the body is all before the last line.
+    assert.equal(replaced.includes("ctx_"), false, replaced);
+    const body = replaced.slice(0, replaced.lastIndexOf("\n"));
     const whole = chunkText(text, "text", REPLACE_CHUNK_BYTES).filter((c) => body.includes(c.text));
     assert.ok(whole.length > 0);
     const joined = whole.reduce((n, c) => n + Buffer.byteLength(c.text), 0) + whole.length - 1;
@@ -455,6 +458,47 @@ describe("PRD-v2 section 10: dispatch, replace and handle line (GP3, GP6)", () =
     }
     const full = cc({ hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: "/tmp/big.log" }, tool_use_id: "toolu_f", tool_response: { type: "text", file } });
     assert.equal(typeof parsed(await handleHook("claude-code", full, env)).updatedToolOutput, "object", "a full Read over the trigger still replaces");
+  });
+
+  // D-R48-OWN-FILE-1 (#1326): "skill references and rule files under ~/.claude no longer load in full". A full Read of the
+  // agent's own skill file over the trigger reaches the model whole; a project file of the same size still replaces.
+  test("D-R48-OWN-FILE-1: a full Read of a skill reference under ~/.claude is never replaced (#1326)", async () => {
+    const content = bigText(REPLACE_TRIGGER_BYTES * 3);
+    const n = content.split("\n").length;
+    const ref = join(root, ".claude", "skills", "deploy", "references", "api.md");
+    mkdirSync(join(ref, ".."), { recursive: true });
+    writeFileSync(ref, content);
+    const own = { filePath: ref, content, numLines: n, startLine: 1, totalLines: n };
+    const p = cc({ hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: ref }, tool_use_id: "toolu_own", tool_response: { type: "text", file: own } });
+    assert.equal(parsed(await handleHook("claude-code", p, env)), null);
+    const proj = join(repo, "big.md");
+    const q = cc({ hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: proj }, tool_use_id: "toolu_proj", tool_response: { type: "text", file: { ...own, filePath: proj } } });
+    assert.equal(typeof parsed(await handleHook("claude-code", q, env)).updatedToolOutput, "object", "a project file still replaces");
+  });
+
+  // D-R54-OWN-FILE-LINK-1 (#1345, EarthChen): "~/.claude/skills/<skill> is a symlink to a dir outside ~/.claude; a Read of
+  // a >4096 B reference .md is replaced by a ctx_search pointer, the same file in a real dir passes whole".
+  test("D-R54-OWN-FILE-LINK-1: a full Read of a skill reference under a symlinked ~/.claude/skills dir is never replaced (#1345)", async () => {
+    const content = bigText(REPLACE_TRIGGER_BYTES * 3);
+    const n = content.split("\n").length;
+    const target = join(root, "dotfiles", "skills", "linked");
+    mkdirSync(join(target, "references"), { recursive: true });
+    writeFileSync(join(target, "references", "api.md"), content);
+    writeFileSync(join(target, "references", "log.jsonl"), content);
+    mkdirSync(join(root, ".claude", "skills"), { recursive: true });
+    symlinkSync(target, join(root, ".claude", "skills", "linked"));
+    const read = (filePath, id) => cc({ hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: filePath }, tool_use_id: id, tool_response: { type: "text", file: { filePath, content, numLines: n, startLine: 1, totalLines: n } } });
+    const ref = join(root, ".claude", "skills", "linked", "references", "api.md");
+    assert.equal(parsed(await handleHook("claude-code", read(ref, "toolu_link"), env)), null, "the linked skill reference reaches the model whole");
+    const data = join(root, ".claude", "skills", "linked", "references", "log.jsonl");
+    assert.equal(typeof parsed(await handleHook("claude-code", read(data, "toolu_link_data"), env)).updatedToolOutput, "object", "data through the same link still replaces");
+    const direct = join(target, "references", "api.md");
+    assert.equal(typeof parsed(await handleHook("claude-code", read(direct, "toolu_link_direct"), env)).updatedToolOutput, "object", "the link target read by its own path is not an own file");
+    // A ".." step through the link: path.resolve folds it to ~/.claude/skills/outside.md, the OS reads
+    // dotfiles/skills/outside.md. That file is not an own file, so the Read still replaces (review r54 round 2).
+    writeFileSync(join(root, "dotfiles", "skills", "outside.md"), content);
+    const dotdot = [root, ".claude", "skills", "linked", "..", "outside.md"].join(sep);
+    assert.equal(typeof parsed(await handleHook("claude-code", read(dotdot, "toolu_link_dotdot"), env)).updatedToolOutput, "object", "a .. step through the link still replaces");
   });
 
   test("D-M7-RR-1: main-agent replace above SYNC_INDEX_MAX_BYTES: in-memory selection, detached index", async () => {
@@ -771,10 +815,13 @@ describe("PRD-v2 section 10: dispatch, replace and handle line (GP3, GP6)", () =
     assert.ok(nl > 0, "a body, then the handle line");
     const intent = p.tool_input.description ?? p.tool_input.command;
     const golden = CCP + "ctx_search({queries:[" + JSON.stringify(intent) + "], source:" + JSON.stringify(id) + "}) searches the whole output (" + Buffer.byteLength(text) + " B).";
-    assert.equal(replaced.slice(nl + 1), golden);
+    // D-CC-POINTER-2 (#1358): the claude-code line then names the MCP-free search.mjs call; it sits outside the
+    // selection budget, so the body is the same as before and the bound grows by the twin only.
+    const twin = SEARCH_TWIN_LINE(join(dirname(process.argv[1]), SEARCH_WRAPPER_FILE), id, intent, realpathSync.native(repo));
+    assert.equal(replaced.slice(nl + 1), golden + twin);
     assert.equal(replaced.split("\n" + CCP + "ctx_search(").length, 2, "one call line, no second more line: " + replaced);
     for (const r of lintPromptText(golden)) assert.ok(r.ok, r.rule + " " + JSON.stringify(r.matches));
-    const bound = REPLACE_RETURN_BYTES + Buffer.byteLength("\n" + moreLine(intent, src[0].label));
+    const bound = REPLACE_RETURN_BYTES + Buffer.byteLength("\n" + moreLine(intent, src[0].label)) + Buffer.byteLength(twin);
     assert.ok(Buffer.byteLength(replaced) <= bound, Buffer.byteLength(replaced) + " > " + bound);
   });
 
@@ -788,7 +835,22 @@ describe("PRD-v2 section 10: dispatch, replace and handle line (GP3, GP6)", () =
     assert.equal(src.length, 1);
     const last = replaced.slice(replaced.lastIndexOf("\n") + 1);
     assert.ok(last.includes(", source:" + JSON.stringify("s" + Number(src[0].id).toString(36)) + "})"), last);
-    assert.ok(last.endsWith("(" + Buffer.byteLength(text) + " B)."), last);
+    assert.ok(last.includes("searches the whole output (" + Buffer.byteLength(text) + " B)."), last);
+  });
+
+  // D-CC-POINTER-7 (#1342, #1358): the twin names the project dir in its native form (resolve.ts realpathSync.native:
+  // the long Windows name, the on-disk letter case). A CLAUDE_PROJECT_DIR alias (8.3 short name on windows-latest,
+  // other letter case here) gives the same line. Expected values use .native too: realpathSync keeps the alias (CI 43100308997).
+  test("D-CC-POINTER-7: a project dir alias: the search.mjs twin names the native project dir", async (t) => {
+    const flip = join(dirname(repo), "REPO");
+    if (!existsSync(flip) || realpathSync.native(flip) === flip) return t.skip("no case alias on this filesystem");
+    const p = { ...mainBashPost(bigText(40000)), cwd: flip };
+    const out = parsed(await handleHook("claude-code", p, { ...env, CLAUDE_PROJECT_DIR: flip }));
+    const replaced = replacedText(out.updatedToolOutput);
+    const src = query("SELECT id FROM sources WHERE session_id = ?", p.session_id);
+    const id = "s" + Number(src[0].id).toString(36);
+    const twin = SEARCH_TWIN_LINE(join(dirname(process.argv[1]), SEARCH_WRAPPER_FILE), id, p.tool_input.description, realpathSync.native(flip));
+    assert.ok(replaced.endsWith(twin), replaced.slice(replaced.lastIndexOf("\n") + 1));
   });
 
   // D-CR3-HANDLE-2: above SYNC_INDEX_MAX_BYTES the source row id is reserved before the detached write, so the
@@ -805,9 +867,10 @@ describe("PRD-v2 section 10: dispatch, replace and handle line (GP3, GP6)", () =
     const nl = replaced.lastIndexOf("\n");
     assert.ok(nl > 0, "a body, then the handle line");
     const intent = p.tool_input.description;
-    assert.equal(replaced.slice(nl + 1), CCP + "ctx_search({queries:[" + JSON.stringify(intent) + "], source:" + JSON.stringify(id) + "}) searches the whole output (" + Buffer.byteLength(text) + " B).");
+    const twin = SEARCH_TWIN_LINE(join(dirname(process.argv[1]), SEARCH_WRAPPER_FILE), id, intent, realpathSync.native(repo));
+    assert.equal(replaced.slice(nl + 1), CCP + "ctx_search({queries:[" + JSON.stringify(intent) + "], source:" + JSON.stringify(id) + "}) searches the whole output (" + Buffer.byteLength(text) + " B)." + twin);
     assert.ok(Buffer.byteLength(replaced.slice(0, nl)) > 0 && replaced.slice(0, nl).includes("needle target"), "the selection budget is not 0");
-    const bound = REPLACE_RETURN_BYTES + Buffer.byteLength("\n" + moreLine(intent, src[0].label));
+    const bound = REPLACE_RETURN_BYTES + Buffer.byteLength("\n" + moreLine(intent, src[0].label)) + Buffer.byteLength(twin);
     assert.ok(Buffer.byteLength(replaced) <= bound, Buffer.byteLength(replaced) + " > " + bound);
     const chunks = await waitRows("SELECT ord FROM chunks WHERE source_id = ?", [src[0].id], 1);
     assert.ok(chunks.length > 0, "the detached write stores the chunks under the reserved id");
@@ -1029,6 +1092,36 @@ describe("PRD-v2 section 10: compaction delivery, recall and decision rows (GP6)
     // below threshold: an unrelated prompt adds nothing
     const off = await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: "what is the weather" }), env);
     assert.deepEqual(off, { stdout: "", exitCode: 0 });
+  });
+
+  // #1330 (Lcstyle, aron-intframe): the first prompt is 30 KB of the README; a later output holds README lines and
+  // one line the next question is about. The recall query is the current prompt only (D-1330-RECALL-PROMPT-1).
+  test("[M7] recall/long-first-prompt (#1330): the asked-for line ranks first, well inside the hook timeout", async () => {
+    const s = sid();
+    const readme = readFileSync(join(import.meta.dirname, "..", "README.md"), "utf8");
+    await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: readme.slice(0, 30000) }), env);
+    const PLANTED = "redis failover exhausted the connection pool after 37 retries on replica-2";
+    const pool = readme.split("\n").map((l) => l.trim()).filter((l) => l.length >= 20 && l.length <= 400);
+    const lines = [];
+    for (let i = 0, n = 0; n < SYNC_INDEX_MAX_BYTES - 2000; i++) {
+      const l = i === 60 ? PLANTED : pool[i % pool.length];
+      lines.push(l);
+      n += Buffer.byteLength(l, "utf8") + 1;
+    }
+    await handleHook("claude-code", payload(s, {
+      hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "cat build.log", description: "build log" },
+      tool_use_id: "toolu_1330", tool_response: { stdout: lines.join("\n"), stderr: "", interrupted: false, isImage: false },
+    }), env);
+    await waitRows("SELECT 1 FROM line_units WHERE session_id = ?", [s], lines.length);
+    await handleHook("claude-code", payload(s, { hook_event_name: "SessionStart", source: "compact" }), env);
+    const t0 = performance.now();
+    const text = context(await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: "why did redis failover exhaust the pool on replica-2" }), env));
+    const ms = performance.now() - t0;
+    assert.ok(ms < HOOK_TIMEOUT_MS / 2, "recall took " + Math.round(ms) + " ms");
+    assert.ok(text !== null, "no recall block");
+    const units = text.split("\n").filter((l) => l.startsWith("@"));
+    assert.ok(units.length > 0 && units[0].endsWith(" line 61:"), text); // the planted line is the first unit
+    assert.ok(text.includes(PLANTED), text);
   });
 
   test("[M7] recall/pending-flag row (gemini): state block on the first BeforeAgent, recall on a later one", async () => {
@@ -1843,6 +1936,7 @@ describe("PRD-v2 section 10: hook never errors (D-HNE-GUARD-1)", () => {
     opencode: { pay: (t, i) => ({ type: "execute.before", sessionID: "s1", directory: repo, tool: t, args: i }), shell: "bash", own: "context-mode_ctx_execute", safe: "todowrite" },
   };
   const EXIT2 = new Set(["kiro", "pi", "opencode"]); // these hosts deny by exit code 2 and text
+  const INPROC = new Set(["pi", "opencode"]); // installMode "in-process": ctx_* tools live in the host process, no MCP server
 
   function run(host, payload, { fault, env = {}, preload } = {}) {
     const home = mkdtempSync(join(root, "home-"));
@@ -1898,18 +1992,35 @@ describe("PRD-v2 section 10: hook never errors (D-HNE-GUARD-1)", () => {
       });
     }
 
-    test(`[D-HNE-GUARD-1] ${host}: Node below 24.15 gives the same failure decision and does not crash at load`, () => {
-      const pre = join(root, "oldnode.cjs");
-      writeFileSync(pre, "Object.defineProperty(process, 'version', { value: 'v22.1.0' });");
-      const r = run(host, h.pay(h.shell, CMD), { preload: pre });
-      const reason = denyText(host, r);
-      assert.notEqual(reason, null, `${host} old node not a deny: status=${r.status} stderr=${r.stderr.slice(0, 200)}`);
-      assert.ok(reason.includes("NODE_TOO_OLD"), reason);
-      assert.ok(reason.includes("ctx_doctor"), reason);
-      assert.equal(logLines(r.home)[0].stage, "node");
-      const own = run(host, h.pay(h.own, { code: "1" }), { preload: pre });
-      assert.equal(own.status, 0);
-      assert.equal(denyText(host, own), null);
+    // D-1370-OLDNODE-ALLOW-1 (#1370): on Node below 24.15 the MCP server runs on the same node and is degraded (PRD §13: it
+    // lists ctx_doctor only), so a deny that redirects to ctx_execute blocks the host. The 8 server hosts allow and still log
+    // the error (D5); Pi and OpenCode register ctx_* in-process with no version gate, so their redirect target exists.
+    test(`[D-1370] ${host}: Node below 24.15 ${INPROC.has(host) ? "keeps the redirect deny (ctx_* is in-process)" : "allows shell, large Read, Grep and fetch"}`, () => {
+      const big = join(root, "big-1370.txt");
+      writeFileSync(big, "x".repeat(40000));
+      for (const v of ["v22.1.0", "v18.20.5"]) {
+        const pre = join(root, `oldnode-${v}.cjs`);
+        writeFileSync(pre, `Object.defineProperty(process, 'version', { value: '${v}' });`);
+        const calls = [[h.shell, CMD], ["Read", { file_path: big }], ["Grep", { pattern: "x" }], ["WebFetch", { url: "https://example.com" }]];
+        for (const [tool, input] of calls) {
+          const r = run(host, h.pay(tool, input), { preload: pre });
+          const reason = denyText(host, r);
+          if (INPROC.has(host)) {
+            if (tool !== h.shell) continue;
+            assert.notEqual(reason, null, `${host}/${v} in-process shell keeps the deny: stdout=${r.stdout.slice(0, 200)}`);
+            assert.ok(reason.includes("NODE_TOO_OLD") && reason.includes("ctx_doctor"), reason);
+          } else {
+            assert.equal(r.status, 0, `${host}/${v}/${tool} exit ${r.status}: ${r.stderr.slice(0, 200)}`);
+            assert.equal(reason, null, `${host}/${v}/${tool} must not be denied (the degraded server has no ctx_execute): ${r.stdout.slice(0, 300)}`);
+            if (r.stdout !== "") JSON.parse(r.stdout); // a valid document for the host (Copilot CLI)
+          }
+          assert.ok(r.stderr.includes("NODE_TOO_OLD") || r.stderr.includes("needs Node 24.15.0"), `${host}/${v} stderr names the error: ${r.stderr.slice(0, 200)}`);
+          assert.equal(logLines(r.home)[0]?.stage, "node", `${host}/${v}/${tool} hook-errors.log line`);
+        }
+        const own = run(host, h.pay(h.own, { code: "1" }), { preload: pre });
+        assert.equal(own.status, 0);
+        assert.equal(denyText(host, own), null);
+      }
     });
 
     test(`[D-HNE-GUARD-1] ${host}: unreadable stdin is logged and answered with exit 0`, () => {
@@ -2134,7 +2245,7 @@ describe("PRD-v2 section 10: saving decision per host (ADR-0020)", () => {
   // the ctx tool on PreToolUse everywhere else. One effect per host, no fallback.
   const SAVING = {
     "claude-code": "R", codex: "D", gemini: "R", qwen: "D", "copilot-cli": "R",
-    vscode: "D", kiro: "D", zcode: "D", pi: "R", opencode: "D",
+    vscode: "D", kiro: "D", zcode: "D", pi: "R", opencode: "R", // opencode R: D-R54-OC-REPLACE-1 (#1347)
   };
   // D-M3-F-9: a hook or detached write keeps its DB handle open by design (A21), and Windows cannot delete
   // an open file, so temp cleanup there is best-effort. The assertions are unchanged.

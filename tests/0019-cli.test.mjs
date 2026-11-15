@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ADAPTERS } from "../src/adapters/table.ts";
-import { TOOL_ORDER } from "../src/core/contracts/constants.ts";
+import { TOOL_ORDER, UNSUPPORTED_HOSTS } from "../src/core/contracts/constants.ts";
 import { vscodeUserDirOf } from "../src/core/project/config-dir.ts";
 import { isEntry } from "../src/entries/is-entry.ts";
 
@@ -215,6 +215,21 @@ describe("ADR-0019 cli", () => {
       const b = run(s, ["setup", "--agents"]);
       assert.equal(b.status, 2);
       assert.match(b.stderr, /--agents needs a value/);
+    });
+
+    test("[D-UNSUPPORTED-HOSTS-1] cli/doctor: an unsupported host env var adds the one line; json carries it; supported rows unchanged", (t) => {
+      const s = sandbox(t);
+      const r = run(s, ["doctor"], { env: { CURSOR_TRACE_ID: "x", PATH: s.bin } });
+      assert.ok(r.stdout.includes("Cursor is not a supported host today."), r.stdout);
+      const j = run(s, ["doctor", "--json"], { env: { CURSOR_TRACE_ID: "x", PATH: s.bin } });
+      assert.equal(JSON.parse(j.stdout).unsupportedHost, "cursor");
+      const plain = run(s, ["doctor"], { env: { PATH: s.bin } });
+      assert.equal(plain.stdout.includes("not a supported host"), false);
+      // D-R53-REVIEW-1: a supported agent is found, so the terminal env var names nothing.
+      codexHome(s);
+      const sup = run(s, ["doctor", "--json"], { env: { CURSOR_TRACE_ID: "x" } });
+      assert.equal(JSON.parse(sup.stdout).unsupportedHost, undefined, sup.stdout);
+      assert.equal(run(s, ["doctor"], { env: { CURSOR_TRACE_ID: "x" } }).stdout.includes("not a supported host"), false);
     });
 
 

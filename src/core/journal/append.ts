@@ -81,7 +81,7 @@ export function ownCallRow(project: ProjectContext, ctx: ToolContext, name: stri
     tool: name,
     key: facts?.key ?? null,
     path: facts?.path ?? null,
-    ok: reply.isError ? 0 : 1,
+    ok: reply.isError ? 0 : facts?.outcomeKnown === false ? null : 1,
     exit_code: facts?.exit_code ?? null,
     bytes: reply.sandboxBytes,
     body: reply.text,

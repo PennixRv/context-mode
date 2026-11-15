@@ -208,7 +208,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run build
+      - run: npm run build:release
       - run: node build/build.mjs --generated-only
       - run: npm run typecheck
       - run: node --test 'tests/**/*.test.mjs'

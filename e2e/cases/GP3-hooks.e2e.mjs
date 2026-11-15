@@ -2,14 +2,14 @@
 // Merged from GP3-hook-perf, GP3-hooks and GP3-zcode-names. Plain blocks, not describe: e2e/cases/run.mjs counts every pass event, and a describe adds one. Names unchanged.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runHookFixture } from "../harness/hook-runner.mjs";
 import { normalize } from "../harness/normalize.mjs";
 import { checkGolden } from "../harness/golden.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 
 // GP3: hook files, fixture replay and Pi/OpenCode parity
@@ -273,6 +273,52 @@ import { DatabaseSync } from "node:sqlite";
     assert.equal(typeof (mod.default ?? mod), "function");
   });
 
+  // #1352: Pi's own ExtensionRunner.emitToolResult with the built Pi bundle as the extension (ADR-0016:48 Pi row:
+  // content AND structuredContent together). The Pi host package comes from PI_HOST_DIR, the managed Pi install
+  // (~/.pi/agent/install/releases/<current-version>) or the global npm root; no Pi on the machine skips the case.
+  function piHostPackage() {
+    const roots = [];
+    if (process.env.PI_HOST_DIR) roots.push(path.join(process.env.PI_HOST_DIR, "node_modules"));
+    try {
+      const agentDir = path.join(homedir(), ".pi", "agent");
+      const ver = readFileSync(path.join(agentDir, "install", "current-version"), "utf8").trim();
+      roots.push(path.join(agentDir, "install", "releases", ver, "node_modules"));
+    } catch { /* no managed Pi install */ }
+    const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf8", shell: process.platform === "win32" });
+    if (npmRoot.status === 0) roots.push(npmRoot.stdout.trim());
+    return roots.map((r) => path.join(r, "@earendil-works", "pi-coding-agent")).find((d) => existsSync(path.join(d, "dist", "index.js")));
+  }
+  const PI_HOST = piHostPackage();
+
+  test("[M5] GP3/pi-tool-result-keeps-metadata: Pi's runner keeps details and structuredContent on a replace; excludeTools keeps the result whole (#1352)", { skip: PI_HOST === undefined ? "Pi not installed" : false }, async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "gp3-pi-1352-"));
+    const oldEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
+    try {
+      const repo = path.join(root, "repo");
+      execFileSync("git", ["init", "-q", repo]);
+      process.env.HOME = root; process.env.USERPROFILE = root; process.env.PI_CODING_AGENT_DIR = path.join(root, ".pi", "agent");
+      const host = await import(pathToFileURL(path.join(PI_HOST, "dist", "index.js")).href);
+      const loader = await import(pathToFileURL(path.join(PI_HOST, "dist", "core", "extensions", "loader.js")).href);
+      const bundle = await import(pathToFileURL(path.join(REPO_ROOT, "release-out", "pi", "index.js")).href);
+      const runtime = host.createExtensionRuntime();
+      const settings = host.SettingsManager.inMemory({ contextMode: { excludeTools: ["kept_tool"] } });
+      runtime.getSettings = () => settings.getSettings();
+      const ext = await loader.loadExtensionFromFactory(bundle.default, repo, host.createEventBus(), runtime, "context-mode");
+      const runner = new host.ExtensionRunner([ext], runtime, repo, host.SessionManager.inMemory(repo), undefined);
+      const page = "# Requested page\n" + Array.from({ length: 300 }, (_, i) => "Section " + i + ": a distinct paragraph about the requested page and its source " + i + ".\n").join("");
+      const meta = { responseId: "r-1352", successful: 1 };
+      const ev = (toolName) => ({ type: "tool_result", toolName, toolCallId: "c-" + toolName, input: { url: "https://example.invalid/p" }, content: [{ type: "text", text: page }], details: { ...meta }, structuredContent: { ...meta }, isError: false });
+      const replaced = await runner.emitToolResult(ev("fetch_content"));
+      assert.ok(replaced && Buffer.byteLength(replaced.content[0].text) < Buffer.byteLength(page) / 2, "the large result is replaced");
+      assert.deepEqual(replaced.details, meta, "details survive the replace");
+      assert.deepEqual(replaced.structuredContent, meta, "structuredContent survives the replace");
+      assert.equal(await runner.emitToolResult(ev("kept_tool")), undefined, "an excludeTools entry leaves the result whole");
+    } finally {
+      for (const [k, v] of Object.entries(oldEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("[M5] GP3/tool-name-map-opencode-webfetch: OpenCode's webfetch call gets the WebFetch hint (#1052)", async () => {
     const bundlePath = path.join(path.resolve(__dirname, "..", ".."), "release-out", "opencode", "plugin.js");
     const mod = await import(`file://${bundlePath}`);
@@ -315,6 +361,43 @@ import { DatabaseSync } from "node:sqlite";
         `${p}: tool name "${name}" matches neither the zcode nativeTools nor "${OWN_PREFIX}ctx_*"; correct impl/10 §1.3/§1.3a/§1.5 zcode row`
       );
     }
+  });
+}
+
+// GP3: the agent's own skill files reach the model whole (D-R48-OWN-FILE-1, D-R54-OWN-FILE-LINK-1)
+{
+  // #1345 (EarthChen): "~/.claude/skills/<skill> is a symlink to a dir outside ~/.claude; a Read of a >4096 B reference
+  // .md is replaced by a ctx_search pointer". Black box (GS4): release-out/hook.mjs with a Claude Code PostToolUse Read.
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const HOOK_BUNDLE = path.join(path.resolve(__dirname, "..", ".."), "release-out", "hook.mjs");
+
+  test("[R54] GP3/own-file-symlinked-skill: a skill reference under a symlinked ~/.claude/skills dir passes whole (#1345)", (t) => {
+    const root = mkdtempSync(path.join(tmpdir(), "cm-gp3-1345-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const repo = path.join(root, "repo");
+    execFileSync("git", ["init", "-q", repo]);
+    const target = path.join(root, "dotfiles", "skills", "python3");
+    mkdirSync(path.join(target, "references"), { recursive: true });
+    const content = "## Reference line for the python3 skill\n".repeat(150);
+    for (const f of ["api.md", "log.jsonl"]) writeFileSync(path.join(target, "references", f), content);
+    mkdirSync(path.join(root, ".claude", "skills"), { recursive: true });
+    symlinkSync(target, path.join(root, ".claude", "skills", "python3"));
+    const env = { PATH: process.env.PATH, HOME: root, USERPROFILE: root, CLAUDE_PROJECT_DIR: repo };
+    writeFileSync(path.join(root, "dotfiles", "skills", "outside.md"), content);
+    const read = (name, filePath = path.join(root, ".claude", "skills", "python3", "references", name)) => {
+      const n = content.split("\n").length;
+      const payload = {
+        session_id: "gp3-1345", cwd: repo, hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: filePath }, tool_use_id: "toolu_gp3_1345_" + name,
+        tool_response: { type: "text", file: { filePath, content, numLines: n, startLine: 1, totalLines: n } },
+      };
+      const r = spawnSync(process.execPath, [HOOK_BUNDLE, "--agent", "claude-code"], { input: JSON.stringify(payload), cwd: repo, env, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout;
+    };
+    assert.equal(read("api.md"), "", "the linked skill reference reaches the model whole");
+    assert.ok(read("log.jsonl").includes("updatedToolOutput"), "data through the same link still replaces");
+    // A ".." step through the link reads dotfiles/skills/outside.md on disk, which is not an own file: it still replaces.
+    assert.ok(read("dotdot", [root, ".claude", "skills", "python3", "..", "outside.md"].join(path.sep)).includes("updatedToolOutput"), "a .. step through the link still replaces");
   });
 }
 
@@ -438,5 +521,98 @@ process.on("exit", () => {
     assert.equal(second.length, 2, "a second call appends one row");
     assert.deepEqual(second[0], first[0], "the earlier row is never rewritten");
     assert.ok(second[1].seq > second[0].seq);
+  });
+
+  // GP3/subagent-pointer-callable (#1342, ADR-0016 lines 11 and 16, D-CC-POINTER-1): a large subagent output gets the
+  // same replace budget as the main session, and the pointer names only tools the subagent can call.
+  // The words a POSIX shell passes for single-quoted, backslash-escaped and bare words.
+  const posixWords = (line) => {
+    const words = [];
+    let cur = null;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "'") { const end = line.indexOf("'", i + 1); cur = (cur ?? "") + line.slice(i + 1, end); i = end; }
+      else if (ch === "\\") { cur = (cur ?? "") + line[i + 1]; i++; }
+      else if (ch === " ") { if (cur !== null) words.push(cur); cur = null; }
+      else cur = (cur ?? "") + ch;
+    }
+    if (cur !== null) words.push(cur);
+    return words;
+  };
+  const subBash = (repo, sid, type, n) => ({
+    session_id: sid, cwd: repo, hook_event_name: "PostToolUse", agent_id: "a-" + n, agent_type: type, tool_name: "Bash",
+    tool_input: { command: "seq 1 4000" }, tool_use_id: "toolu_gp3_sub_" + n,
+    tool_response: { stdout: Array.from({ length: 4000 }, (_, i) => String(i + 1)).join("\n"), stderr: "", interrupted: false, isImage: false },
+  });
+
+  test("[M3] GP3/subagent-pointer-callable: a restricted subagent gets a replace that names no ctx tool (#1342)", (t) => {
+    const f = fixture(t);
+    const agents = path.join(f.repo, ".claude", "agents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(path.join(agents, "reader.md"), "---\nname: reader\ntools: Read, Bash\n---\nreads\n");
+    const r = f.hook(subBash(f.repo, "gp3-sub-1", "reader", 1));
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.stringify(JSON.parse(r.stdout).hookSpecificOutput.updatedToolOutput);
+    assert.ok(out.length < 18892, "replaced, not the full output");
+    assert.equal(out.includes("ctx_"), false, out);
+    assert.ok(out.includes("search.mjs"), "the subagent has Bash, so it gets the MCP-free search call: " + out);
+    // D-CC-POINTER-5: the printed line runs as is (POSIX single-quoted words) and returns a middle line.
+    const text = JSON.parse(r.stdout).hookSpecificOutput.updatedToolOutput.stdout;
+    const line = text.slice(text.lastIndexOf("\n") + 1);
+    const words = posixWords(line.slice(line.indexOf("node ") + "node ".length));
+    assert.equal(path.basename(words[0]), "search.mjs", line);
+    const s = spawnSync(process.execPath, [words[0], words[1], "2000", words[3]], { cwd: tmpdir(), env: { PATH: process.env.PATH, HOME: path.dirname(f.repo), USERPROFILE: path.dirname(f.repo) }, encoding: "utf8" });
+    assert.equal(s.status, 0, s.stderr);
+    assert.ok(s.stdout.split("\n").includes("2000"), s.stdout.slice(0, 300));
+  });
+
+  test("[M3] GP3/subagent-pointer-callable: general-purpose gets the callable ctx_search pointer, not the full output (#1342)", (t) => {
+    const f = fixture(t);
+    const r = f.hook(subBash(f.repo, "gp3-sub-2", "general-purpose", 2));
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.stringify(JSON.parse(r.stdout).hookSpecificOutput.updatedToolOutput);
+    assert.ok(out.length < 18892, "replaced, not a passthrough");
+    assert.ok(out.includes("ctx_search({queries:["), out);
+  });
+}
+
+// GP3: hook on a Node below 24.15 (#1370, D-1370-OLDNODE-ALLOW-1)
+{
+  // Black box (GS4): release-out/hook.mjs and release-out/server.mjs run under a real old Node, the way a host whose PATH
+  // has Node 18 runs them. The server is degraded there (PRD §13: ctx_doctor only), so the hook must not redirect a native
+  // tool to ctx_execute. No old Node on the machine (CM_E2E_OLD_NODE or ~/.nvm/versions/node/v18*) skips the case.
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const OUT = path.join(path.resolve(__dirname, "..", ".."), "release-out");
+  function oldNode() {
+    if (process.env.CM_E2E_OLD_NODE) return existsSync(process.env.CM_E2E_OLD_NODE) ? process.env.CM_E2E_OLD_NODE : undefined;
+    const dir = path.join(homedir(), ".nvm", "versions", "node");
+    const v18 = existsSync(dir) ? readdirSync(dir).filter((d) => d.startsWith("v18.")).sort().pop() : undefined;
+    const bin = v18 === undefined ? "" : path.join(dir, v18, "bin", "node");
+    return v18 !== undefined && existsSync(bin) ? bin : undefined;
+  }
+  const NODE18 = oldNode();
+
+  test("[R54] GP3/old-node-hook-allows: on Node 18 the hook allows Bash and the server lists ctx_doctor only (#1370)", { skip: NODE18 === undefined ? "no Node 18 on this machine" : false }, (t) => {
+    const home = mkdtempSync(path.join(tmpdir(), "cm-gp3-1370-"));
+    t.after(() => rmSync(home, { recursive: true, force: true }));
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, CLAUDE_PLUGIN_ROOT: OUT };
+    // The reporter's exact payload.
+    const payload = { session_id: "t", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "cat /etc/hosts | grep local" }, cwd: tmpdir() };
+    const r = spawnSync(NODE18, [path.join(OUT, "hook.mjs"), "--agent", "claude-code"], { input: JSON.stringify(payload), env, encoding: "utf8", timeout: 20000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(!r.stdout.includes("\"deny\""), "no deny while the server cannot serve ctx_execute: " + r.stdout.slice(0, 300));
+    assert.ok(r.stderr.includes("needs Node 24.15.0"), "stderr still names the error: " + r.stderr.slice(0, 200));
+    const log = readFileSync(path.join(home, ".context-mode", "hook-errors.log"), "utf8");
+    assert.ok(log.includes("\"stage\":\"node\""), "hook-errors.log keeps the line D5 shows");
+    // The pairing: the same Node runs the server, which serves ctx_doctor only.
+    const lines = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "gp3", version: "1" } } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+    ].map((m) => JSON.stringify(m)).join("\n") + "\n";
+    const s = spawnSync(NODE18, [path.join(OUT, "server.mjs"), "--agent", "claude-code"], { input: lines, env, encoding: "utf8", timeout: 20000 });
+    const reply = s.stdout.split("\n").filter((l) => l.includes("\"id\":2")).map((l) => JSON.parse(l))[0];
+    assert.ok(reply !== undefined, "tools/list reply: " + s.stdout.slice(0, 300) + s.stderr.slice(0, 300));
+    assert.deepEqual(reply.result.tools.map((x) => x.name), ["ctx_doctor"]);
   });
 }

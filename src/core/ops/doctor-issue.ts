@@ -6,15 +6,18 @@
 // Home paths show as ~, secret values are masked, journal bodies stay out. Never throws: a fact it cannot read is a line.
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import {
-  BUNDLE_SHA, CONFIG_TOML_FILE, DOCTOR_CONFIG_LINES, DOCTOR_ENV_NAMES, DOCTOR_ENV_PREFIX, DOCTOR_GH_LINE, DOCTOR_GH_NEXT,
+  type UnsupportedHost, BUNDLE_SHA, CONFIG_TOML_FILE, DOCTOR_CONFIG_LINES, DOCTOR_ENV_NAMES, DOCTOR_ENV_PREFIX, DOCTOR_GH_LINE, DOCTOR_GH_NEXT,
   DOCTOR_GIT_VERSION_TIMEOUT_MS, DOCTOR_HOOK_LOG_LINES, DOCTOR_JOURNAL_ROWS, DOCTOR_LOG_TAIL_BYTES, DOCTOR_MASK,
   DOCTOR_PATH_TOOLS, DOCTOR_REPORT_FILE_PREFIX, DOCTOR_REPORT_LINE, DOCTOR_REPORTS_DIR, DOCTOR_SECRET_WORDS, DOCTOR_URL_LINE, DOCTOR_RULES_LINE,
   EXE_SUFFIX, ISSUE_FORM_HEADINGS, ISSUE_FORM_URL, ISSUE_GUIDE_URL, ISSUE_REPO_SLUG, ISSUE_URL_MAX, NATIVE_INSTALL, SETTINGS_FILE,
 } from "../contracts/constants.ts";
 import type { AdapterRow, DoctorRow, ToolContext } from "../contracts/types.ts";
 import { hookLogPath } from "../hooks/fallback.ts";
+import { envValue } from "../sandbox/path-entries.ts";
+import { findRuntime } from "../sandbox/runtimes.ts";
+import { runProcess } from "../sandbox/spawn.ts";
 import { claudeDirOf, codexDirOf, homeDirOf, resolveConfigDir } from "../project/config-dir.ts";
 import { closeDb, openDb } from "../store/db.ts";
 import { configPaths } from "./doctor-config.ts";
@@ -47,15 +50,38 @@ export function maskLine(line: string): string {
 }
 
 /** One line above the table: context-mode version and sha, agent and version, OS-arch, Node, shell. */
-export function environmentLine(ctx: ToolContext, adapter: AdapterRow, env: NodeJS.ProcessEnv, version: string | undefined): string {
+/** The runtime the server runs on and, under Bun, the PATH node that ctx_execute javascript runs (null: none on PATH). */
+export interface RuntimeInfo { node: string; bun?: string; pathNode?: string | null; }
+
+// #1350: under a Bun-compiled host (OpenCode 2, Pi) process.version is Bun's node-compat version. Those hosts run every hook
+// in the host process (handleHook), so the PATH node is the one ctx_execute javascript runs (execute.ts findRuntime).
+// Async (runProcess): doctorReply starts it beside the checks, so a slow node start (#1350: ~600-750 ms) does not add to
+// the reply. Under Bun, D5 times nothing (in-process hosts), so this run does not touch a D5 timing.
+export async function runtimeInfo(env: NodeJS.ProcessEnv, signal: AbortSignal,
+  host: { bun: string | undefined; node: string } = { bun: process.versions.bun, node: process.version }): Promise<RuntimeInfo> {
+  if (host.bun === undefined) return { node: host.node };
+  const node = findRuntime("javascript", env);
+  if (node === null) return { node: host.node, bun: host.bun, pathNode: null };
+  const childEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) childEnv[k] = v;
+  const r = await runProcess([node, "--version"], { cwd: dirname(node), env: childEnv, signal, timeoutMs: DOCTOR_GIT_VERSION_TIMEOUT_MS });
+  const out = r.stdout.toString("utf8").trim();
+  return { node: host.node, bun: host.bun, pathNode: r.exitCode === 0 && out !== "" ? out : null };
+}
+
+export function environmentLine(ctx: ToolContext, adapter: AdapterRow, env: NodeJS.ProcessEnv, version: string | undefined,
+  rt: RuntimeInfo): string {
   const sha = BUNDLE_SHA === undefined ? "dev build" : BUNDLE_SHA.slice(0, 7);
   const client = ctx.clientInfo;
   const agent = client === undefined ? adapter.id
     : client.name === adapter.id ? `${adapter.id} ${client.version}` : `${adapter.id} ${client.version} (client ${client.name})`;
   const shell = env.SHELL ?? env.ComSpec ?? "sh";
   // D-DOCTOR-FIX-1: two lines, so each fits 80 columns: what runs, then where it runs.
-  return `${DOCTOR_ENV_PREFIX}context-mode ${version ?? "source checkout"} (${sha}), agent ${agent}\n` +
-    `${DOCTOR_ENV_PREFIX}${process.platform}-${process.arch}, Node ${process.version}, shell ${shell}`;
+  const what = `${DOCTOR_ENV_PREFIX}context-mode ${version ?? "source checkout"} (${sha}), agent ${agent}\n`;
+  const os = `${DOCTOR_ENV_PREFIX}${process.platform}-${process.arch}`;
+  if (rt.bun === undefined) return what + `${os}, Node ${rt.node}, shell ${shell}`;
+  const pathNode = rt.pathNode === null || rt.pathNode === undefined ? "ctx_execute node: none on PATH" : `ctx_execute node ${rt.pathNode} (PATH)`;
+  return what + `${os}, host runtime Bun ${rt.bun} (node-compat ${rt.node})\n${DOCTOR_ENV_PREFIX}${pathNode}, shell ${shell}`;
 }
 
 function gitVersion(env: NodeJS.ProcessEnv): string {
@@ -67,7 +93,7 @@ function gitVersion(env: NodeJS.ProcessEnv): string {
 function onPath(env: NodeJS.ProcessEnv, tool: string): string[] {
   const names = process.platform === "win32" ? [tool + EXE_SUFFIX, tool + ".cmd", tool] : [tool];
   const out: string[] = [];
-  for (const dir of (env.PATH ?? env.Path ?? "").split(delimiter)) {
+  for (const dir of (envValue(env, "PATH") ?? "").split(delimiter)) {
     if (dir === "") continue;
     for (const n of names) if (existsSync(join(dir, n))) { out.push(join(dir, n)); break; }
   }
@@ -136,6 +162,7 @@ function agentConfig(adapter: AdapterRow, env: NodeJS.ProcessEnv, worktree: stri
 }
 
 export interface IssueInput {
+  unsupported?: UnsupportedHost; // D-UNSUPPORTED-HOSTS-1
   ctx: ToolContext;
   adapter: AdapterRow;
   env: NodeJS.ProcessEnv;
@@ -149,13 +176,14 @@ function failing(rows: DoctorRow[]): DoctorRow[] {
   return rows.filter((r) => r.status === "FAIL");
 }
 
-export function issueTitle(agent: string, rows: DoctorRow[]): string {
-  return `ctx_doctor ${agent}: ${failing(rows).map((r) => `${r.id} ${r.label}`).join(", ")} FAIL`;
+export function issueTitle(agent: string, rows: DoctorRow[], other?: UnsupportedHost): string {
+  return `ctx_doctor ${agent}${other === undefined ? "" : ` (${other.name} is not a supported host today)`}: ${failing(rows).map((r) => `${r.id} ${r.label}`).join(", ")} FAIL`;
 }
 
-function summaryOf(agent: string, rows: DoctorRow[]): string {
+export function summaryOf(agent: string, rows: DoctorRow[], other?: UnsupportedHost): string {
   const f = failing(rows)[0];
-  return f === undefined ? `ctx_doctor ${agent}` : `${f.id} ${f.label} FAIL on ${agent}: ${f.detail}`;
+  const tag = other === undefined ? "" : `${other.name} is not a supported host today. `;
+  return tag + (f === undefined ? `ctx_doctor ${agent}` : `${f.id} ${f.label} FAIL on ${agent}: ${f.detail}`);
 }
 
 /** The issue body; section order = ISSUE_FORM_HEADINGS (a test pins it). */
@@ -167,7 +195,7 @@ export async function buildIssueBody(i: IssueInput): Promise<string> {
   const envNames = DOCTOR_ENV_NAMES.map((n) => (i.env[n] === undefined ? `${n} (unset)` : `${n}=${i.env[n]}`));
   const pathTools = DOCTOR_PATH_TOOLS.map((t) => `PATH holds ${t}: ${onPath(i.env, t).join(", ") || "(absent)"}`);
   const sections: Record<string, string[]> = {
-    "Summary": [summaryOf(agent, i.rows)],
+    "Summary": [summaryOf(agent, i.rows, i.unsupported)],
     "ctx-report": [i.table],
     "What happened": [
       "Rows that need a look:",
@@ -215,11 +243,11 @@ export async function writeIssueReport(i: IssueInput): Promise<string[]> {
   const file = join(dir, `${DOCTOR_REPORT_FILE_PREFIX}${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
   writeFileSync(file, body);
   const shown = tilde(file);
-  const title = issueTitle(i.adapter.id, i.rows);
+  const title = issueTitle(i.adapter.id, i.rows, i.unsupported);
   // gh refuses --template together with --body-file; the body file already holds the form's sections.
   // D-DOCTOR-FIX-1: the command wraps with a trailing backslash, so each line fits 80 columns and a shell runs it as one.
   const gh = [`gh issue create --repo ${ISSUE_REPO_SLUG} --label bug \\`, `${DOCTOR_GH_NEXT}title ${JSON.stringify(title)} \\`, `${DOCTOR_GH_NEXT}body-file ${shown}`];
-  return [DOCTOR_REPORT_LINE + shown, DOCTOR_GH_LINE + gh[0], gh[1]!, gh[2]!, DOCTOR_URL_LINE + formUrl(title, summaryOf(i.adapter.id, i.rows)), DOCTOR_RULES_LINE + ISSUE_GUIDE_URL];
+  return [DOCTOR_REPORT_LINE + shown, DOCTOR_GH_LINE + gh[0], gh[1]!, gh[2]!, DOCTOR_URL_LINE + formUrl(title, summaryOf(i.adapter.id, i.rows, i.unsupported)), DOCTOR_RULES_LINE + ISSUE_GUIDE_URL];
 }
 
 /** The prefilled agent-report.yml URL: title and summary only, under ISSUE_URL_MAX. */

@@ -2,7 +2,9 @@
 
 ## 当前：跟随上游稳定版本
 
-根任务为 `context-mode-routing-upstream-audit`。固定上游为 `v2.1.5`、提交 `157464a3f47b9c5e2e068a800b3490ffca67aab2`；采用保留双亲历史的普通合并。发行目标为 `@pennixrv/context-mode@2.1.5-pennix.1`、`beta` 通道和 `v2.1.5-pennix.1` 标签，当前实施和验收事实以根任务的 execution.md 为准。
+当前根任务为 `11-14-workflow-input-growth-context-mode-audit`，组件记录见 `docs/tasks/input-growth-audit.md`。固定上游为 `v2.1.10`、提交 `4bffb4283bf2198b959062192882a8f33655c8d0`；采用保留双亲历史的普通合并。发行目标为 `@pennixrv/context-mode@2.1.10-pennix.1`、`beta` 通道和同版本 v 标签，实施和验收事实以根任务 execution.md 为准。原稳定基线为 v2.1.5（`157464a3f47b9c5e2e068a800b3490ffca67aab2`）。
+
+本轮 batch 逐项退出与未执行状态独立于查询筛选；混合/未完成结果在现有 journal 中保持未知，完整全零才是整体成功。超时/取消保留已取得的诊断输出，长状态列表以独立索引来源恢复。具名来源无匹配后按位置返回必须明确标注 fallback，不能冒充命中。这些有意变更替代旧 D-BATCH-FRAMING-1 的无状态短回复及无标记来源回退；工具输入和数据库 schema 不变。
 
 运行架构、工具 API、共享数据根 `~/.context-mode`、项目共库、journal、2048 字节恢复状态、seq 原文、自动淘汰及数据库自愈遵循上游。旧 rollout 事件补采、session-events 投影、8192 字节恢复及主动索引永久保护均不迁入。原始 Codex 历史和独立 memories 保留。
 

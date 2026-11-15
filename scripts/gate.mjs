@@ -91,7 +91,7 @@ function v2Unit() {
     dumpChild("v2-unit", t);
     return { status: "FAIL", detail: `tsc --noEmit exit ${t.status}` };
   }
-  const r = run(process.execPath, ["--test", "--test-reporter=tap", "tests/"]);
+  const r = run(process.execPath, ["--test", "--test-reporter=tap", "tests/**/*.test.mjs"]);
   const count = (key) => {
     const line = r.stdout.split("\n").find((l) => l.startsWith(`# ${key} `));
     return line === undefined ? undefined : Number(line.slice(key.length + 3));

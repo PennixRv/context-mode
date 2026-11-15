@@ -5,7 +5,7 @@
 // D-M2-T11-1, D-M2-R4-1 (ingest byte budget, #961).
 import { z } from "zod/v4";
 import {
-  CANCELLED_LINE, ECHO_MAX_BYTES, EXEC_TIMEOUT_MS, INDEX_WRITE_CHUNK, OUTPUT_CAP, RETENTION_SIZE_CAP_BYTES, SEARCH_PAGE_SIZE,
+  BACKGROUND_HOLD_NOTE, CANCELLED_LINE, ECHO_MAX_BYTES, EXEC_TIMEOUT_MS, INDEX_WRITE_CHUNK, OUTPUT_CAP, RETENTION_SIZE_CAP_BYTES, SEARCH_PAGE_SIZE,
 } from "../contracts/constants.ts";
 import { CtxError, formatError } from "../contracts/errors.ts";
 import type { BatchInput, Chunk, DbHandle, ToolContext, ToolReply } from "../contracts/types.ts";
@@ -78,8 +78,8 @@ function headOf(cmd: string): string {
   return MARKER + cmd + LINE_SEP;
 }
 
-function stoppedAt(cmd: string, error: string): CmdOut {
-  return { head: headOf(cmd), block: headOf(cmd) + error, exitCode: null, bytes: 0, error };
+function stoppedAt(cmd: string, error: string, output = ""): CmdOut {
+  return { head: headOf(cmd), block: headOf(cmd) + error + (output === "" ? "" : LINE_SEP + output), exitCode: null, bytes: Buffer.byteLength(output), error };
 }
 
 async function runCommand(cmd: string, shell: string | null, ctx: ToolContext, deadline: number, boundMs: number): Promise<CmdOut> {
@@ -92,14 +92,14 @@ async function runCommand(cmd: string, shell: string | null, ctx: ToolContext, d
     signal: ctx.signal,
     timeoutMs: left,
   });
-  if (r.killed === "timeout") return stoppedAt(cmd, formatError("TIMEOUT", { ms: boundMs }));
-  if (r.killed === "cancel") return stoppedAt(cmd, CANCELLED_LINE);
+  if (r.killed === "timeout") return stoppedAt(cmd, formatError("TIMEOUT", { ms: boundMs }), r.stdout.toString("utf8") + r.stderr.toString("utf8"));
+  if (r.killed === "cancel") return stoppedAt(cmd, CANCELLED_LINE, r.stdout.toString("utf8") + r.stderr.toString("utf8"));
   if (r.exitCode === null && r.stdout.length === 0 && r.stderr.length === 0) {
     return stoppedAt(cmd, formatError("SPAWN_FAILED", { detail: shell }));
   }
   // impl/04 §2.3 step 12: stderr only on a non-zero exit.
   const withErr = r.exitCode !== 0;
-  const out = r.stdout.toString("utf8") + (withErr ? r.stderr.toString("utf8") : "");
+  const out = r.stdout.toString("utf8") + (withErr ? r.stderr.toString("utf8") : "") + (r.held === true ? LINE_SEP + BACKGROUND_HOLD_NOTE : "");
   return { head: headOf(cmd), block: headOf(cmd) + out, exitCode: r.exitCode, bytes: r.stdout.length + (withErr ? r.stderr.length : 0), error: null };
 }
 
@@ -241,6 +241,15 @@ export async function runBatch(input: unknown, ctx: ToolContext, boundMs: number
   const ran = pool.results;
   const last = ran[ran.length - 1];
   const sandboxBytes = ran.reduce((n, r) => n + r.bytes, 0);
+  const nonzero = ran.filter((r) => r.exitCode !== null && r.exitCode !== 0).length;
+  const unknown = ran.filter((r) => r.exitCode === null || r.error !== null).length;
+  const notRun = commands.length - ran.length;
+  const outcomeKnown = nonzero === 0 && unknown === 0 && notRun === 0;
+  const statuses = commands.map((_, i) => {
+    const r = ran[i];
+    return "command " + (i + 1) + ": " + (r === undefined ? "not run (stopped after command " + ran.length + ")" : r.error ?? (r.exitCode === null ? "exit unknown" : "exit " + r.exitCode));
+  }).join(LINE_SEP);
+  const summary = ran.length + "/" + commands.length + " executed; " + nonzero + " nonzero, " + unknown + " unknown, " + notRun + " not run.";
 
   try {
     const db = await openDb(ctx.project);
@@ -250,8 +259,18 @@ export async function runBatch(input: unknown, ctx: ToolContext, boundMs: number
     const label = turnPrefix + nextLabelSerial(db, ctx.sessionId, turnPrefix);
     let sections: string[];
     let idx: Indexed;
-    // D-BATCH-FRAMING-1: no counts line (the caller holds its commands and queries); the exit code only when it is news.
-    const exitLine = last.exitCode === null || last.exitCode === 0 ? null : "exit " + last.exitCode;
+    // Execution facts must survive query selection, including when the last command succeeds.
+    let statusText = summary + LINE_SEP + statuses;
+    if (bytes(statusText) > OUTPUT_CAP / 4) {
+      const statusLabel = label + ":status";
+      const chunks = chunkText(statuses, "text");
+      ftsInsert(db, {
+        projectKey: ctx.project.projectKey, sessionId: ctx.sessionId, worktree: ctx.project.worktree,
+        agent: ctx.project.agent, kind: "content", label: statusLabel, bytes: bytes(statuses),
+        chunkCount: chunks.length, createdAt: Date.now(),
+      }, chunks);
+      statusText = summary + LINE_SEP + "Full command statuses: ctx_search({queries:[\"\"], source:" + JSON.stringify(statusLabel) + "})";
+    }
     // Step 8 template, `[...]` kept as written (D-M2-T11-1): the caller holds its queries.
     const footer = "more: ctx_search({queries:[...], source:" + JSON.stringify(label) + "})";
     let notice: string | null;
@@ -266,7 +285,7 @@ export async function runBatch(input: unknown, ctx: ToolContext, boundMs: number
       const cause = stop ?? (ctx.signal.aborted ? CANCELLED_LINE : idx.stop === "deadline" ? timeout : null);
       notice = cut === null ? stop : cause === null ? cut : cause + " " + cut;
       // The footer budget is reserved always, so printing it later never pushes the reply past OUTPUT_CAP.
-      const fixed = (exitLine === null ? 0 : bytes(exitLine) + 1) + (notice === null ? 0 : bytes(notice) + 1) + bytes(footer);
+      const fixed = bytes(statusText) + 1 + (notice === null ? 0 : bytes(notice) + 1) + bytes(footer);
       const share = Math.floor((OUTPUT_CAP - fixed) / queries.length);
       const answered = answer(db, ctx, idx.ids, queries, share, idx.bodies);
       sections = answered.lines;
@@ -280,12 +299,12 @@ export async function runBatch(input: unknown, ctx: ToolContext, boundMs: number
     } finally {
       closeDb(db);
     }
-    const lines = [...(exitLine === null ? [] : [exitLine]), ...(notice === null ? [] : [notice]), ...sections, ...(showMore ? [footer] : [])];
+    const lines = [statusText, ...(notice === null ? [] : [notice]), ...sections, ...(showMore ? [footer] : [])];
     return {
       text: capBytes(lines.join(LINE_SEP), OUTPUT_CAP).text, // step 10: final bound (D-M2-6)
       isError: false, // step 11
       sandboxBytes,
-      journal: { kind: "cmd", key: canonicalKey(TOOL, commands.join(LINE_SEP)), path: null, exit_code: last.exitCode },
+      journal: { kind: "cmd", key: canonicalKey(TOOL, commands.join(LINE_SEP)), path: null, exit_code: outcomeKnown ? 0 : null, outcomeKnown },
     };
   } catch (err) {
     if (err instanceof CtxError) return { text: err.toLine(), isError: true, sandboxBytes };

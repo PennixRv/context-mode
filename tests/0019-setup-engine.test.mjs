@@ -19,6 +19,7 @@ import { assertWritable, buildRegistry, hostBin, installExitOk, pathEntries, run
 import { generateManifests } from "../build/manifests.ts";
 import { FAKE_APP_SERVER, PLUGIN_EVENTS, PLUGIN_ID, PLUGIN_KEY, hashOf } from "./_lib/codex-fake.mjs";
 import { vscodeUserDirOf } from "../src/core/project/config-dir.ts";
+import { detectV1 } from "../src/core/ops/detect-v1.ts";
 
   // serial: runSetup and runDoctor share in-process state; the tests fail when they overlap
 describe("ADR-0019 section 3: setup engine (setup, doctor, remove, spawn, lock, backup)", () => {
@@ -213,6 +214,75 @@ rl.on("line", (l) => {
     assert.equal(readFileSync(codexToml, "utf8"), CODEX_V1);
   });
 
+  // #1327 (D-1327-CODEX-ENV-1, wwcxbc, Codex Desktop 26.1103 on Windows, CODEX_HOME=D:\\Codex\\.codex): Codex Desktop starts
+  // the MCP server with a short env allowlist that drops CODEX_HOME, so the server read ~/.codex and D3 said FAIL.
+  test("[#1327] registry: with CODEX_HOME=D:\\Codex\\.codex the codex MCP entry carries env.CODEX_HOME; without it, no env table", () => {
+    const win = buildRegistry({ home: "C:\\Users\\wwcxbc", pkgDir: "C:\\pkg", env: { CODEX_HOME: "D:\\Codex\\.codex" }, platform: "win32" }).find((r) => r.id === "codex");
+    assert.deepEqual(win.config.value.env, { CODEX_HOME: "D:\\Codex\\.codex" });
+    const plain = buildRegistry({ home: "/h", pkgDir: "/abs/pkg", env: {} }).find((r) => r.id === "codex");
+    assert.equal(plain.config.value.env, undefined);
+  });
+
+  test("[#1327] setup writes [mcp_servers.context-mode.env] CODEX_HOME, keeps the user's env keys and env_vars, and a second run changes nothing", async (t) => {
+    const s = sandbox(t);
+    const codexHome = path.join(s.root, "Codex", ".codex");
+    const env = { ...s.env, CODEX_HOME: codexHome };
+    const toml = put(path.join(codexHome, "config.toml"), 'model = "o3"\n\n[mcp_servers.context-mode]\ncommand = "context-mode"\nenv_vars = ["HTTPS_PROXY"]\n\n[mcp_servers.context-mode.env]\nMY_KEY = "mine"\n');
+    const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env, agents: ["codex"], runId: "r1" });
+    assert.equal(res.exitCode, 0, JSON.stringify(res, null, 2));
+    const text = readFileSync(toml, "utf8");
+    assert.ok(text.includes(`CODEX_HOME = ${JSON.stringify(codexHome)}`), text);
+    assert.ok(text.includes('MY_KEY = "mine"') && text.includes('env_vars = ["HTTPS_PROXY"]'), text);
+    assert.deepEqual(detectV1("codex", s.home, { codexDir: codexHome }).filter((f) => f.file === toml), [], "the env table of the v2 entry is no v1 leftover");
+    const again = await runSetup({ home: s.home, pkgDir: s.pkgDir, env, agents: ["codex"], runId: "r2" });
+    assert.deepEqual(again.agents[0].changes, []);
+    assert.equal(readFileSync(toml, "utf8"), text);
+  });
+
+  // #1359 (HengYangDS, D-1359-CODEX-TOOLS-1): re-running `setup --yes --agents codex` deleted the user's
+  // [mcp_servers.context-mode.tools.<tool>] approval_mode tables (Codex-native user config) from config.toml.
+  test("[#1359] setup again keeps the user's [mcp_servers.context-mode.tools.*] approval tables and their values", async (t) => {
+    const s = sandbox(t);
+    const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["codex"], runId: "r1" });
+    assert.equal(res.exitCode, 0, JSON.stringify(res.agents));
+    const toml = path.join(s.home, ".codex", "config.toml");
+    const approvals = '\n[mcp_servers.context-mode.tools.ctx_execute]\napproval_mode = "auto"\n\n[mcp_servers.context-mode.tools.ctx_batch]\napproval_mode = "prompt"\n';
+    writeFileSync(toml, readFileSync(toml, "utf8") + approvals);
+    const before = readFileSync(toml, "utf8");
+    const again = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["codex"], runId: "r2" });
+    assert.equal(again.exitCode, 0, JSON.stringify(again.agents));
+    assert.deepEqual(again.agents[0].v1.filter((f) => f.file === toml), []);
+    assert.deepEqual(again.agents[0].changes, []);
+    assert.equal(readFileSync(toml, "utf8"), before);
+  });
+
+  // #1328 / #1329 (lisandroprada, fingerprint 2e26442450f2): on Node v23.9.0 setup failed with "mcp: tools/list returned
+  // ctx_doctor, expected ..." and rolled back. Node is checked first: one line with the fix, no write, no rollback.
+  test("[#1328] setup on Node v23.9.0 stops first with one NODE_TOO_OLD line and writes nothing", async (t) => {
+    const s = sandbox(t);
+    const codexToml = put(path.join(s.home, ".codex", "config.toml"), CODEX_V1);
+    const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["codex"], runId: "r1", nodeVersion: "v23.9.0" });
+    assert.equal(res.exitCode, 1);
+    assert.deepEqual(res.agents, []);
+    assert.equal(res.error, "Context Mode needs Node 24.15.0 or newer; you have v23.9.0. Fix: nvm install 24, or install it from https://nodejs.org.");
+    assert.equal(readFileSync(codexToml, "utf8"), CODEX_V1);
+    assert.equal(existsSync(path.join(s.home, ".context-mode")), false, "no backup, no lock");
+  });
+
+  test("[#1328] a server that lists only ctx_doctor under an old node is reported as Node too old, not a tools/list mismatch", async (t) => {
+    const s = sandbox(t);
+    const pkgDir = fakePkg(path.join(s.root, "old"), { tools: ["ctx_doctor"] });
+    // The node setup writes into the host config is the one that answers: a shim that reports v23.9.0.
+    const pre = put(path.join(s.root, "oldnode.cjs"), "Object.defineProperty(process, 'version', { value: 'v23.9.0' });");
+    put(path.join(s.home, ".codex", "config.toml"), CODEX_V1);
+    const env = { ...s.env, NODE_OPTIONS: `--require ${pre}` };
+    const res = await runSetup({ home: s.home, pkgDir, env, agents: ["codex"], runId: "r1" });
+    const codex = res.agents.find((a) => a.id === "codex");
+    assert.equal(codex.status, "FAIL", JSON.stringify(res, null, 2));
+    assert.ok(codex.reason.includes("mcp: Node too old: Context Mode needs Node 24.15.0 or newer; you have v23.9.0. Fix: nvm install 24"), codex.reason);
+    assert.ok(!codex.reason.includes("tools/list returned"), codex.reason);
+  });
+
   test("setup: second run changes nothing and makes no backup", async (t) => {
     const s = sandbox(t);
     const codexToml = put(path.join(s.home, ".codex", "config.toml"), CODEX_V1);
@@ -333,7 +403,8 @@ exit 0`;
   test("[H8] setup: a shim first on PATH is skipped; setup and doctor run the real claude behind it and name it", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
     const s = sandbox(t);
     const ran = path.join(s.root, "shim-ran");
-    const real = fakeClaude(s.root, s.bin, CLAUDE_FAKE(path.join(s.root, "claude.state")));
+    fakeClaude(s.root, s.bin, CLAUDE_FAKE(path.join(s.root, "claude.state")));
+    const real = path.join(s.bin, "claude"); // #1335: the PATH file that passed the check, not its realpath
     const env = { ...s.env, PATH: [claudeShim(s.root, ran), s.env.PATH].join(path.delimiter) };
     const opts = { home: s.home, pkgDir: s.pkgDir, env, agents: ["claude-code"] };
     const res = await runSetup({ ...opts, runId: "r" });
@@ -363,11 +434,26 @@ exit 0`;
     mkdirSync(native);
     symlinkSync(process.execPath, path.join(native, "claude"));
     const env = { PATH: [shims, native].join(path.delimiter) };
-    assert.deepEqual(hostBin("claude", env), { file: realpathSync(process.execPath), shims: [path.join(shims, "claude")] });
+    assert.deepEqual(hostBin("claude", env), { file: path.join(native, "claude"), shims: [path.join(shims, "claude")] });
     assert.deepEqual(hostBin("claude", { PATH: shims }), { file: undefined, shims: [path.join(shims, "claude")] });
     writeFileSync(path.join(shims, "codex"), "#!/bin/sh\n");
     chmodSync(path.join(shims, "codex"), 0o755);
     assert.deepEqual(hostBin("codex", env), { file: path.join(shims, "codex"), shims: [] });
+  });
+
+  test("[H8] hostBin #1335: a mise-style shim (claude -> multi-call native launcher) runs as the PATH file, so argv[0] stays claude", { skip: process.platform === "win32" && "symlinks need admin on Windows" }, (t) => {
+    // mise layout: ~/.local/share/mise/shims/claude -> ../bin/mise. mise reads argv[0] to pick the tool; run through the
+    // realpath it sees argv[0] "mise" and answers `claude plugin marketplace add` with "unrecognized subcommand".
+    // process.execPath is a native multi-call stand-in: node prints the argv[0] it was started with.
+    const s = sandbox(t);
+    const shimDir = path.join(s.root, "mise", "shims");
+    mkdirSync(shimDir, { recursive: true });
+    const shim = path.join(shimDir, "claude");
+    symlinkSync(process.execPath, shim);
+    const got = hostBin("claude", { PATH: shimDir });
+    assert.deepEqual(got, { file: shim, shims: [] }, "the PATH file passed the native check and is the file that runs");
+    const r = spawnSync(got.file, ["-e", "process.stdout.write(process.argv0)"], { encoding: "utf8" });
+    assert.equal(path.basename(r.stdout), "claude", "the launcher sees the name the user typed");
   });
 
   test("[M7] setup/doctor: a report-only v1 finding (shared OS temp file) does not fail an agent that is set up", async (t) => {
@@ -580,18 +666,56 @@ exit 0`);
   // D-HF-OPENCODE-LIST-1: with our plugin entry in opencode.json, OpenCode 1.19.4 first installs @opencode-ai/plugin
   // (30-60 s, network) before `mcp list` prints, so the 10 s list check timed out and setup rolled back on a fresh
   // HOME. `mcp list --pure` (run without external plugins) lists the MCP servers without that install.
-  test("setup: the opencode list check does not load plugins (D-HF-OPENCODE-LIST-1)", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
-    const s = sandbox(t);
-    const log = path.join(s.root, "opencode.log");
+  // D-OC1-LIST-2 (#1362): `mcp list` connects every MCP server of the user, so one user server that never answers holds
+  // it past the 10 s budget: "opencode FAIL list: opencode mcp list --pure does not list context-mode (rolled back)",
+  // while the real `opencode mcp list --pure` (1.19.5) printed "✓ context-mode connected / ✗ slowsrv failed" after 32.6 s.
+  // On 1.x the list check reads `opencode debug config --pure` (the config the CLI loaded, no server started, no plugin
+  // load), as D-OC2-LIST-1 does on 2.x.
+  function fakeOpencode1(s, log, { version = `echo "1.19.5"`, config } = {}) {
+    const file = path.join(s.home, ".config", "opencode", "opencode.json");
+    const dump = path.join(s.root, "dump.mjs");
+    writeFileSync(dump, config ?? `import { readFileSync } from "node:fs"; let d = {}; try { d = JSON.parse(readFileSync(${JSON.stringify(file)}, "utf8")); } catch {}
+process.stdout.write(JSON.stringify({ ...d, agent: {}, plugin: d.plugin ?? [] }, null, 2));\n`);
     fakeBin(s.root, "opencode", `echo "$@" >> "${log}"
-case " $* " in
-  *" --pure "*) echo "context-mode connected" ;;
-  *) exit 1 ;;
+case "$1 $2" in
+  "--version ") ${version} ;;
+  "mcp list") sleep 15; echo "context-mode connected" ;;
+  "debug config") "${NODE}" "${dump}" ;;
 esac
 exit 0`);
+    return dump;
+  }
+
+  test("setup: on OpenCode 1.x a slow user MCP server does not fail the list check; it reads debug config --pure (D-OC1-LIST-2, #1362)", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+    const s = sandbox(t);
+    const log = path.join(s.root, "opencode.log");
+    fakeOpencode1(s, log);
     const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["opencode"], runId: "r" });
     assert.equal(res.agents[0].status, "PASS", JSON.stringify(res.agents[0], null, 2));
-    assert.ok(readFileSync(log, "utf8").includes("mcp list --pure"), readFileSync(log, "utf8"));
+    const ran = readFileSync(log, "utf8");
+    assert.ok(ran.includes("debug config --pure"), ran); // D-HF-OPENCODE-LIST-1: --pure, so no plugin install is waited on
+    assert.ok(!ran.includes("mcp list"), ran);
+  });
+
+  test("setup: on OpenCode 1.x the list check FAILs when the loaded config has no mcp.context-mode, and names what it loaded (D-OC1-LIST-2, #1362)", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+    const s = sandbox(t);
+    const log = path.join(s.root, "opencode.log");
+    fakeOpencode1(s, log, { config: `process.stdout.write(JSON.stringify({ mcp: { slowsrv: { type: "local" } }, plugin: [] }));\n` });
+    const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["opencode"], runId: "r" });
+    assert.equal(res.agents[0].status, "FAIL", JSON.stringify(res.agents[0], null, 2));
+    const list = res.agents[0].checks.find((c) => c.name === "list");
+    assert.ok(list && !list.ok && list.detail.includes("debug config --pure") && list.detail.includes("mcp.context-mode") && list.detail.includes("slowsrv"), JSON.stringify(res.agents[0].checks));
+  });
+
+  test("setup: when opencode --version prints no version the list check says so and runs no --pure fallback (D-OC1-LIST-2, #1362)", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+    const s = sandbox(t);
+    const log = path.join(s.root, "opencode.log");
+    fakeOpencode1(s, log, { version: `echo "error: unknown option"; exit 1` });
+    const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["opencode"], runId: "r" });
+    assert.equal(res.agents[0].status, "FAIL", JSON.stringify(res.agents[0], null, 2));
+    const list = res.agents[0].checks.find((c) => c.name === "list");
+    assert.ok(list && !list.ok && list.detail.includes("opencode --version printed no version") && list.detail.includes("error: unknown option"), JSON.stringify(res.agents[0].checks));
+    assert.ok(!readFileSync(log, "utf8").includes("--pure"), readFileSync(log, "utf8"));
   });
 
   // D-OC2-LIST-1 (#1308, Raidan-Ai, Windows, OpenCode 2): "list: opencode mcp list --standalone does not list
@@ -645,6 +769,36 @@ exit 1`);
     assert.equal(existsSync(unexpectedNpm), false, "error advice must remain literal, never run an installer");
   });
 
+  // D-SETUP-COPILOT-SHIM-1 (#1360, dup #1361): VS Code puts its own `copilot` launcher on PATH (microsoft/vscode
+  // copilot_shim, Linux /usr/bin/copilot). With no Copilot CLI installed and no terminal it prints "GitHub Copilot CLI
+  // was not found. ..." and exits 127 (app.rs l.42, l.485). That is a missing host, not a setup fault of ours: SKIPPED
+  // with Copilot CLI's own npm install as the fix line, nothing written, no mcp add, run exit 0, doctor SKIPPED too.
+  const COPILOT_SHIM_TEXTS = [
+    ["no terminal (app.rs l.485)", "GitHub Copilot CLI was not found. Run copilot in a terminal to install it, or see https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli"],
+    ["policy (app.rs l.475)", "GitHub Copilot CLI was not found. Installing it from VS Code is turned off by the CopilotCliCommand policy; contact your administrator."],
+  ];
+  for (const [variant, text] of COPILOT_SHIM_TEXTS) {
+    test(`setup: VS Code's copilot launcher with no Copilot CLI is SKIPPED with npm install -g @github/copilot, nothing written, run exit 0 (${variant}; D-SETUP-COPILOT-SHIM-1, #1360)`, { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+      const s = sandbox(t);
+      const log = path.join(s.root, "copilot.log");
+      fakeBin(s.root, "copilot", `echo "$@" >> "${log}"
+echo "${text}" >&2
+exit 127`);
+      const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["copilot-cli"], runId: "r" });
+      const a = res.agents[0];
+      assert.equal(a.status, "SKIPPED", JSON.stringify(a, null, 2));
+      assert.equal(a.rolledBack, undefined);
+      assert.ok(a.reason.startsWith("copilot not installed: run npm install -g @github/copilot"), a.reason);
+      assert.ok(a.reason.includes("GitHub Copilot CLI was not found"), `the reason holds the host line: ${a.reason}`);
+      assert.equal(res.exitCode, 0);
+      assert.equal(existsSync(path.join(s.home, ".copilot")), false, "nothing written for a missing host (no empty hooks/skills dirs)");
+      assert.equal(readFileSync(log, "utf8").includes("mcp add"), false, readFileSync(log, "utf8"));
+      const doc = await runDoctor({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["copilot-cli"] });
+      assert.equal(doc.agents[0].status, "SKIPPED", JSON.stringify(doc.agents[0], null, 2));
+      assert.ok(doc.agents[0].reason.startsWith("copilot not installed: run npm install -g @github/copilot"), doc.agents[0].reason);
+    });
+  }
+
   // D-US-1 (upgrade-sync): Claude Code runs a copy of the package under ~/.claude/plugins/cache/<mp>/context-mode/<version>
   // and records it in ~/.claude/plugins/installed_plugins.json. npm i -g does not refresh that copy.
   function installedPlugins(home, version) {
@@ -672,7 +826,7 @@ exit 0`);
     writeFileSync(path.join(s.pkgDir, "package.json"), JSON.stringify({ name: "context-mode", version: "2.0.1" }));
     const stale = await runDoctor(opts);
     assert.equal(stale.agents[0].status, "FAIL");
-    assert.equal(stale.agents[0].reason, "copy: Claude Code runs context-mode 2.0.0, the installed package is 2.0.1; run claude plugin update context-mode@context-mode");
+    assert.equal(stale.agents[0].reason, "copy: Claude Code runs context-mode 2.0.0, the installed package is 2.0.1; run claude plugin marketplace update context-mode && claude plugin update context-mode@context-mode");
     writeFileSync(want, installedPlugins(s.home, "2.0.1"));
     writeFileSync(log, "");
     const fixed = await runSetup({ ...opts, runId: "r2" });
@@ -686,17 +840,79 @@ exit 0`);
     assert.equal(manifest.entries.some((e) => e.undo), false, JSON.stringify(manifest));
   });
 
-  test("[US] claude-code: setup that cannot refresh a stale copy is a FAIL that names the copy check", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+  // #1338 (su69ar, macOS, 2.1.6): Claude Code ran inside an Orca profile, ~/Library/Application Support/orca/claude-profiles/<id>/home,
+  // a HOME of its own. The 1.0.169 plugin was still installed there; setup rolled back with "run claude plugin update ...".
+  // Now setup runs the host's own marketplace update and plugin update with that profile's HOME and CLAUDE_CONFIG_DIR, then re-checks.
+  function orca(t) {
     const s = sandbox(t);
-    const ip = put(path.join(s.home, ".claude", "plugins", "installed_plugins.json"), installedPlugins(s.home, "1.9.0"));
+    const profile = path.join(s.root, "Library", "Application Support", "orca", "claude-profiles", "7f3a9c", "home");
+    mkdirSync(profile, { recursive: true });
+    return { ...s, profile, env: { ...s.env, HOME: profile, USERPROFILE: profile } };
+  }
+
+  test("[US] claude-code (#1338): an Orca profile with the 1.0.169 plugin is updated with the host's own commands in that profile, not rolled back", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+    const s = orca(t);
+    const log = path.join(s.root, "claude.log");
+    const ip = path.join(s.profile, ".claude", "plugins", "installed_plugins.json");
+    put(ip, installedPlugins(s.profile, "1.0.169"));
+    const want = path.join(s.root, "want.json");
+    writeFileSync(want, installedPlugins(s.profile, "2.0.0"));
+    fakeClaude(s.root, s.bin, `echo "HOME=$HOME $@" >> "${log}"
+case "$1 $2" in
+  "plugin list") echo "context-mode@context-mode" ;;
+  "plugin update") cp "${want}" "${ip}" ;;
+esac
+exit 0`);
+    const res = await runSetup({ home: s.profile, pkgDir: s.pkgDir, env: s.env, agents: ["claude-code"], runId: "r" });
+    assert.equal(res.agents[0].status, "PASS", JSON.stringify(res.agents[0], null, 2));
+    assert.equal(res.agents[0].rolledBack, undefined);
+    const lines = readFileSync(log, "utf8").split("\n");
+    const market = lines.findIndex((l) => l.endsWith("plugin marketplace update context-mode"));
+    const update = lines.findIndex((l) => l.endsWith("plugin update context-mode@context-mode"));
+    assert.ok(market >= 0 && update > market, "marketplace update runs before plugin update: " + lines.join("|"));
+    assert.ok(lines[update].startsWith(`HOME=${s.profile} `), "the update runs with the profile HOME: " + lines[update]);
+    assert.equal(JSON.parse(readFileSync(ip, "utf8")).plugins["context-mode@context-mode"][0].version, "2.0.0");
+    assert.ok(res.agents[0].checks.find((c) => c.name === "copy").ok);
+  });
+
+  test("[US] claude-code (#1338): an update that cannot run ends in a WARN with the exact commands, never a rollback", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+    const s = orca(t);
+    const ip = put(path.join(s.profile, ".claude", "plugins", "installed_plugins.json"), installedPlugins(s.profile, "1.0.169"));
+    fakeClaude(s.root, s.bin, `case "$1 $2" in
+  "plugin list") echo "context-mode@context-mode" ;;
+  "plugin marketplace") echo "network down" >&2; exit 1 ;;
+  "plugin update") echo "network down" >&2; exit 1 ;;
+esac
+exit 0`);
+    const res = await runSetup({ home: s.profile, pkgDir: s.pkgDir, env: s.env, agents: ["claude-code"], runId: "r" });
+    assert.equal(res.agents[0].status, "PASS", JSON.stringify(res.agents[0], null, 2));
+    assert.equal(res.agents[0].rolledBack, undefined);
+    const copy = res.agents[0].checks.find((c) => c.name === "copy");
+    assert.equal(copy.warn, true);
+    assert.match(copy.detail, /still runs context-mode 1\.0\.169, the installed package is 2\.0\.0/);
+    assert.match(copy.detail, /network down/);
+    assert.ok(copy.detail.endsWith("run claude plugin marketplace update context-mode && claude plugin update context-mode@context-mode"), copy.detail);
+    assert.equal(JSON.parse(readFileSync(ip, "utf8")).plugins["context-mode@context-mode"][0].version, "1.0.169");
+    // doctor tells the truth: the old copy is a FAIL with the same commands.
+    const doc = await runDoctor({ home: s.profile, pkgDir: s.pkgDir, env: s.env, agents: ["claude-code"] });
+    assert.equal(doc.agents[0].status, "FAIL");
+    assert.match(doc.agents[0].reason, /^copy: Claude Code runs context-mode 1\.0\.169, the installed package is 2\.0\.0; run claude plugin marketplace update context-mode && claude plugin update context-mode@context-mode/);
+  });
+
+  test("[US] claude-code (#1338): a CLAUDE_CONFIG_DIR profile is read for the copy and named in the fix commands", { skip: process.platform === "win32" && "fake agent binaries are sh scripts" }, async (t) => {
+    const s = sandbox(t);
+    const cfg = path.join(s.root, "Library", "Application Support", "orca", "claude-profiles", "7f3a9c", "cfg dir");
+    const ip = path.join(cfg, "plugins", "installed_plugins.json");
+    put(ip, installedPlugins(s.home, "1.0.169"));
     fakeClaude(s.root, s.bin, `case "$1 $2" in
   "plugin list") echo "context-mode@context-mode" ;;
 esac
 exit 0`);
-    const res = await runSetup({ home: s.home, pkgDir: s.pkgDir, env: s.env, agents: ["claude-code"], runId: "r" });
-    assert.equal(res.agents[0].status, "FAIL");
-    assert.match(res.agents[0].reason, /^copy: Claude Code runs context-mode 1\.9\.0, the installed package is 2\.0\.0/);
-    assert.equal(JSON.parse(readFileSync(ip, "utf8")).plugins["context-mode@context-mode"][0].version, "1.9.0");
+    const env = { ...s.env, CLAUDE_CONFIG_DIR: cfg };
+    const doc = await runDoctor({ home: s.home, pkgDir: s.pkgDir, env, agents: ["claude-code"] });
+    assert.equal(doc.agents[0].status, "FAIL");
+    const q = `CLAUDE_CONFIG_DIR='${cfg}' `;
+    assert.ok(doc.agents[0].reason.endsWith(`run ${q}claude plugin marketplace update context-mode && ${q}claude plugin update context-mode@context-mode`), doc.agents[0].reason);
   });
 
   // D-NI-CODEX-DOCTOR-1 (ADR-0023): `codex plugin add context-mode@context-mode` installs the npm package as a Codex plugin.

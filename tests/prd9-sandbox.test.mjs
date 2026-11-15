@@ -492,6 +492,50 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     }
   });
 
+  test("mixed exits remain visible and unknown in journal/recovery even when the final command succeeds", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "cm-batch-mixed-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const ctx = ctxFor(root);
+    const out = await ctxBatch.handler({ commands: ["echo early-error >&2; exit 7", "exit 1", "echo final-success"], queries: ["final-success"] }, ctx);
+    assert.equal(out.isError, false, "nonzero exits are not automatically business failures");
+    assert.match(out.text, /command 1: exit 7\ncommand 2: exit 1\ncommand 3: exit 0/);
+    assert.match(out.text, /2 nonzero, 0 unknown, 0 not run/);
+    const { ownCallRow } = await import("../src/core/journal/append.ts");
+    const { buildCandidates } = await import("../src/core/compaction/candidates.ts");
+    const row = ownCallRow(ctx.project, ctx, "ctx_batch", out);
+    assert.equal(row.ok, null);
+    assert.equal(row.exit_code, null);
+    const prior = { ...row, seq: 1, ok: 0, exit_code: 7, kind: "toolerr" };
+    assert.equal(buildCandidates([prior, { ...row, seq: 2 }], ctx.sessionId).openErrors.length, 1);
+    const success = await ctxBatch.handler({ commands: ["true", "true"], queries: ["unused"] }, ctx);
+    assert.equal(ownCallRow(ctx.project, ctx, "ctx_batch", success).ok, 1);
+    assert.equal(success.journal.exit_code, 0);
+  });
+
+  test("a cancelled large batch names every unrun command through its bounded status source", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "cm-batch-status-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const ctx = ctxFor(root);
+    const controller = new AbortController();
+    controller.abort();
+    ctx.signal = controller.signal;
+    const out = await ctxBatch.handler({ commands: Array.from({ length: 300 }, () => "echo must-not-run"), queries: ["must-not-run"] }, ctx);
+    assert.match(out.text, /1\/300 executed; 0 nonzero, 1 unknown, 299 not run/);
+    assert.match(out.text, /Full command statuses: ctx_search/);
+    assert.ok(Buffer.byteLength(out.text) <= C.OUTPUT_CAP);
+    assert.equal(out.journal.outcomeKnown, false);
+    const label = JSON.parse(/Full command statuses: ctx_search\(\{queries:\[""\], source:("[^"]+")/.exec(out.text)[1]);
+    const { openDb, closeDb } = await import("../src/core/store/db.ts");
+    const db = await openDb(ctx.project);
+    try {
+      const rows = db.raw.prepare("SELECT c.body FROM chunks c JOIN sources s ON s.id=c.source_id WHERE s.label=? ORDER BY CAST(c.ord AS INTEGER)").all(label);
+      const full = rows.map((r) => r.body).join("");
+      for (let n = 2; n <= 300; n++) assert.ok(full.includes("command " + n + ": not run (stopped after command 1)"));
+    } finally { closeDb(db); }
+    const found = await ctxSearch.handler({ queries: ["command 300"], source: label }, { ...ctx, signal: new AbortController().signal });
+    assert.ok(found.text.includes("command 300:"), found.text);
+  });
+
   test("ctxBatch rejects an empty commands or queries array (min(1))", async () => {
     const root = mkdtempSync(join(tmpdir(), "cm-ba3-"));
     try {
@@ -513,12 +557,12 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     }
   });
 
-  test("ctxBatch reply carries no counts line (D-BATCH-FRAMING-1); a failing last command adds its exit code", async () => {
+  test("ctxBatch reports every exit independently of query selection", async () => {
     const root = mkdtempSync(join(tmpdir(), "cm-ba5-"));
     try {
       const out = await ctxBatch.handler({ commands: ["echo a", "echo b; exit 2"], queries: ["a"] }, ctxFor(root));
       assert.equal(out.text.includes("command(s)"), false);
-      assert.ok(out.text.startsWith("exit 2\n## a\n"));
+      assert.ok(out.text.startsWith("2/2 executed; 1 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\ncommand 2: exit 2\n## a\n"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -545,13 +589,18 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     const marker = join(root, "third-command-ran");
     try {
       const start = Date.now();
-      const out = await runBatch({ commands: ["echo before-xyz", "sleep " + CHILD_SLEEP_S, "echo after-xyz; echo ran > '" + marker.split("\\").join("/") + "'"], queries: ["before-xyz", "after-xyz"] }, ctxFor(root), 800, C.RETENTION_SIZE_CAP_BYTES);
+      const out = await runBatch({ commands: ["echo before-xyz", "echo partial-diagnostic >&2; sleep " + CHILD_SLEEP_S, "echo after-xyz; echo ran > '" + marker.split("\\").join("/") + "'"], queries: ["before-xyz", "after-xyz", "partial-diagnostic"] }, ctxFor(root), 800, C.RETENTION_SIZE_CAP_BYTES);
       assert.ok(Date.now() - start < CHILD_SLEEP_S * 1000);
       assert.equal(out.isError, false);
       assert.ok(out.text.includes("Timed out after 800 ms"));
       assert.ok(out.text.includes("before-xyz"));
       assert.equal(out.text.includes("\nafter-xyz"), false);
       assert.equal(existsSync(marker), false);
+      assert.match(out.text, /command 2: Timed out after 800 ms/);
+      assert.match(out.text, /command 3: not run \(stopped after command 2\)/);
+      assert.equal(out.journal.outcomeKnown, false);
+      assert.equal(out.journal.exit_code, null);
+      assert.match(out.text, /partial-diagnostic/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -562,7 +611,7 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     try {
       const out = await ctxBatch.handler({ commands: ["for i in $(seq 1 3000); do echo \"row $i needle\"; echo; done"], queries: ["needle", "row"] }, ctxFor(root));
       assert.ok(Buffer.byteLength(out.text) <= 16384);
-      assert.ok(out.text.startsWith("## needle\n")); // D-BATCH-FRAMING-1: no counts line, exit 0 is not printed
+      assert.ok(out.text.includes("command 1: exit 0\n## needle\n"));
       assert.ok(out.text.trimEnd().endsWith('source:"ctx_batch:1:1"})'));
       assert.ok(out.sandboxBytes > 16384);
     } finally {
@@ -578,7 +627,7 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     try {
       const out = await ctxBatch.handler({ commands: ["echo alpha-xyz", "echo beta-xyz"], queries: ["alpha-xyz", "beta-xyz"] }, ctxFor(root));
       assert.equal(out.isError, false);
-      assert.equal(out.text, "## alpha-xyz\nalpha-xyz\n## beta-xyz\nbeta-xyz");
+      assert.equal(out.text, "2/2 executed; 0 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\ncommand 2: exit 0\n## alpha-xyz\nalpha-xyz\n## beta-xyz\nbeta-xyz");
       assert.equal(out.text.includes("command(s)"), false);
       assert.equal(out.text.includes("more:"), false);
     } finally {
@@ -590,7 +639,7 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     const root = mkdtempSync(join(tmpdir(), "cm-bf2-"));
     try {
       const out = await ctxBatch.handler({ commands: ["echo one-aaa", "echo two-bbb"], queries: ["one-aaa"] }, ctxFor(root));
-      assert.equal(out.text, "## one-aaa\none-aaa\n$ echo two-bbb\ntwo-bbb"); // nothing left out, no pointer
+      assert.equal(out.text, "2/2 executed; 0 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\ncommand 2: exit 0\n## one-aaa\none-aaa\n$ echo two-bbb\ntwo-bbb");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -600,7 +649,7 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     const root = mkdtempSync(join(tmpdir(), "cm-bf4-"));
     try {
       const out = await ctxBatch.handler({ commands: ["echo one-aaa", "echo two-" + "b".repeat(200)], queries: ["one-aaa"] }, ctxFor(root));
-      assert.equal(out.text, '## one-aaa\none-aaa\nmore: ctx_search({queries:[...], source:"ctx_batch:1:1"})');
+      assert.equal(out.text, '2/2 executed; 0 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 0\ncommand 2: exit 0\n## one-aaa\none-aaa\nmore: ctx_search({queries:[...], source:"ctx_batch:1:1"})');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -610,7 +659,7 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     const root = mkdtempSync(join(tmpdir(), "cm-bf3-"));
     try {
       const out = await ctxBatch.handler({ commands: ["echo fail-xyz; exit 3"], queries: ["fail-xyz"] }, ctxFor(root));
-      assert.equal(out.text, "exit 3\n## fail-xyz\nfail-xyz");
+      assert.equal(out.text, "1/1 executed; 1 nonzero, 0 unknown, 0 not run.\ncommand 1: exit 3\n## fail-xyz\nfail-xyz");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -741,6 +790,103 @@ describe("PRD-v2 section 9: runProcess", () => {
     const big = "x".repeat(20000);
     const out = await runProcess([bin, "-c", `printf '%s' "$BIG"`], { cwd: process.cwd(), env: buildChildEnv(process.env, { BIG: big }), signal: new AbortController().signal, timeoutMs: 5000 });
     assert.equal(out.stdout.length, big.length);
+  });
+});
+
+describe("PRD-v2 section 9: runProcess settles on exit (D-1337-EXIT-SETTLE-1, #1337)", () => {
+  // #1337 (spimm, Pi-Bolt 1.1.4 on Windows): `sleep 600 & echo hi` never settled because only "close" settled and the
+  // survivor held the pipes. The reporter's target: about 300 ms. Serial: timing.
+  const run = (code, o = {}) => runProcess([findRuntime("shell"), "-c", code], { cwd: process.cwd(), env: buildChildEnv(process.env), signal: new AbortController().signal, timeoutMs: 20000, ...o });
+  const ctxFor = (root) => ({
+    project: { projectKey: "1".repeat(16), projectDir: join(root, "projects", "1".repeat(16)), dbPath: join(root, "projects", "1".repeat(16), "context.db"), worktree: root, containmentRoot: root, agent: "claude-code", source: "env:CLAUDE_PROJECT_DIR" },
+    sessionId: "s1", turn: 1, signal: new AbortController().signal,
+  });
+
+  test("a background survivor that holds the pipes does not hold the call", async () => {
+    if (process.platform === "win32") return;
+    const t0 = Date.now();
+    const r = await run("sleep 600 & echo hi");
+    const ms = Date.now() - t0;
+    assert.equal(r.stdout.toString("utf8").trim(), "hi");
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.killed, null);
+    assert.equal(r.held, true);
+    assert.ok(ms < 1500, `settled in ${ms} ms`);
+  });
+
+  test("a command with no survivor settles at once and is not marked held", async () => {
+    const r = await run("echo plain");
+    assert.equal(r.held, undefined);
+    assert.equal(r.stdout.toString("utf8").trim(), "plain");
+  });
+
+  test("a large output that is still flowing is kept whole next to a survivor", async () => {
+    if (process.platform === "win32") return;
+    const r = await run("seq 1 400000; sleep 30 &");
+    const lines = r.stdout.toString("utf8").trim().split("\n");
+    assert.equal(lines.length, 400000);
+    assert.equal(lines[399999], "400000");
+  });
+
+  test("the survivor is stopped with its process group", async () => {
+    if (process.platform === "win32") return;
+    const r = await run("sleep 600 & echo $!");
+    const pid = Number(r.stdout.toString("utf8").trim());
+    assert.ok(Number.isSafeInteger(pid) && pid > 1);
+    const deadline = Date.now() + C.KILL_GRACE_MS + 2500;
+    let alive = true;
+    while (alive && Date.now() < deadline) {
+      try { process.kill(pid, 0); await new Promise((res) => setTimeout(res, 50)); } catch { alive = false; }
+    }
+    assert.equal(alive, false, "survivor still running");
+  });
+
+  test("a timeout with a survivor that holds the pipes returns TIMEOUT, not a hang", async () => {
+    if (process.platform === "win32") return;
+    const t0 = Date.now();
+    const r = await run("sleep 600 & sleep 30", { timeoutMs: 300 });
+    assert.equal(r.killed, "timeout");
+    assert.ok(Date.now() - t0 < 4000);
+  });
+
+  test("an abort with a survivor that holds the pipes returns cancel, not a hang", async () => {
+    if (process.platform === "win32") return;
+    const ac = new AbortController();
+    const p = run("sleep 600 & sleep 30", { signal: ac.signal });
+    setTimeout(() => ac.abort(), 200);
+    const t0 = Date.now();
+    const r = await p;
+    assert.equal(r.killed, "cancel");
+    assert.ok(Date.now() - t0 < 4000);
+  });
+
+  test("ctx_execute names the held pipes in its reply and keeps the output so far", async () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "cm-1337-"));
+    try {
+      const out = await ctxExecute.handler({ language: "shell", code: "sleep 600 & echo hi" }, ctxFor(root));
+      assert.match(out.text, /^hi\n/);
+      assert.ok(out.text.includes(C.BACKGROUND_HOLD_NOTE));
+      assert.ok(C.BACKGROUND_HOLD_NOTE.includes("was stopped")); // D-R53-REVIEW-1: runProcess kills the group, the note says so
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("PRD-v2 section 9: killTree never blocks the host loop (D-1337-EXIT-SETTLE-1, #1337)", () => {
+  test("the Windows branch spawns taskkill async: no execFileSync / spawnSync in kill.ts", () => {
+    const src = readFileSync(fileURLToPath(new URL("../src/core/sandbox/kill.ts", import.meta.url)), "utf8");
+    assert.equal(/execFileSync|spawnSync|execSync/.test(src), false);
+    assert.ok(src.includes('spawn("taskkill"'));
+  });
+
+  test("win32 code path: killTree returns void and never throws, even when taskkill is missing", () => {
+    const real = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      assert.equal(killTree(999999), undefined);
+    } finally {
+      Object.defineProperty(process, "platform", real);
+    }
   });
 });
 
@@ -1295,5 +1441,50 @@ describe("PRD-v2 section 9: Windows Git Bash lookup (D-VT-WINBASH-1)", () => {
       assert.equal(await asWindows({ PATH: quoted, PATHEXT }, () => findRuntime("shell")), l.bash, "shell: git.exe in a quoted entry");
       assert.equal(await asWindows({ PATH: `"${join(l.git, "bin")}"`, PATHEXT: ".exe;.cmd" }, () => findRuntime("git")), join(l.git, "bin", "git.exe"), "any runtime in a quoted entry");
     } finally { rmSync(l.top, { recursive: true, force: true }); }
+  });
+
+  // #1371: OpenCode 2 runs the plugin in-process under Bun. Bun's process.env is case-sensitive on Windows, and a process
+  // started from PowerShell or cmd spells the variable `Path`, so env.PATH is undefined there. Windows env names ignore case.
+  test("[#1371] findRuntime on Windows reads the PATH key in any case: a Path-only env finds node, git and Git Bash; D11 PASS", async () => {
+    const l = layout();
+    const nodeDir = join(l.top, "nodejs");
+    mkdirSync(nodeDir);
+    writeFileSync(join(nodeDir, "node.EXE"), ""); // the first PATHEXT name, so case-insensitive and case-sensitive disks agree
+    try {
+      for (const key of ["Path", "path", "pAtH"]) {
+        const env = { [key]: [nodeDir, l.apps, join(l.git, "cmd")].join(sep), PATHEXT };
+        const got = await asWindows({}, () => ({ js: findRuntime("javascript", env), git: findRuntime("git", env), shell: findRuntime("shell", env), d11: checkShell(env) }));
+        assert.equal(got.js, join(nodeDir, "node.EXE"), key);
+        assert.equal(got.git?.toLowerCase(), join(l.git, "cmd", "git.exe").toLowerCase(), key); // PATHEXT case of the name tried first
+        assert.equal(got.shell, l.bash, key);
+        assert.deepEqual(got.d11, { id: "D11", label: "shell", status: "PASS", detail: "Git Bash: " + l.bash }, key);
+      }
+    } finally { rmSync(l.top, { recursive: true, force: true }); }
+  });
+
+  test("[#1371] findRuntime() with no env argument reads process.env's Path on Windows (the ctx_execute call under Bun)", async () => {
+    if (process.platform === "win32") return; // the real Windows process.env already ignores case
+    const l = layout();
+    const saved = process.env.PATH;
+    try {
+      const found = await asWindows({}, () => {
+        delete process.env.PATH;
+        process.env.Path = [l.apps, join(l.git, "cmd")].join(sep);
+        try { return findRuntime("shell"); } finally { delete process.env.Path; process.env.PATH = saved; }
+      });
+      assert.equal(found, l.bash);
+    } finally { process.env.PATH = saved; rmSync(l.top, { recursive: true, force: true }); }
+  });
+
+  test("[#1371] on POSIX env names keep their case: a Path key is not PATH", () => {
+    if (process.platform === "win32") return;
+    const dir = mkdtempSync(join(tmpdir(), "cm-1371-posix-"));
+    const bin = join(dir, "only-here-1371");
+    writeFileSync(bin, "#!/bin/sh\nexit 0\n");
+    chmodSync(bin, 0o755);
+    try {
+      assert.equal(findRuntime("only-here-1371", { Path: dir }), null);
+      assert.equal(findRuntime("only-here-1371", { PATH: dir }), bin);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
