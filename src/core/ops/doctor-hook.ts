@@ -205,7 +205,7 @@ function isDeny(stdout: string): boolean {
 
 // Empty output is passthrough only after a complete native call, never after failed or cut transport.
 function probeComplete(r: RunResult): boolean {
-  return r.killed === null && r.held !== true && (r.exitCode === 0 || r.exitCode === 2);
+  return r.killed === null && r.held !== true && r.exitCode === 0;
 }
 
 async function readProbeDetail(i: HookCheckInput, timeoutMs: number): Promise<string | null> {
@@ -333,7 +333,7 @@ export async function checkHookRoundTrip(i: HookCheckInput): Promise<DoctorRow> 
       stdin: JSON.stringify(payloadFor(i.agent, fixture.payload, i.worktree)),
     });
     hookWalls.push(now() - start);
-    if (!probeComplete(r) || !isNativeShape(i.agent, r.stdout.toString("utf8"), r.exitCode, r.killed, fixture.event)) return row("FAIL", D5_SHAPE_DETAIL, D5_FIX);
+    if (r.held === true || !isNativeShape(i.agent, r.stdout.toString("utf8"), r.exitCode, r.killed, fixture.event)) return row("FAIL", D5_SHAPE_DETAIL, D5_FIX);
     if (inProcess) return row("PASS", D5_IN_PROCESS_DETAIL);
     bareWalls.push(await bareMs());
     fastBare = Math.round(Math.min(...bareWalls));
