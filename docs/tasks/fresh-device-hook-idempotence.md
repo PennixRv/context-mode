@@ -7,3 +7,5 @@ Lifecycle检查已通过，但Context Mode原生doctor对Codex判not set up。�
 最小修复位于src/setup/engine.ts的自有项比较，使用Node标准深度相等保持JSON对象语义。回归在tests/0020-hooks-all.test.mjs构造键顺序变化、后置外来Hook及独立信任；要求doctor无变更、无文件写入、外来信任不变。版本身份、构建载荷与发布流程按现有owner推进。源码不改用户配置、Hook注册或信任；运行态不复制进Git。
 
 验证：同一反例修复前失败，修复后通过；typecheck通过。完整源码测试2969项，其中2924通过、45按既有条件跳过、0失败。版本清单由原生setVersions统一写入2.1.10-pennix.2。实际tarball、本地安装和公开发布证据在根任务记录，真实模型与检索预算未使用。
+
+首次发布CI因新任务记录未登记到原生tracked-tree清单而停止，npm未发布2.1.10-pennix.2。按既有任务文档的精确路径清单补该文件，不放宽其他路径；不可变tag保留，另以原生setVersions写入2.1.10-pennix.3后重新发布。此项只修发布清单，Hook修复不变。

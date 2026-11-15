@@ -136,6 +136,7 @@ const ALLOWED_FILES = [
   "docs/how-it-works.md", "docs/tools.md", "docs/algorithms.md", "docs/performance.md", "docs/UPSTREAM-CREDITS.md",
   "docs/tasks/audit-execution-and-scope.md", "docs/tasks/code-search-routing.md", "docs/tasks/session-recovery.md",
   "docs/tasks/input-growth-audit.md",
+  "docs/tasks/fresh-device-hook-idempotence.md",
   // Root files.
   "README.md", "CONTRIBUTING.md", "LICENSE", "stats.json", "package.json", "package-lock.json", "tsconfig.json", ".gitignore", ".gitattributes",
   ...MAIN_TREE_FILES,

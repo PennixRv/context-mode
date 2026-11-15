@@ -14,7 +14,7 @@
 
 安装、更新、卸载、MCP、四类 Hook/trust 和三个命令 Skill 由 Pennix Lifecycle 负责。`setup --print codex --json` 使用上游 registry、本地 hash/path 计算，输出声明式计划；不启动 Codex 探测。Lifecycle 校验成员、路径、归属及合并后的 trust 位置后写入，并由真实宿主核验。完整 setup、upgrade、remove、repair 和 dry-run 入口仅返回 owner 指引；doctor 的配置交互修复关闭，数据库自愈保留。独立的 Pennix Context Mode 集成 Skill 由集合 owner 移除。
 
-新设备部署任务`11-15-fresh-device-lifecycle-deployment`补充原生doctor的幂等核验，组件记录见[docs/tasks/fresh-device-hook-idempotence.md](../tasks/fresh-device-hook-idempotence.md)。JSON对象键顺序不同不改变Hook身份；比较相同自有项时保留原位置，避免移动后置外来Hook并改变Codex信任索引。发行目标为`2.1.10-pennix.2`、beta通道。该修复不修改用户配置或代替Lifecycle写入信任。
+新设备部署任务`11-15-fresh-device-lifecycle-deployment`补充原生doctor的幂等核验，组件记录见[docs/tasks/fresh-device-hook-idempotence.md](../tasks/fresh-device-hook-idempotence.md)。JSON对象键顺序不同不改变Hook身份；比较相同自有项时保留原位置，避免移动后置外来Hook并改变Codex信任索引。发行目标为`2.1.10-pennix.3`、beta通道。该修复不修改用户配置或代替Lifecycle写入信任。
 
 Pennix 验收目标为 Linux/WSL、Codex 0.167.0、Node.js 24.15.0 及 26。上游多宿主实现和测试保留，涉及上游自行安装、改写发行分支或维护统计的 CI 只在上游仓库运行；fork 使用独立的现有 CI job 和 tag 发布 job。最终提交固定后构建 release-out，本地与 CI 各自构建；CI 只 pack 一次，验证该 tarball 后发布，不声称两次构建的字节相同。
 
