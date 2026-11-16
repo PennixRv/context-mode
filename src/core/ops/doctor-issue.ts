@@ -66,7 +66,7 @@ export async function runtimeInfo(env: NodeJS.ProcessEnv, signal: AbortSignal,
   for (const [k, v] of Object.entries(env)) if (v !== undefined) childEnv[k] = v;
   const r = await runProcess([node, "--version"], { cwd: dirname(node), env: childEnv, signal, timeoutMs: DOCTOR_GIT_VERSION_TIMEOUT_MS });
   const out = r.stdout.toString("utf8").trim();
-  return { node: host.node, bun: host.bun, pathNode: r.exitCode === 0 && out !== "" ? out : null };
+  return { node: host.node, bun: host.bun, pathNode: r.exitCode === 0 && r.killed === null && r.held !== true && out !== "" ? out : null };
 }
 
 export function environmentLine(ctx: ToolContext, adapter: AdapterRow, env: NodeJS.ProcessEnv, version: string | undefined,

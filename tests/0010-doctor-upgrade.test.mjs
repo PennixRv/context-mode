@@ -596,7 +596,9 @@ describe("ADR-0010 doctor D3 on Antigravity: one clear line, no Gemini CLI claim
     const fix = d1UpdateCommand("gemini", env, agy);
     assert.equal(fix.includes("gemini extensions update"), false, fix);
     assert.ok(fix.includes("Antigravity is not a supported host today"), fix);
-    assert.ok(d1UpdateCommand("gemini", env, undefined).includes("gemini extensions update"), "a real Gemini host keeps its own command");
+    for (const agent of ["codex", "copilot-cli", "gemini", "claude-code"]) {
+      assert.equal(d1UpdateCommand(agent, env, undefined), "pennix update context-mode", "the managed fork stays with Lifecycle on every host");
+    }
   });
 
   test("[D-1340-AGY-D3-1] the CLI plugin dir ~/.gemini/antigravity-cli/plugins is Antigravity too", async (t) => {

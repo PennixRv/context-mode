@@ -6,6 +6,8 @@
 import { MAX_CANDIDATES, MAX_CANDIDATES_TOTAL } from "../contracts/constants.ts";
 import type { Candidate, CandidateSection, JournalRow } from "../contracts/types.ts";
 
+export type StateEvent = Pick<JournalRow, "seq" | "session_id" | "turn" | "kind" | "key" | "path" | "ok" | "tool" | "body">;
+
 /** A candidate plus the `more:` query it adds when render skips it (DECISIONS-r9 M11). */
 export interface SectionCandidate extends Candidate {
   query: string | null; // key (open errors, indexed sources), path (changed files), null (prompts)
@@ -29,7 +31,7 @@ function firstLine(body: string): string {
   return (nl < 0 ? body : body.slice(0, nl)).replaceAll("\r", " ");
 }
 
-function make(section: CandidateSection, row: JournalRow, text: string, repeatCount: number, query: string | null): SectionCandidate {
+function make(section: CandidateSection, row: StateEvent, text: string, repeatCount: number, query: string | null): SectionCandidate {
   const bytes = Buffer.byteLength(text, "utf8");
   if (bytes < 1) throw new Error("compaction: empty candidate line (DECISIONS-r9 M9).");
   return { section, seq: row.seq, turn: row.turn, text, bytes, repeatCount, pinned: section === "last_request", query };
@@ -44,7 +46,7 @@ function emptySet(): CandidateSet {
   return { lastRequest: null, openErrors: [], changedFiles: [], decisions: [], earlierRequests: [], indexedSources: [] };
 }
 
-export function buildCandidates(rows: readonly JournalRow[], sessionId: string): CandidateSet {
+export function buildCandidates(rows: readonly StateEvent[], sessionId: string, repeatCounts?: ReadonlyMap<number, number>): CandidateSet {
   if (!sessionId) return emptySet(); // ADR-0009 §2, DECISIONS-r9 M1
   const own = rows.filter((r) => r.session_id === sessionId).sort((a, b) => a.seq - b.seq);
 
@@ -58,7 +60,7 @@ export function buildCandidates(rows: readonly JournalRow[], sessionId: string):
 
   // step 3 (DECISIONS-r9 M2, F2): latest failing cmd/toolerr row per key, open unless a later row of that
   // key succeeded. A row with no key cannot be resolved structurally and is not a candidate (D-M4-S1-2).
-  const failures = new Map<string, { row: JournalRow; count: number }>();
+  const failures = new Map<string, { row: StateEvent; count: number }>();
   const lastOk = new Map<string, number>();
   for (const r of own) {
     if ((r.kind !== "cmd" && r.kind !== "toolerr") || r.key === null) continue;
@@ -67,7 +69,7 @@ export function buildCandidates(rows: readonly JournalRow[], sessionId: string):
       lastOk.set(r.key, r.seq);
       continue;
     }
-    failures.set(r.key, { row: r, count: (failures.get(r.key)?.count ?? 0) + 1 });
+    failures.set(r.key, { row: r, count: repeatCounts?.get(r.seq) ?? (failures.get(r.key)?.count ?? 0) + 1 });
   }
   const openErrors: SectionCandidate[] = [];
   for (const [key, f] of failures) {
@@ -77,10 +79,10 @@ export function buildCandidates(rows: readonly JournalRow[], sessionId: string):
   openErrors.sort((a, b) => a.seq - b.seq);
 
   // step 4 (DECISIONS-r9 M3): last write wins per path, repeatCount = edit rows for that path.
-  const edits = new Map<string, { row: JournalRow; count: number }>();
+  const edits = new Map<string, { row: StateEvent; count: number }>();
   for (const r of own) {
     if (r.kind !== "edit" || r.path === null) continue;
-    edits.set(r.path, { row: r, count: (edits.get(r.path)?.count ?? 0) + 1 });
+    edits.set(r.path, { row: r, count: repeatCounts?.get(r.seq) ?? (edits.get(r.path)?.count ?? 0) + 1 });
   }
   const changedFiles: ChangedFileCandidate[] = [];
   for (const [path, e] of edits) {
@@ -91,11 +93,11 @@ export function buildCandidates(rows: readonly JournalRow[], sessionId: string):
 
   // DECISIONS-r11 (A): one candidate per decision key, the latest row wins, repeatCount = rows of that key.
   // The line is the body's first line ("Q: ... → A: ..." or "A: <label>"); the key is the more: query.
-  const decided = new Map<string, { row: JournalRow; count: number }>();
+  const decided = new Map<string, { row: StateEvent; count: number }>();
   for (const r of own) {
     if (r.kind !== "decision" || r.body === "") continue;
     const key = r.key ?? r.body;
-    decided.set(key, { row: r, count: (decided.get(key)?.count ?? 0) + 1 });
+    decided.set(key, { row: r, count: repeatCounts?.get(r.seq) ?? (decided.get(key)?.count ?? 0) + 1 });
   }
   const decisions: SectionCandidate[] = [];
   for (const [key, d] of decided) decisions.push(make("decisions", d.row, "decided #" + d.row.seq + ": " + firstLine(d.row.body), d.count, key));

@@ -13,6 +13,7 @@ export function prefixToolNames(text: string, prefix: string): string {
 
 // Byte caps
 export const OUTPUT_CAP = 16384; // Q2, ADR-0008, ADR-0016: one cap for replies, replace path and Read deny threshold
+export const PROCESS_OUTPUT_CAP = 16 * 1024 * 1024; // Pennix HA23: shared stdout/stderr capture budget; replies retain OUTPUT_CAP.
 // D-EXEC-PREVIEW-1: a ctx_execute reply for output that does not fit OUTPUT_CAP is a preview of at most this many bytes;
 // the whole output is indexed and the reply ends with the ctx_search call that reaches the rest.
 export const EXEC_PREVIEW_BYTES = 4096;

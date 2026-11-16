@@ -98,7 +98,7 @@ describe("ADR-0018: contracts (concurrent)", { concurrency: CONC }, () => {
 
     const VARS = {
       NODE_TOO_OLD: { v: "22.1.0" }, NO_SQLITE: {}, DB_GONE: {}, NO_PROJECT: { kind: "spawn-cwd" },
-      UNKNOWN_FIELD: { f: "query" }, TIMEOUT: { ms: 600000 }, NO_RUNTIME: { lang: "python" },
+      UNKNOWN_FIELD: { f: "query" }, TIMEOUT: { ms: 600000 }, OUTPUT_LIMIT: { bytes: C.PROCESS_OUTPUT_CAP }, NO_RUNTIME: { lang: "python" },
       NO_GIT_BASH: {}, FETCH_FAILED: { code: "ENOTFOUND" }, SSRF: { host: "127.0.0.1" }, OUTSIDE_ROOT: { p: "/etc/passwd", root: "/repo" },
       INVALID_ARGS: { field: "offset", action: "drop offset with sort:\"timeline\"" }, ONE_OF_INPUT: { names: "code, file" },
       SPAWN_FAILED: { detail: "ENOENT" },
@@ -114,6 +114,7 @@ describe("ADR-0018: contracts (concurrent)", { concurrency: CONC }, () => {
       NO_PROJECT: "Project source spawn-cwd is missing. Fix: run ctx_doctor.",
       UNKNOWN_FIELD: 'Unknown field "query". Fix: use "queries".',
       TIMEOUT: "Timed out after 600000 ms. Fix: pass background: true.",
+      OUTPUT_LIMIT: "Output exceeded 16777216 bytes; the command was stopped and captured output is incomplete. Fix: filter output in the command or read in bounded pages.",
       NO_RUNTIME: "No python runtime on PATH. Fix: install it or pick another language.",
       NO_GIT_BASH: "Git Bash not found. Fix: install Git for Windows.",
       FETCH_FAILED: "Fetch failed: ENOTFOUND. Fix: check the URL or proxy.",
@@ -133,8 +134,8 @@ describe("ADR-0018: contracts (concurrent)", { concurrency: CONC }, () => {
       CONFIG_PARSE_FAILED: "codex config at /home/u/.codex/config.toml did not parse as toml. Fix: fix the syntax error and re-run ctx_upgrade.",
     };
 
-    test("ERROR_TEXT has exactly the 21 codes, each one line with '. Fix: ' (A-C6, impl/07 A-T2)", () => {
-      assert.equal(Object.keys(ERROR_TEXT).length, 21);
+    test("ERROR_TEXT has exactly the 22 codes, each one line with '. Fix: ' (A-C6, impl/07 A-T2, Pennix HA23)", () => {
+      assert.equal(Object.keys(ERROR_TEXT).length, 22);
       assert.deepEqual(Object.keys(ERROR_TEXT).sort(), Object.keys(EXPECTED).sort());
       assert.ok(Object.isFrozen(ERROR_TEXT));
       for (const [code, text] of Object.entries(ERROR_TEXT)) {

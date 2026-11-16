@@ -15,7 +15,7 @@ import { capBytes } from "../src/core/sandbox/cap.ts";
 import { buildChildEnv } from "../src/core/sandbox/env.ts";
 import { killTree } from "../src/core/sandbox/kill.ts";
 import { findRuntime } from "../src/core/sandbox/runtimes.ts";
-import { runProcess } from "../src/core/sandbox/spawn.ts";
+import { capturedOutput, runProcess } from "../src/core/sandbox/spawn.ts";
 import { ctxBatch, runBatch, runPool } from "../src/core/tools/batch.ts";
 import { ctxExecute, ctxExecuteSchema } from "../src/core/tools/execute.ts";
 import { ctxSearch } from "../src/core/tools/search.ts";
@@ -102,6 +102,77 @@ describe("PRD-v2 section 9: output cap", { concurrency: CONC }, () => {
   test("capBytes keeps a leading BOM and returns '' for cap 0", () => {
     assert.equal(capBytes("﻿abc", 5).text, "﻿ab");
     assert.deepEqual(capBytes("abc", 0), { text: "", cut: true, fullBytes: 3 });
+  });
+});
+
+describe("Pennix health audit: capture fidelity and limits", () => {
+  const ctxFor = root => ({
+    project: { projectKey: "1".repeat(16), projectDir: join(root, "projects", "1".repeat(16)), dbPath: join(root, "projects", "1".repeat(16), "context.db"), worktree: root, containmentRoot: root, agent: "claude-code", source: "env:CLAUDE_PROJECT_DIR" },
+    sessionId: "s1", turn: 1, signal: new AbortController().signal,
+  });
+
+  test("exit-zero stderr is visible and searchable in execute and batch", async () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "cm-health-stderr-"));
+    try {
+      const ctx = ctxFor(root);
+      const code = "printf 'stdoutmarker'; printf 'successfulwarningmarker' >&2";
+      const execute = await ctxExecute.handler({language: "shell", code, intent: "successfulwarningmarker"}, ctx);
+      assert.equal(execute.isError, false);
+      assert.equal(execute.journal.exit_code, 0);
+      assert.match(execute.text, /successfulwarningmarker/);
+      const batch = await ctxBatch.handler({commands: [code], queries: ["successfulwarningmarker"]}, ctx);
+      assert.equal(batch.isError, false);
+      assert.match(batch.text, /successfulwarningmarker/);
+      const stored = await ctxSearch.handler({queries: ["successfulwarningmarker"]}, ctx);
+      assert.match(stored.text, /\[stderr\]/);
+      assert.match(stored.text, /successfulwarningmarker/);
+    } finally { rmSync(root, {recursive: true, force: true}); }
+  });
+
+  test("execute preserves and indexes diagnostics printed before timeout", async () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "cm-health-timeout-"));
+    try {
+      const ctx = ctxFor(root);
+      const out = await ctxExecute.handler({language: "shell", code: "printf 'beforetimeoutmarker'; printf 'timeoutwarningmarker' >&2; sleep 10", timeoutMs: 200}, ctx);
+      assert.equal(out.isError, true);
+      assert.equal(out.journal.exit_code, null);
+      assert.match(out.text, /^Timed out after 200 ms/);
+      assert.match(out.text, /command incomplete/);
+      const stored = await ctxSearch.handler({queries: ["beforetimeoutmarker", "timeoutwarningmarker"]}, ctx);
+      assert.match(stored.text, /beforetimeoutmarker/);
+      assert.match(stored.text, /timeoutwarningmarker/);
+    } finally { rmSync(root, {recursive: true, force: true}); }
+  });
+
+  test("one shared budget bounds stdout plus stderr and stops the writer", async () => {
+    const r = await runProcess([process.execPath, "-e", `process.stdout.write('o'.repeat(${C.PROCESS_OUTPUT_CAP / 2}));process.stderr.write('w'.repeat(${C.PROCESS_OUTPUT_CAP / 2 + 1}));setInterval(()=>{},1000);`], {
+      cwd: process.cwd(), env: buildChildEnv(process.env), signal: new AbortController().signal, timeoutMs: 5000,
+    });
+    assert.equal(r.killed, "output_limit");
+    assert.equal(r.outputLimited, true);
+    assert.equal(r.stdout.length + r.stderr.length, C.PROCESS_OUTPUT_CAP);
+    assert.notEqual(r.exitCode, 0);
+  });
+
+  test("a limited UTF-8 tail is omitted without inventing a replacement character", () => {
+    const r = {stdout: Buffer.from("ok中").subarray(0, 3), stderr: Buffer.alloc(0), exitCode: null, killed: "output_limit"};
+    assert.equal(capturedOutput(r), "ok");
+    assert.equal(capturedOutput({...r, killed: "timeout", outputLimited: true}), "ok\n[output capture limit reached; incomplete]");
+  });
+
+  test("an unreadable PATH candidate does not hide a later valid runtime", () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "cm-health-runtime-"));
+    try {
+      const bad = join(root, "bad"), good = join(root, "good");
+      mkdirSync(bad); mkdirSync(good);
+      symlinkSync("pennixprobe", join(bad, "pennixprobe"));
+      const executable = join(good, "pennixprobe");
+      writeFileSync(executable, "#!/bin/sh\nexit 0\n"); chmodSync(executable, 0o755);
+      assert.equal(findRuntime("pennixprobe", {PATH: [bad, good].join(delimiter)}), executable);
+    } finally { rmSync(root, {recursive: true, force: true}); }
   });
 });
 
@@ -733,7 +804,8 @@ describe("PRD-v2 section 9: ctx_batch", { concurrency: CONC }, () => {
     const root = tmpRoot("tb");
     try {
       const bound = 1500;
-      const flood = `node -e "setInterval(() => process.stdout.write('needle '.repeat(15000) + '\\n'), 5)"`;
+      // Stay below the independent capture budget so this case still exercises the timeout.
+      const flood = `node -e "setInterval(() => process.stdout.write('needle '.repeat(1500) + '\\n'), 5)"`;
       const t0 = Date.now();
       const out = await runBatch({ commands: ["echo first-xyz", flood, "echo never-xyz"], queries: ["first-xyz", "needle"] }, ctxFor(root), bound, C.RETENTION_SIZE_CAP_BYTES);
       const took = Date.now() - t0;

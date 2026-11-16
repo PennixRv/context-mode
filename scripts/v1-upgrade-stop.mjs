@@ -5,9 +5,9 @@
 // 1.0.x upgrade takes its own "NOT updated" path and the install stays whole. It names the native install command.
 // Contributors build with `npm run build:release` (node build/build.mjs --out release-out). Not in the release tree.
 const lines = [
-  "context-mode 2 updates with your agent's own install command.",
-  "For a global npm install: npm i -g context-mode",
-  "Guide: https://github.com/mksglu/context-mode/blob/main/docs/install/README.md",
+  "Pennix Lifecycle owns this Context Mode fork's installation and updates.",
+  "Review with pennix updates --json; use pennix-component-lifecycle for the native owner plan.",
+  "This legacy build path stopped without replacing your installation.",
   "To build this checkout: npm run build:release (node build/build.mjs --out release-out)",
 ];
 process.stderr.write(lines.join("\n") + "\n");

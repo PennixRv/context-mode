@@ -218,7 +218,7 @@ async function handler(_input: CtxDoctorInput, ctx: ToolContext): Promise<ToolRe
 export const ctxDoctor = Object.freeze({
   name: "ctx_doctor",
   schema: ctxDoctorSchema,
-  readOnly: false, // D8 heal is the one write (ADR-0010)
+  readOnly: false, // DB healing, diagnostic reports and large-report indexing can write.
   alwaysLoad: false,
   handler,
 });

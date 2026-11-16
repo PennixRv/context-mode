@@ -45,13 +45,13 @@ function fileNames(name: string, pathExt: string[]): string[] {
 
 /** Steps 4-5: a regular file; on POSIX it must carry the exec bit, on Windows it must be startable. */
 function isRunnable(full: string): boolean {
-  const st = statSync(full, { throwIfNoEntry: false });
-  if (st === undefined || !st.isFile()) return false;
-  if (isWin()) {
-    const ext = path.extname(full).toLowerCase();
-    return ext === "" || WIN_STARTABLE_EXT.includes(ext);
-  }
   try {
+    const st = statSync(full, { throwIfNoEntry: false });
+    if (st === undefined || !st.isFile()) return false;
+    if (isWin()) {
+      const ext = path.extname(full).toLowerCase();
+      return ext === "" || WIN_STARTABLE_EXT.includes(ext);
+    }
     accessSync(full, fsConstants.X_OK);
     return true;
   } catch {

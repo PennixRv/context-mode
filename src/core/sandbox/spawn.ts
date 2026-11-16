@@ -1,8 +1,9 @@
 // impl/03 §5, AS2, AS3: the one process-spawn path for sandboxed code. argv only, shell:false,
-// env supplied by the caller (buildChildEnv), raw uncapped Buffers, never rejects.
+// env supplied by the caller (buildChildEnv), shared bounded raw capture, never rejects.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
-import { KILL_GRACE_MS, PIPE_DRAIN_MAX_MS, PIPE_EOF_GRACE_MS } from "../contracts/constants.ts";
+import { StringDecoder } from "node:string_decoder";
+import { KILL_GRACE_MS, PIPE_DRAIN_MAX_MS, PIPE_EOF_GRACE_MS, PROCESS_OUTPUT_CAP } from "../contracts/constants.ts";
 import { killTree } from "./kill.ts";
 import { findRuntime } from "./runtimes.ts";
 
@@ -18,12 +19,23 @@ export interface RunResult {
   stdout: Buffer;
   stderr: Buffer;
   exitCode: number | null;
-  killed: "timeout" | "cancel" | null;
+  killed: "timeout" | "cancel" | "output_limit" | null;
+  /** The shared capture budget was exhausted, possibly after a timeout or cancellation. */
+  outputLimited?: boolean;
   /** D-1337-EXIT-SETTLE-1: the child exited but a background process still held the pipes; the output is what arrived by then. */
   held?: boolean;
 }
 
 const NOT_STARTED: RunResult = Object.freeze({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: null, killed: null });
+
+/** Name stderr even after exit 0; an output-limit tail may end inside a UTF-8 code point. */
+export function capturedOutput(r: RunResult): string {
+  const limited = r.killed === "output_limit" || r.outputLimited === true;
+  const decode = (buffer: Buffer): string => limited ? new StringDecoder("utf8").write(buffer) : buffer.toString("utf8");
+  const stdout = decode(r.stdout);
+  return stdout + (r.stderr.length === 0 ? "" : (stdout === "" || stdout.endsWith("\n") ? "" : "\n") + "[stderr]\n" + decode(r.stderr))
+    + (limited && r.killed !== "output_limit" ? "\n[output capture limit reached; incomplete]" : "");
+}
 
 /**
  * DEVIATIONS D-M2-R3-3: Windows cannot start an extensionless `#!/bin/sh` shim (pyenv-win, #1208/#1209)
@@ -59,7 +71,9 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     }
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    let killedBy: "timeout" | "cancel" | null = null;
+    let killedBy: RunResult["killed"] = null;
+    let capturedBytes = 0;
+    let outputLimited = false;
     let settled = false;
 
     let held = false;
@@ -98,6 +112,7 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
         stderr: Buffer.concat(stderrChunks),
         exitCode,
         killed: killedBy,
+        ...(outputLimited ? { outputLimited: true } : {}),
         ...(held ? { held: true } : {}),
       });
     };
@@ -127,8 +142,22 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
       }), PIPE_EOF_GRACE_MS);
     };
 
-    child.stdout.on("data", (chunk: Buffer) => { stdoutChunks.push(chunk); bump(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderrChunks.push(chunk); bump(); });
+    const capture = (chunks: Buffer[], chunk: Buffer): void => {
+      if (outputLimited) return;
+      const left = PROCESS_OUTPUT_CAP - capturedBytes;
+      const kept = chunk.length <= left ? chunk : Buffer.from(chunk.subarray(0, left));
+      if (kept.length > 0) { chunks.push(kept); capturedBytes += kept.length; }
+      if (chunk.length > left) {
+        outputLimited = true;
+        // Preserve the first stop cause, but never retain more bytes after timeout/cancel either.
+        if (killedBy === null) killedBy = "output_limit";
+        clearTimeout(timer);
+        kill();
+      }
+      bump();
+    };
+    child.stdout.on("data", (chunk: Buffer) => capture(stdoutChunks, chunk));
+    child.stderr.on("data", (chunk: Buffer) => capture(stderrChunks, chunk));
     // DEVIATIONS D-M2-T4-3: "close" (exit + stdio drained), so no tail bytes are lost.
     child.on("close", (code: number | null) => settle(code));
     // D-1337-EXIT-SETTLE-1: "exit" starts a short bounded drain; "close" inside it settles at once.

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDb, openDb } from "../src/core/store/db.ts";
 import { appendEvent, canonicalKey } from "../src/core/journal/append.ts";
-import { readEventBySeq, readSessionEvents } from "../src/core/journal/read.ts";
+import { readEventBySeq, readResumeEvents, readSessionEvents } from "../src/core/journal/read.ts";
 import { buildCandidates } from "../src/core/compaction/candidates.ts";
 import { DECAY_X1000, MAX_CANDIDATES, OUTPUT_CAP, POINTER_MIN, RECALL_BUDGET_BYTES, RECALL_CLOSE_TAG, RECALL_MIN_SCORE, RECALL_OPEN_TAG, RESUME_CAP, RESUME_EMPTY_LINE, RESUME_NO_ROW_LINE, RESUME_NO_SESSION_LINE, RESUME_UNKNOWN_FIELD_LINE, STATE_BUDGET, WEIGHT } from "../src/core/contracts/constants.ts";
 import * as C from "../src/core/contracts/constants.ts";
@@ -50,6 +50,59 @@ describe("ADR-0009 section 1: journal, ported v1 session-journal cases", { concu
       sandbox_bytes: 0, returned_bytes: 0, ...overrides,
     };
   }
+
+  test("Pennix health audit: bounded resume preserves full-history candidates and counts", async (t) => {
+    const {db, root} = await freshDb();
+    try {
+      const old = appendEvent(db, cmdRow("old unresolved", {ok: 0, body: "original diagnostic\n" + "payload".repeat(1000)}));
+      appendEvent(db, cmdRow("old unresolved", {ok: 0}));
+      appendEvent(db, cmdRow("resolved", {ok: 0}));
+      appendEvent(db, cmdRow("resolved", {ok: 1}));
+      for (let i = 0; i < 1000; i++) appendEvent(db, cmdRow("repeated success", {body: "captured output ".repeat(500), turn: i + 2}));
+      const compare = () => {
+        const all = readSessionEvents(db, "s1");
+        const projected = readResumeEvents(db, "s1");
+        assert.ok(projected.rows.length <= 5 * MAX_CANDIDATES + 2);
+        assert.deepEqual(buildCandidates(projected.rows, "s1", projected.repeatCounts), buildCandidates(all, "s1"));
+        const turn = all.at(-1).turn;
+        assert.equal(renderState(projected.rows, turn, {sources: [], units: [], repeatCounts: projected.repeatCounts}), renderState(all, turn, {sources: [], units: []}));
+        return {all, projected};
+      };
+      const initial = compare();
+      assert.ok(buildCandidates(initial.projected.rows, "s1", initial.projected.repeatCounts).openErrors.some(row => row.query === canonicalKey("Bash", "old unresolved")), "an old unresolved error must survive a long successful tail");
+      assert.ok(JSON.stringify(initial.projected.rows).length < JSON.stringify(initial.all).length / 100);
+      for (let i = 0; i < 2 * MAX_CANDIDATES; i++) {
+        appendEvent(db, cmdRow("prompt", {kind: "prompt", key: null, ok: null, body: `request ${i}\nlarge second line`, turn: 1100 + i}));
+        appendEvent(db, cmdRow("edit", {kind: "edit", key: null, path: `file${i % 100}`, body: "edit payload"}));
+        appendEvent(db, cmdRow("decision", {kind: "decision", key: i % 7 === 0 ? null : `choice${i % 100}`, body: `decision ${i % 100}\nfull decision key fallback`}));
+        appendEvent(db, cmdRow("index", {kind: "index", key: `source${i}`, body: "unused index body"}));
+        appendEvent(db, cmdRow(`check${i % 100}`, {ok: i % 5 === 0 ? 0 : i % 3 === 0 ? null : 1, body: "unused command body"}));
+      }
+      appendEvent(db, cmdRow("foreign", {session_id: "s2", ok: 0}));
+      appendEvent(db, cmdRow("cost", {kind: "cost", key: null, ok: null, turn: 9999}));
+      const final = compare();
+      assert.equal(final.projected.rows.at(-1).kind, "cost", "up-to seq and current turn include the actual newest row");
+      assert.equal(readEventBySeq(db, old).body, "original diagnostic\n" + "payload".repeat(1000));
+      assert.deepEqual(readResumeEvents(db, "unknown").rows, []);
+      let appended = false;
+      const concurrent = {...db, raw: {prepare(sql) {
+        const statement = db.raw.prepare(sql);
+        return {all(...args) {
+          const found = statement.all(...args);
+          if (!appended) {
+            appended = true;
+            appendEvent(db, cmdRow("old unresolved", {ok: 1, turn: 10000}));
+            appendEvent(db, cmdRow("future prompt", {kind: "prompt", key: null, ok: null, body: "next snapshot only", turn: 10001}));
+          }
+          return found;
+        }};
+      }}};
+      const snapshot = readResumeEvents(concurrent, "s1");
+      assert.deepEqual(buildCandidates(snapshot.rows, "s1", snapshot.repeatCounts), buildCandidates(final.all, "s1"), "concurrent appends must not mix later prompts or resolutions into an earlier snapshot");
+      assert.equal(snapshot.rows.at(-1).seq, final.all.at(-1).seq);
+      t.diagnostic(`resume projection: ${final.all.length} journal rows -> ${final.projected.rows.length} rows; full-history candidates and rendered bytes equal`);
+    } finally { closeDb(db); rmSync(root, {recursive: true, force: true}); }
+  });
 
   test("[W1-session-journal] git commit message survives in the cmd key (extract-git-commit)", () => {
     assert.equal(canonicalKey("Bash", `git commit -m "feat: x"`), `Bash:git commit -m "feat: x"`);

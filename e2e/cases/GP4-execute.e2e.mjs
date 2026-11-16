@@ -175,6 +175,15 @@ test("[M2] GP4/exit1-stderr-is-error", async () => {
   golden("exit1-stderr-is-error", { bad, grep });
 });
 
+test("[M2] GP4/capture-limit-is-an-incomplete-error", async () => {
+  const reply = await callExecute({language: "javascript", code: "process.stdout.write('x'.repeat(16777216+1024));setInterval(()=>{},1000);"});
+  const text = reply.content?.[0]?.text ?? "";
+  assert.equal(reply.isError, true);
+  assert.ok(text.includes("Output exceeded 16777216 bytes"), text.slice(0, 300));
+  assert.ok(text.includes("command incomplete"));
+  assert.ok(Buffer.byteLength(text) <= 16384);
+});
+
 test("[M2] GP4/project-cwd-temp-dir-cleanup", async () => {
   const reply = await callExecute({
     language: "javascript",

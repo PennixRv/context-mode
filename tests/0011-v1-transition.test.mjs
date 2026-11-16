@@ -654,14 +654,15 @@ describe("ADR-0011: v1 upgrade stop", { concurrency: CONC }, () => {
   const pkg = JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8"));
   const STOP = "scripts/v1-upgrade-stop.mjs";
 
-  test("[M7] v1-upgrade-stop/build-script-stops-writes-nothing-and-names-npm-i-g (#1363)", (t) => {
+  test("[M7] v1-upgrade-stop/build-script-stops-writes-nothing-and-names-Lifecycle (#1363)", (t) => {
     assert.equal(pkg.scripts.build, `node ${STOP}`);
     const cwd = mkdtempSync(path.join(tmpdir(), "cm-v1-stop-"));
     t.after(() => rmSync(cwd, { recursive: true, force: true }));
     const r = spawnSync(process.execPath, [path.join(REPO, STOP)], { cwd, encoding: "utf8" });
     assert.notEqual(r.status, 0, "the stop must fail the v1 build step");
-    assert.ok(r.stderr.includes("npm i -g context-mode"), r.stderr);
-    assert.ok(r.stderr.includes("https://github.com/mksglu/context-mode/blob/main/docs/install/README.md"), r.stderr);
+    assert.ok(r.stderr.includes("pennix updates --json"), r.stderr);
+    assert.ok(r.stderr.includes("pennix-component-lifecycle"), r.stderr);
+    assert.equal(r.stderr.includes("npm i -g context-mode"), false, "the guard must not route away from the managed fork");
     assert.ok(r.stderr.includes("node build/build.mjs --out release-out"), "contributors get the real build command: " + r.stderr);
     assert.deepEqual(readdirSync(cwd), []);
   });

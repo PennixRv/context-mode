@@ -20,6 +20,18 @@ Pennix 验收目标为 Linux/WSL、Codex 0.167.0、Node.js 24.15.0 及 26。上�
 
 旧数据维护入口为一次性 `node scripts/cleanup-v1-data.mjs`，默认只读预览；仅在核验旧 writer 已退出后，使用当前预览 digest 执行。脚本只识别 `${CODEX_HOME:-$HOME/.codex}/context-mode` 下的已知 v1 布局/schema，拒绝链接、未知文件、活动占用、变更或并发清理。失败和未知对象保留，不自动清理其他数据根，也不创建旧索引备份。Linux 进程检查是关闭现场的必要证据，不能消除任意外部写入竞态；维护窗口中不得再启动旧宿主。
 
+## 全组件体检整改：执行保真和有界恢复
+
+根任务workflow-health-remediation-release-deploy已获整体实施批准，组件记录见[docs/tasks/workflow-health-remediation.md](../tasks/workflow-health-remediation.md)。本轮保留上游稳定基线，选择性修复HA03/13/21/22/23/24/41，不用整包升级替代针对性验证。
+
+stdout和stderr无论退出码均保留，stderr显式标记。超时／取消且已有输出时先保存诊断再返回不完整状态；ctx_execute和run-wrapper不把停止后的命令标成正常退出。单命令stdout＋stderr共享16MiB采集预算，超过后停止进程组、停止采集并明确输出不完整，回复仍遵守原OUTPUT_CAP。若超限发生在timeout／cancel之后，保留首个停止原因并额外标记采集到达上限；不完整UTF-8尾部不产生伪替换字符。原始完整历史不因回复或资源限额被删除。
+
+ctx_resume的默认状态查询在SQLite内先按原有每节MAX_CANDIDATES选择最新请求、未解决错误、编辑、决定和索引候选，保留全历史重复计数，然后复用原buildCandidates／renderState的打分、总量上限和字节选择。各查询绑定首次观察的最大seq，避免跨进程追加混入同一恢复快照；不把最近固定窗口误当完整状态。最多读取5×MAX_CANDIDATES＋2行，不读取无关命令body；直接seq读取仍返回原始完整body。该上限约束候选行数，不是单条body、SQLite物理空间或查询扫描成本上限。
+
+500MB／30天只描述原生清理实际覆盖的对象，不能当成全部事件、活跃会话或数据库文件大小的硬上限；没有本轮实证泄漏就不引入活跃数据删除。ctx_doctor MCP可以自愈数据库、写报告和索引大报告，不能称为只读；严格只读检查使用原生context-mode doctor CLI。Skill和工具提示不自动授权执行Fix，fork可达更新建议及v1停止脚本均指向Lifecycle。
+
+定向回归已验证成功stderr检索、timeout诊断、共享采集上限、UTF-8、ELOOP候选跳过、更新路线与v1不写入。合成恢复样本1855行投影到363行，候选、计数和最终渲染与原全量读取完全相等，另验证并发追加不改变原快照。四个相关测试文件570项，568通过、2项Windows条件跳过、0失败；全套与发行／安装验收尚待后续记录。
+
 ## v1 历史记录
 
 根协调任务：`codex-workflow-optimization/.trellis/tasks/10-18-context-mode-fastctx-replacement`。本仓库维护本组件源码、测试、构建和 npm 制品；不维护用户运行配置或其他组件源码。

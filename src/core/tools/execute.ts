@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { z } from "zod/v4";
 import {
-  BACKGROUND_HOLD_NOTE, BACKGROUND_REPLY_PREFIX, CANCELLED_LINE, EXEC_LANGUAGES, EXEC_PREVIEW_BYTES, EXEC_TIMEOUT_MS, OUTPUT_CAP, SHELL_FAMILY, SOURCE_LABEL_MAX_CHARS,
+  BACKGROUND_HOLD_NOTE, BACKGROUND_REPLY_PREFIX, CANCELLED_LINE, EXEC_LANGUAGES, EXEC_PREVIEW_BYTES, EXEC_TIMEOUT_MS, OUTPUT_CAP, PROCESS_OUTPUT_CAP, SHELL_FAMILY, SOURCE_LABEL_MAX_CHARS,
 } from "../contracts/constants.ts";
 import { CtxError } from "../contracts/errors.ts";
 import type { ExecuteInput, JournalFacts, ToolContext, ToolReply } from "../contracts/types.ts";
@@ -19,7 +19,7 @@ import { capBytes } from "../sandbox/cap.ts";
 import { buildChildEnv } from "../sandbox/env.ts";
 import { rewriteWindowsBuildTools } from "../sandbox/win-build.ts";
 import { findRuntime, noRuntimeError } from "../sandbox/runtimes.ts";
-import { runProcess, type RunResult } from "../sandbox/spawn.ts";
+import { capturedOutput, runProcess, type RunResult } from "../sandbox/spawn.ts";
 import { nodeLaunch } from "../sandbox/host-node.ts";
 import { closeDb, openDb } from "../store/db.ts";
 import { indexText } from "../index/text.ts";
@@ -135,19 +135,19 @@ function spawnFailed(argv0: string, cwd: string): string {
 }
 
 // Steps 12-17.
-async function finish(input: ExecuteInput, ctx: ToolContext, r: RunResult, exitCode: number, journal: JournalFacts): Promise<ToolReply> {
-  const isError = exitCode !== 0 && !(input.language === "shell" && exitCode === SOFT_EXIT && r.stderr.length === 0);
-  const combined = r.stdout.toString("utf8") + (exitCode !== 0 ? r.stderr.toString("utf8") : "") + (r.held === true ? "\n" + BACKGROUND_HOLD_NOTE + "\n" : "");
-  const fullBytes = Buffer.byteLength(combined, "utf8");
-  const head = summaryLine(exitCode, fullBytes);
+async function finish(input: ExecuteInput, ctx: ToolContext, r: RunResult, exitCode: number | null, journal: JournalFacts, stopped: string | null = null): Promise<ToolReply> {
+  const isError = stopped !== null || (exitCode !== 0 && !(input.language === "shell" && exitCode === SOFT_EXIT && r.stderr.length === 0));
+  const combined = capturedOutput(r) + (r.held === true ? "\n" + BACKGROUND_HOLD_NOTE + "\n" : "");
+  const fullBytes = r.stdout.length + r.stderr.length;
+  const head = stopped === null ? summaryLine(exitCode as number, fullBytes) : stopped + "\ncaptured " + fullBytes + " B; command incomplete";
   const intent = input.intent ?? "";
   // Step 14: the whole reply, summary and echo included, fits; nothing to index (D-M2-T10-6).
   // D-EXEC-BARE-1: exit 0 and the whole output in the reply, no echo: the head line says nothing the
   // reply does not already hold, so the reply is the output. Empty output keeps the head.
-  const bare = exitCode === 0 && input.summary !== true && combined !== "";
+  const bare = stopped === null && exitCode === 0 && input.summary !== true && combined !== "";
   const direct = (bare ? "" : head + "\n") + (input.summary === true ? echoBlock(input.language, input.code) + "\n" : "") + combined;
   const fits = Buffer.byteLength(head + "\n" + (input.summary === true ? echoBlock(input.language, input.code) + "\n" : "") + combined, "utf8") <= OUTPUT_CAP;
-  if (intent === "" && fits) {
+  if (intent === "" && fits && stopped === null) {
     return { text: direct, isError, sandboxBytes: fullBytes, journal };
   }
   // Steps 15-17: index the full output, then select whole chunks within what is left of the cap.
@@ -212,8 +212,13 @@ async function handler(raw: ExecuteInput, ctx: ToolContext): Promise<ToolReply> 
     }
     // Steps 8, 10, 11.
     const r = await runProcess(argv, { cwd, env, signal: ctx.signal, timeoutMs });
-    if (r.killed === "timeout") return fail(new CtxError("TIMEOUT", { ms: timeoutMs }).toLine(), journal);
-    if (r.killed === "cancel") return fail(CANCELLED_LINE, journal);
+    const stopped = r.killed === "timeout" ? new CtxError("TIMEOUT", { ms: timeoutMs }).toLine()
+      : r.killed === "cancel" ? CANCELLED_LINE
+      : r.killed === "output_limit" ? new CtxError("OUTPUT_LIMIT", { bytes: PROCESS_OUTPUT_CAP }).toLine() : null;
+    if (stopped !== null) {
+      if (r.stdout.length + r.stderr.length === 0) return fail(stopped, journal);
+      return await finish(input, ctx, r, null, journal, stopped);
+    }
     // D-M2-T10-4: no exit code = the process did not start (deleted cwd, runtime gone) or died by an
     // outside signal. One line, no fallback directory.
     if (r.exitCode === null) return fail(spawnFailed(argv[0], cwd), journal);

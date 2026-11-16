@@ -195,7 +195,7 @@ TECH-SPEC GP4 row, clause "process tree killed (Windows: `taskkill /F /T /PID`, 
 export function runProcess(
   argv: string[],
   o: { cwd: string; env: Record<string, string>; signal: AbortSignal; timeoutMs: number; stdin?: string }
-): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number | null; killed: "timeout" | "cancel" | null }>;
+): Promise<{ stdout: Buffer; stderr: Buffer; exitCode: number | null; killed: "timeout" | "cancel" | "output_limit" | null; outputLimited?: boolean; held?: boolean }>;
 ```
 
 ### Inputs
@@ -210,9 +210,9 @@ export function runProcess(
 ### Output
 
 A promise that resolves (never rejects — see Error cases) to:
-- `stdout`, `stderr`: raw `Buffer`s, **uncapped** — `capBytes` runs in the caller after this returns, never inside `spawn.ts` (keeps this module ignorant of `OUTPUT_CAP`, which belongs to the tool-reply shape, not the process mechanism).
+- `stdout`, `stderr`: raw `Buffer`s sharing `PROCESS_OUTPUT_CAP` (16 MiB). Exceeding that capture budget stops the process group and marks the result incomplete. This is independent of `OUTPUT_CAP`: callers still apply the smaller reply budget after indexing captured output.
 - `exitCode`: the child's exit code, or `null` if it was killed by a signal before exiting normally.
-- `killed`: `"timeout"` if `o.timeoutMs` elapsed before exit, `"cancel"` if `o.signal` fired first, else `null`.
+- `killed`: the first stop cause: `"timeout"`, `"cancel"`, or `"output_limit"`; otherwise `null`. `outputLimited: true` additionally records capture exhaustion even if timeout/cancel happened first. `held: true` retains the existing pipe-drain outcome.
 
 ### Steps
 
@@ -220,7 +220,7 @@ A promise that resolves (never rejects — see Error cases) to:
    - `shell: false` always (00 rule list, PRD §9, GP4: "always spawns the interpreter binary directly … no git Bash / PowerShell / cmd shell choice").
    - `detached: true` on POSIX makes the child its own process-group leader, so `child.pid` is a valid group id for `killTree`'s negative-PID signal (step 1a of §4). On Windows `detached` is left `false` — Windows process groups are not POSIX groups and `killTree`'s Windows branch (`taskkill /T`) already walks the whole descendant tree by PID, not by group.
 2. If `o.stdin !== undefined`, write it to `child.stdin` then call `child.stdin.end()`; if `o.stdin === undefined`, call `child.stdin.end()` immediately with no write.
-3. Collect `stdout`/`stderr` by pushing each `"data"` chunk into two arrays of `Buffer`; concatenate with `Buffer.concat` once the process ends (step 6). Do not cap or decode here — raw bytes only.
+3. Collect `stdout`/`stderr` as raw chunks under their shared byte budget, then concatenate once at settlement. On overflow keep only the remaining budget, stop collecting, and kill the process group. `capturedOutput` labels stderr even after exit 0 and omits a partial UTF-8 tail for an output-limited capture; raw buffers and stop facts remain separate.
 4. Start a timer for `o.timeoutMs`. On fire: set a local flag `killedBy = "timeout"`, call `killTree(child.pid)`.
 5. Register an `"abort"` listener on `o.signal`. On fire (and `killedBy` not already set): set `killedBy = "cancel"`, call `killTree(child.pid)`, clear the timeout timer from step 4.
 6. Register `"exit"` on `child`. On fire: clear the timeout timer from step 4 (if still pending) and remove the abort listener from step 5 (if still registered) — whichever of timeout/cancel/natural-exit happens first wins and the other paths become no-ops. Resolve the promise with `{ stdout: Buffer.concat(stdoutChunks), stderr: Buffer.concat(stderrChunks), exitCode: <exit code from the event>, killed: killedBy ?? null }`.

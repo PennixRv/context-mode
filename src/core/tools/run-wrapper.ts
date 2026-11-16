@@ -9,8 +9,10 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { getAdapter } from "../../adapters/table.ts";
 import {
+  CANCELLED_LINE,
   EXEC_TIMEOUT_MS,
   OUTPUT_CAP,
+  PROCESS_OUTPUT_CAP,
   PARSE_ERROR_DENY_LINE,
   prefixToolNames,
   PLAIN_OUTPUT_ENV,
@@ -37,7 +39,7 @@ import { resolveProject } from "../project/resolve.ts";
 import { capBytes } from "../sandbox/cap.ts";
 import { buildChildEnv } from "../sandbox/env.ts";
 import { findRuntime, noRuntimeError } from "../sandbox/runtimes.ts";
-import { runProcess } from "../sandbox/spawn.ts";
+import { capturedOutput, runProcess } from "../sandbox/spawn.ts";
 import { closeDb, openDb } from "../store/db.ts";
 import { indexText } from "../index/text.ts";
 
@@ -130,11 +132,14 @@ export async function runWrapperMain(argv: string[], env: NodeJS.ProcessEnv): Pr
       timeoutMs: EXEC_TIMEOUT_MS,
     });
     // Step 11.
-    if (r.killed === "timeout") return exit(RUN_TIMEOUT_EXIT, new CtxError("TIMEOUT", { ms: EXEC_TIMEOUT_MS }).toLine() + "\n", "");
-    if (r.exitCode === null) throw new CtxError("SPAWN_FAILED", { detail: runtime + " gave no exit code in " + cwd });
-    const exitCode = r.exitCode;
-    const combined = r.stdout.toString("utf8") + (exitCode !== 0 ? r.stderr.toString("utf8") : "");
-    const head = "exit " + exitCode + " · " + bytes(combined) + " B";
+    const stopped = r.killed === "timeout" ? new CtxError("TIMEOUT", { ms: EXEC_TIMEOUT_MS }).toLine()
+      : r.killed === "output_limit" ? new CtxError("OUTPUT_LIMIT", { bytes: PROCESS_OUTPUT_CAP }).toLine()
+      : r.killed === "cancel" ? CANCELLED_LINE : null;
+    if (r.exitCode === null && stopped === null) throw new CtxError("SPAWN_FAILED", { detail: runtime + " gave no exit code in " + cwd });
+    const exitCode = stopped === null ? r.exitCode as number : r.killed === "timeout" ? RUN_TIMEOUT_EXIT : RUN_FAIL_EXIT;
+    const combined = capturedOutput(r);
+    if (stopped !== null && combined === "") return exit(exitCode, stopped + "\n", "");
+    const head = stopped === null ? "exit " + exitCode + " · " + (r.stdout.length + r.stderr.length) + " B" : stopped + "\ncommand incomplete";
     // Steps 7-9.
     const db = await openDb(project);
     let text: string;

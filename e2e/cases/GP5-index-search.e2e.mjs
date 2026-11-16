@@ -33,6 +33,7 @@ const MAX_CHUNK_BYTES = 4096;
 const SNIPPET_MAX_BYTES = 800;
 const OUTPUT_CAP = 16384;
 const RETENTION_SIZE_CAP_BYTES = 524288000;
+const PROCESS_OUTPUT_CAP = 16777216; // Pennix HA23: one command's shared stdout/stderr capture.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -187,18 +188,20 @@ test("[M2] GP5/batch-execute-dedup-section", async () => {
 });
 
 // D-M2-R4-1: one batch call ingests up to RETENTION_SIZE_CAP_BYTES (the real per-project cap);
-// no test-only budget knob exists through MCP, so this case runs at the real 500 MB scale (slow:
+// No test-only budget knob exists through MCP, so this case runs at the real 500 MB scale (slow:
 // generating and ingesting 500 MB can take minutes). DEVIATIONS M2-C1 (commit body): at this
 // scale the EXEC_TIMEOUT_MS deadline (600 s, shared by exec + index) may end the ingest before the
 // byte budget does — src/core/tools/batch.ts's "Indexed <n> of <m> B." cut line is then prefixed
 // by the timeout cause text instead of starting the line. Either way the cut is real (idx.indexed
 // < idx.total), never a test-only knob, so this case accepts both causes.
 test("[M2] GP5/batch-index-byte-budget", { timeout: 580_000 }, async () => {
-  // fs.writeSync(1, ...) (not process.stdout.write, which buffers and can outrun the pipe at this
-  // scale) so the whole 500 MB+ writes in well under a second, leaving the EXEC_TIMEOUT_MS budget
-  // for indexing rather than for generating the fixture.
-  const cmd = `node -e "const B=Buffer.from(('row needle '+'x'.repeat(40)+String.fromCharCode(10)).repeat(20000));const fs=require('fs');const need=Math.ceil((${RETENTION_SIZE_CAP_BYTES}+2000000)/B.length);for(let n=0;n<need;n++)fs.writeSync(1,B)"`;
-  const reply = await withClient((c) => c.request("tools/call", { name: "ctx_batch", arguments: { commands: [cmd], queries: ["needle"] } }));
+  // Each writer stays under the independent capture cap. Their combined output still exercises
+  // the real 500 MiB ingestion limit, rather than hitting the single-command limit first.
+  const chunkBytes = Buffer.byteLength(('row needle ' + 'x'.repeat(40) + '\n').repeat(20000));
+  const chunks = Math.floor((PROCESS_OUTPUT_CAP - 1) / chunkBytes);
+  const commands = Array.from({length: Math.ceil((RETENTION_SIZE_CAP_BYTES + 2000000) / (chunks * chunkBytes))}, () =>
+    `node -e "const B=Buffer.from(('row needle '+'x'.repeat(40)+String.fromCharCode(10)).repeat(20000));const fs=require('fs');for(let n=0;n<${chunks};n++)fs.writeSync(1,B)"`);
+  const reply = await withClient((c) => c.request("tools/call", { name: "ctx_batch", arguments: { commands, queries: ["needle"] } }));
   const text = reply.content?.[0]?.text ?? "";
   assert.equal(reply.isError, false, text);
   const line = text.split("\n").find((l) => l.includes("Indexed ") && l.includes(" of ") && l.includes(" B."));

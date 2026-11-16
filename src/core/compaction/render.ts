@@ -2,8 +2,8 @@
 // DECISIONS-r9 M8/M10-M13/M25. Pure: same rows -> same bytes; result <= STATE_BUDGET UTF-8 bytes.
 // No line is ever cut: a line over POINTER_MIN becomes a ctx_resume(seq) pointer line.
 import { POINTER_MIN, RATIO_SECTION_DECAY, STATE_BUDGET, STATE_CLOSE_TAG } from "../contracts/constants.ts";
-import type { CandidateSection, JournalRow } from "../contracts/types.ts";
-import { buildCandidates, type SectionCandidate } from "./candidates.ts";
+import type { CandidateSection } from "../contracts/types.ts";
+import { buildCandidates, type SectionCandidate, type StateEvent } from "./candidates.ts";
 import { scoreCandidates } from "./score.ts";
 import { pickUnits, unitLine } from "./recall.ts";
 import type { UnitCandidate } from "../contracts/types.ts";
@@ -13,7 +13,7 @@ import type { UnitCandidate } from "../contracts/types.ts";
  * ("source <short id>: <label> (<bytes> B)"); `units`: ranked line units for the session goal, labelled by
  * short id. Both take only the budget the journal lines leave, whole lines, before the more: line.
  */
-export interface StateExtras { sources: readonly string[]; units: readonly UnitCandidate[] }
+export interface StateExtras { sources: readonly string[]; units: readonly UnitCandidate[]; repeatCounts?: ReadonlyMap<number, number> }
 
 type Scored = SectionCandidate & { score: number };
 
@@ -35,12 +35,12 @@ function moreLine(queries: readonly string[], prefix: string): string {
  * The session is the one of the newest row (highest seq); rows of any other session are ignored
  * (GP6 "no foreign session rows"). Callers pass readSessionEvents rows, so this is one session (D-M4-S1-1).
  */
-export function renderState(rows: readonly JournalRow[], turn: number, extras?: StateExtras, prefix = ""): string {
-  let newest: JournalRow | undefined;
+export function renderState(rows: readonly StateEvent[], turn: number, extras?: StateExtras, prefix = ""): string {
+  let newest: StateEvent | undefined;
   for (const r of rows) if (newest === undefined || r.seq > newest.seq) newest = r;
   const sessionId = newest === undefined ? "" : newest.session_id;
   const upto = newest === undefined || sessionId === "" ? 0 : newest.seq;
-  const set = buildCandidates(rows, sessionId);
+  const set = buildCandidates(rows, sessionId, extras?.repeatCounts);
 
   // step 2 (DECISIONS-r9 M12): reserve the wrapper and an empty more: line before any item.
   const openTag = `<context_mode_state session="${sessionId}" upto="${upto}">`;

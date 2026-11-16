@@ -14,7 +14,7 @@ import {
 } from "../contracts/constants.ts";
 import type { CtxResumeInput, ToolContext, ToolReply } from "../contracts/types.ts";
 import { renderState } from "../compaction/render.ts";
-import { readEventBySeq, readLastPrompt, readSessionEvents } from "../journal/read.ts";
+import { readEventBySeq, readLastPrompt, readResumeEvents } from "../journal/read.ts";
 import { listSessionSources, queryUnits, recallQueryText, sourceHandle } from "../store/fts.ts";
 import { closeDb, openDb } from "../store/db.ts";
 
@@ -48,9 +48,9 @@ async function handler(input: CtxResumeInput, ctx: ToolContext): Promise<ToolRep
       if (row === null || row.session_id !== sessionId) return reply(RESUME_NO_ROW_LINE(input.seq), true);
       return reply(row.body, false);
     }
-    // Steps 5-9 (DECISIONS-r6 D6): the on-demand state block. readSessionEvents gives this session's rows
-    // in seq order, so the last row is upToSeq and its turn is the current turn (D-M4-arch-2).
-    const rows = readSessionEvents(db, sessionId);
+    // The bounded projection preserves the original candidates/counts and includes the snapshot's
+    // newest row, so upToSeq/current turn stay accurate without loading every historical body.
+    const { rows, repeatCounts } = readResumeEvents(db, sessionId);
     const newest = rows.at(-1);
     if (newest === undefined) return reply(RESUME_EMPTY_LINE, false);
     // D-CR3-RESUME-1: stored sources by short id, and the line units the post-compact recall query ranks
@@ -60,7 +60,7 @@ async function handler(input: CtxResumeInput, ctx: ToolContext): Promise<ToolRep
     const last = readLastPrompt(db, sessionId);
     const units = queryUnits(db, sessionId, recallQueryText(last), RECALL_UNIT_CANDIDATES)
       .map((u) => ({ ...u, label: sourceHandle(u.sourceId) }));
-    const block = renderState(rows, newest.turn, { sources, units });
+    const block = renderState(rows, newest.turn, { sources, units, repeatCounts });
     // V21: renderState selects whole lines within STATE_BUDGET (= RESUME_CAP), so this never cuts;
     // a block over the cap is a render bug, surfaced, not hidden.
     if (Buffer.byteLength(block, "utf8") > RESUME_CAP) throw new Error("ctx_resume: state block over RESUME_CAP (render bug).");

@@ -3,7 +3,7 @@
     "content": [
       {
         "type": "text",
-        "text": "exit 1 · 5 B\nboom\n"
+        "text": "exit 1 · 5 B\n[stderr]\nboom\n"
       }
     ],
     "isError": true

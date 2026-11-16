@@ -27,6 +27,7 @@ function datedRow(id, quote) {
 // D-TIC-README-2: the README and docs/tools.md show real tool calls the way the agent terminal shows them.
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const readRoot = (rel) => readFileSync(path.join(ROOT, rel), "utf8");
+
 // The terminal form of an MCP tool call as Claude Code shows it: the call line with its parameters, then the result.
 // A string parameter keeps its JSON form; its \n breaks the line. A line over `cut` chars keeps its start and its end, with "…" between.
 function terminalForm(tool, input, result, { cut = 100, lines = Infinity } = {}) {

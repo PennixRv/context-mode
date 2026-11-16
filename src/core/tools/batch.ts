@@ -5,7 +5,7 @@
 // D-M2-T11-1, D-M2-R4-1 (ingest byte budget, #961).
 import { z } from "zod/v4";
 import {
-  BACKGROUND_HOLD_NOTE, CANCELLED_LINE, ECHO_MAX_BYTES, EXEC_TIMEOUT_MS, INDEX_WRITE_CHUNK, OUTPUT_CAP, RETENTION_SIZE_CAP_BYTES, SEARCH_PAGE_SIZE, SNIPPET_MAX_BYTES,
+  BACKGROUND_HOLD_NOTE, CANCELLED_LINE, ECHO_MAX_BYTES, EXEC_TIMEOUT_MS, INDEX_WRITE_CHUNK, OUTPUT_CAP, PROCESS_OUTPUT_CAP, RETENTION_SIZE_CAP_BYTES, SEARCH_PAGE_SIZE, SNIPPET_MAX_BYTES,
 } from "../contracts/constants.ts";
 import { CtxError, formatError } from "../contracts/errors.ts";
 import type { BatchInput, Chunk, DbHandle, ToolContext, ToolReply } from "../contracts/types.ts";
@@ -14,7 +14,7 @@ import { canonicalKey } from "../journal/append.ts";
 import { capBytes } from "../sandbox/cap.ts";
 import { buildChildEnv } from "../sandbox/env.ts";
 import { findRuntime, noRuntimeError } from "../sandbox/runtimes.ts";
-import { runProcess } from "../sandbox/spawn.ts";
+import { capturedOutput, runProcess } from "../sandbox/spawn.ts";
 import { closeDb, openDb } from "../store/db.ts";
 import { ftsInsert, ftsQuery, nextLabelSerial } from "../store/fts.ts";
 import { unknownField } from "./search.ts";
@@ -78,8 +78,8 @@ function headOf(cmd: string): string {
   return MARKER + cmd + LINE_SEP;
 }
 
-function stoppedAt(cmd: string, error: string, output = ""): CmdOut {
-  return { head: headOf(cmd), block: headOf(cmd) + error + (output === "" ? "" : LINE_SEP + output), exitCode: null, bytes: Buffer.byteLength(output), error };
+function stoppedAt(cmd: string, error: string, output = "", capturedBytes = Buffer.byteLength(output)): CmdOut {
+  return { head: headOf(cmd), block: headOf(cmd) + error + (output === "" ? "" : LINE_SEP + output), exitCode: null, bytes: capturedBytes, error };
 }
 
 async function runCommand(cmd: string, shell: string | null, ctx: ToolContext, deadline: number, boundMs: number): Promise<CmdOut> {
@@ -92,15 +92,15 @@ async function runCommand(cmd: string, shell: string | null, ctx: ToolContext, d
     signal: ctx.signal,
     timeoutMs: left,
   });
-  if (r.killed === "timeout") return stoppedAt(cmd, formatError("TIMEOUT", { ms: boundMs }), r.stdout.toString("utf8") + r.stderr.toString("utf8"));
-  if (r.killed === "cancel") return stoppedAt(cmd, CANCELLED_LINE, r.stdout.toString("utf8") + r.stderr.toString("utf8"));
+  const capturedBytes = r.stdout.length + r.stderr.length;
+  if (r.killed === "timeout") return stoppedAt(cmd, formatError("TIMEOUT", { ms: boundMs }), capturedOutput(r), capturedBytes);
+  if (r.killed === "cancel") return stoppedAt(cmd, CANCELLED_LINE, capturedOutput(r), capturedBytes);
+  if (r.killed === "output_limit") return stoppedAt(cmd, formatError("OUTPUT_LIMIT", { bytes: PROCESS_OUTPUT_CAP }), capturedOutput(r), capturedBytes);
   if (r.exitCode === null && r.stdout.length === 0 && r.stderr.length === 0) {
     return stoppedAt(cmd, formatError("SPAWN_FAILED", { detail: shell }));
   }
-  // impl/04 §2.3 step 12: stderr only on a non-zero exit.
-  const withErr = r.exitCode !== 0;
-  const out = r.stdout.toString("utf8") + (withErr ? r.stderr.toString("utf8") : "") + (r.held === true ? LINE_SEP + BACKGROUND_HOLD_NOTE : "");
-  return { head: headOf(cmd), block: headOf(cmd) + out, exitCode: r.exitCode, bytes: r.stdout.length + (withErr ? r.stderr.length : 0), error: null };
+  const out = capturedOutput(r) + (r.held === true ? LINE_SEP + BACKGROUND_HOLD_NOTE : "");
+  return { head: headOf(cmd), block: headOf(cmd) + out, exitCode: r.exitCode, bytes: capturedBytes, error: null };
 }
 
 // ---- step 5: index, in INDEX_WRITE_CHUNK groups with the deadline checked before each group ----
