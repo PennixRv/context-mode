@@ -2,7 +2,7 @@
 // scripts/v1-upgrade-stop.mjs — package.json `build` of the dev tree (#1363, ADR-0011, DEVIATIONS D-V1-UPGRADE-STOP-1).
 // A 1.0.x `context-mode upgrade` (and 1.0.x ctx_upgrade) clones `main`, runs `npm install` and then this `build` script there,
 // and only then copies files over the install. This script is that build step: it writes nothing and exits 1, so the
-// 1.0.x upgrade takes its own "NOT updated" path and the install stays whole. It names the native install command.
+// 1.0.x upgrade takes its own "NOT updated" path and the install stays whole. It names the Lifecycle owner route.
 // Contributors build with `npm run build:release` (node build/build.mjs --out release-out). Not in the release tree.
 const lines = [
   "Pennix Lifecycle owns this Context Mode fork's installation and updates.",

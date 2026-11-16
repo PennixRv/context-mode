@@ -123,12 +123,12 @@ const EXIT_CODES = `Exit codes:
 export const HELP_MAIN = `Usage: context-mode <command> [options]
 
 Commands:
-  setup                       Find your agents, show the plan, apply it, verify each agent
+  setup                       List agents or print manual configuration; changes require Pennix Lifecycle
   doctor                      Check every agent; changes nothing
-  upgrade                     Install the newest context-mode from npm, then repair each agent
+  upgrade                     Legacy entry; updates require Pennix Lifecycle
   server [--agent <id>]       Run the MCP server on stdio (alias: mcp)
   hook --agent <id>           Run one hook call: JSON on stdin, answer on stdout
-  hook <platform> <event>     Old form of hook; still works, run context-mode setup to update it
+  hook <platform> <event>     Old form of hook; still works, use Pennix Lifecycle to refresh it
 
 Options:
   -h, --help                  Show this help (context-mode <command> --help for a command)
@@ -136,13 +136,13 @@ Options:
 
 ${EXIT_CODES}
 Examples:
-  context-mode setup
+  context-mode setup --list
   context-mode doctor --agents codex
   context-mode server --agent codex
 `;
 
 const COMMON_HELP = `  --agents <ids>     Only these agents, comma-separated (ids: context-mode setup --list)
-  -y, --yes          Do not ask; apply
+  -y, --yes          Compatibility flag; does not authorize installation changes
   --no-input         Never prompt; exit 2 if an answer is needed
   --json             Write only JSON to stdout
   -q, --quiet        Results only; no progress lines
@@ -155,27 +155,25 @@ const COMMON_HELP = `  --agents <ids>     Only these agents, comma-separated (id
 export const HELP: Readonly<Record<Command, string>> = {
   setup: `Usage: context-mode setup [options]
 
-Find your agents, show the plan, apply it, then verify each agent (MCP handshake, one hook call).
-A failed agent is rolled back byte for byte. Instruction files (CLAUDE.md, AGENTS.md, ...) are never touched.
+List supported agents or print manual configuration without changing files.
+Pennix Lifecycle owns installation, updates, repair and removal. Other setup forms exit 2 without changes.
 
 Options:
   --list             Print every supported agent and its support level; change nothing
-  --dry-run          Show the plan; change nothing
-  --remove           Undo every setup run: put each touched file back
-  --repair           Apply again and verify (upgrade runs this)
+  --dry-run          Legacy flag; this setup form requires Pennix Lifecycle
+  --remove           Legacy flag; removal requires Pennix Lifecycle
+  --repair           Legacy flag; repair requires Pennix Lifecycle
   --print <id>       Print the manual step for one agent, paths filled in; change nothing
 ${COMMON_HELP}
 ${EXIT_CODES}
 Examples:
-  context-mode setup
-  context-mode setup --yes --agents codex,claude-code
-  context-mode setup --dry-run --json
+  context-mode setup --list
   context-mode setup --print codex
 `,
   doctor: `Usage: context-mode doctor [options]
 
 Check each agent: config entry, old context-mode entries, MCP handshake, one hook call. Changes nothing.
-On a TTY, a failed agent gets one question: fix now (runs context-mode setup for that agent).
+Never offers or runs repair. Installation fixes require Pennix Lifecycle (pennix-component-lifecycle).
 
 Options:
 ${COMMON_HELP}
@@ -187,16 +185,16 @@ Examples:
 `,
   upgrade: `Usage: context-mode upgrade [options]
 
-Run npm i -g context-mode@<tag>, then the new version runs context-mode setup --repair.
+Pennix Lifecycle owns updates. This legacy entry exits 2 without installing or changing files.
+Use pennix-component-lifecycle to review and perform updates through the native owner.
 
 Options:
-  --tag <tag>        npm dist-tag or version to install (default: the dist-tag of this version)
-  --dry-run          Print the commands; run nothing
+  --tag <tag>        Compatibility flag; does not select or install a release
+  --dry-run          Compatibility flag; still reports that the native owner is required
 ${COMMON_HELP}
 ${EXIT_CODES}
 Examples:
-  context-mode upgrade
-  context-mode upgrade --tag next --yes
-  context-mode upgrade --dry-run
+  pennix updates --json
+  pennix update context-mode
 `,
 };

@@ -1,12 +1,13 @@
 Usage: context-mode upgrade [options]
 
-Run npm i -g context-mode@<tag>, then the new version runs context-mode setup --repair.
+Pennix Lifecycle owns updates. This legacy entry exits 2 without installing or changing files.
+Use pennix-component-lifecycle to review and perform updates through the native owner.
 
 Options:
-  --tag <tag>        npm dist-tag or version to install (default: the dist-tag of this version)
-  --dry-run          Print the commands; run nothing
+  --tag <tag>        Compatibility flag; does not select or install a release
+  --dry-run          Compatibility flag; still reports that the native owner is required
   --agents <ids>     Only these agents, comma-separated (ids: context-mode setup --list)
-  -y, --yes          Do not ask; apply
+  -y, --yes          Compatibility flag; does not authorize installation changes
   --no-input         Never prompt; exit 2 if an answer is needed
   --json             Write only JSON to stdout
   -q, --quiet        Results only; no progress lines
@@ -22,6 +23,5 @@ Exit codes:
   130  stopped with Ctrl-C (the agent in progress is rolled back)
 
 Examples:
-  context-mode upgrade
-  context-mode upgrade --tag next --yes
-  context-mode upgrade --dry-run
+  pennix updates --json
+  pennix update context-mode

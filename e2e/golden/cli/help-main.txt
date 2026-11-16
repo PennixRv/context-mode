@@ -1,12 +1,12 @@
 Usage: context-mode <command> [options]
 
 Commands:
-  setup                       Find your agents, show the plan, apply it, verify each agent
+  setup                       List agents or print manual configuration; changes require Pennix Lifecycle
   doctor                      Check every agent; changes nothing
-  upgrade                     Install the newest context-mode from npm, then repair each agent
+  upgrade                     Legacy entry; updates require Pennix Lifecycle
   server [--agent <id>]       Run the MCP server on stdio (alias: mcp)
   hook --agent <id>           Run one hook call: JSON on stdin, answer on stdout
-  hook <platform> <event>     Old form of hook; still works, run context-mode setup to update it
+  hook <platform> <event>     Old form of hook; still works, use Pennix Lifecycle to refresh it
 
 Options:
   -h, --help                  Show this help (context-mode <command> --help for a command)
@@ -19,6 +19,6 @@ Exit codes:
   130  stopped with Ctrl-C (the agent in progress is rolled back)
 
 Examples:
-  context-mode setup
+  context-mode setup --list
   context-mode doctor --agents codex
   context-mode server --agent codex

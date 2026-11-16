@@ -157,6 +157,8 @@ describe("ADR-0019 cli", () => {
         const r = run(s, args);
         assert.equal(r.status, 0, r.stderr);
         assert.equal(r.stderr, "");
+        assert.match(r.stdout, /Pennix Lifecycle/);
+        assert.doesNotMatch(r.stdout, /npm (?:i|install)|fix now|then repair each agent/);
         assert.equal(r.stdout, readFileSync(path.join(GOLDEN, `help-${name}.txt`), "utf8"));
         assert.match(r.stdout, /Examples:/);
         assert.match(r.stdout, /Exit codes:[\s\S]*0[\s\S]*1[\s\S]*2[\s\S]*130/);

@@ -479,7 +479,7 @@ describe("GP11 doctor and upgrade", () => {
 // #1363 (ADR-0011, DEVIATIONS D-V1-UPGRADE-STOP-1): the published 1.0.169 `context-mode upgrade` clones `main`, sees a
 // newer package.json version, installs and runs the `build` script in the clone, then copies package.json and src/ over
 // the install. With the v2 version on main this left a hybrid tree (package.json 2.x, bin still cli.bundle.mjs 1.0.x).
-// The clone's build script must stop the v1 upgrade before any write; the native `npm i -g` then installs 2.x cleanly.
+// The clone's build script must stop v1 before any write and route this fork to Lifecycle.
 // Black box: the real 1.0.169 package from the npm registry, git clone redirected to this checkout's committed HEAD
 // (GIT_CONFIG_GLOBAL url.insteadOf), a fake pgrep so v1 never stops a real MCP server, temp prefix, HOME and TMPDIR.
 // Network (npm registry), POSIX only (v1 finds siblings with pgrep there), so it is tagged M7 and not in the M6 CI gate.
@@ -487,7 +487,7 @@ describe("GP11 v1 upgrade against main", () => {
   const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
   const V1 = "1.0.169";
 
-  test("[M7] GP11/v1-upgrade-against-main-writes-nothing: 1.0.169 upgrade keeps the tree, npm i -g gives 2.x (#1363)", { skip: process.platform === "win32", timeout: 600_000 }, (t) => {
+  test("[M7] GP11/v1-upgrade-against-main-writes-nothing: 1.0.169 keeps the tree and routes to Lifecycle (#1363)", { skip: process.platform === "win32", timeout: 600_000 }, (t) => {
     const tmp = realpathSync(mkdtempSync(path.join(tmpdir(), "cm-gp11-v1up-")));
     t.after(() => rmSync(tmp, { recursive: true, force: true }));
     const [prefix, home, proj, fakeBin, tmpd, pack] = ["g", "home", "proj", "fakebin", "tmp", "pack"].map((d) => path.join(tmp, d));
@@ -514,10 +514,11 @@ describe("GP11 v1 upgrade against main", () => {
     assert.equal(after.version, V1, "v1 upgrade must leave package.json at " + V1 + "\n" + out);
     assert.ok(!existsSync(path.join(pkgDir, "src")), "v1 upgrade copied src/ over the install\n" + out);
     assert.deepEqual(readdirSync(pkgDir).sort(), before, out);
-    assert.ok(out.includes("npm i -g context-mode"), "the stop line names the native npm command\n" + out);
+    assert.match(out, /Pennix Lifecycle/);
+    assert.match(out, /pennix-component-lifecycle/);
+    assert.doesNotMatch(out, /npm i -g context-mode/);
 
-    // The native command repairs it: a release tree at the repo version (release-out may be a 0.0.0-dev build), packed
-    // and installed over the same prefix, the way `npm i -g context-mode` lands it.
+    // Exercise the native npm payload carrier in this isolated prefix; production changes remain Lifecycle-owned.
     const want = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
     assert.ok(want.startsWith("2."), want);
     const rel = path.join(tmp, "release-out");
