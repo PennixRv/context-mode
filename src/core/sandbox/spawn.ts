@@ -85,7 +85,7 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     const kill = (): void => {
       if (child.pid !== undefined) killTree(child.pid);
       // The direct child may already be gone while a survivor holds the pipes: bound the wait.
-      if (stopTimer === undefined) stopTimer = setTimeout(() => setImmediate(finishHeld), KILL_GRACE_MS);
+      if (stopTimer === undefined) stopTimer = setTimeout(() => finishHeld(true), KILL_GRACE_MS);
     };
     const onAbort = (): void => {
       if (killedBy !== null || settled) return;
@@ -118,28 +118,28 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     };
     // D-1337-EXIT-SETTLE-1 (#1337): the pipes did not end in time. What arrived is kept whole, the pipes are
     // destroyed, and the process group is killed so a survivor cannot hold them (POSIX: the group outlives its leader).
-    const finishHeld = (): void => {
+    // D-R59-D5-DRAIN-1: a timer that fires after a loop stall has not seen the pipes yet (timers run before poll), so the
+    // cut waits one poll phase (setImmediate): the bytes the pipes already hold are read first. A chunk read in that poll
+    // restarted the grace (bump), so the idle cut stands down; the drain cap and the kill cut (force) still go on.
+    const finishHeld = (force = false): void => {
       if (settled) return;
-      if (exited && child.stdout.readableEnded && child.stderr.readableEnded) {
+      const seen = chunkCount;
+      setImmediate(() => {
+        if (settled || (!force && chunkCount !== seen)) return;
+        held = exited && killedBy === null && !(child.stdout.readableEnded && child.stderr.readableEnded);
+        child.stdout.destroy();
+        child.stderr.destroy();
+        if (child.pid !== undefined) killTree(child.pid);
         settle(child.exitCode);
-        return;
-      }
-      held = exited && killedBy === null;
-      child.stdout.destroy();
-      child.stderr.destroy();
-      if (child.pid !== undefined) killTree(child.pid);
-      settle(child.exitCode);
+      });
     };
     // A data chunk restarts the idle grace, so a large output that is still flowing is not cut.
-    let outputGeneration = 0;
+    let chunkCount = 0;
     const bump = (): void => {
+      chunkCount++;
       if (!exited || settled) return;
       clearTimeout(graceTimer);
-      const generation = ++outputGeneration;
-      // Timers can run before queued pipe I/O on a busy host; give that I/O one poll before deciding EOF is held.
-      graceTimer = setTimeout(() => setImmediate(() => {
-        if (generation === outputGeneration) finishHeld();
-      }), PIPE_EOF_GRACE_MS);
+      graceTimer = setTimeout(finishHeld, PIPE_EOF_GRACE_MS);
     };
 
     const capture = (chunks: Buffer[], chunk: Buffer): void => {
@@ -164,8 +164,8 @@ export function runProcess(argv: string[], o: RunOptions): Promise<RunResult> {
     child.on("exit", () => {
       if (settled) return;
       exited = true;
-      bump();
-      drainTimer = setTimeout(() => setImmediate(finishHeld), PIPE_DRAIN_MAX_MS);
+      graceTimer = setTimeout(finishHeld, PIPE_EOF_GRACE_MS);
+      drainTimer = setTimeout(() => finishHeld(true), PIPE_DRAIN_MAX_MS);
     });
     // Step 7: spawn-level failure (ENOENT argv[0], missing cwd) resolves, never rejects.
     child.on("error", () => settle(null));

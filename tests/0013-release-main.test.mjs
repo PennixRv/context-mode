@@ -977,7 +977,7 @@ describe("ADR-0013: dev tree version", { concurrency: CONC }, () => {
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const SCRIPT = path.join(REPO, "scripts", "release", "dev-version.mjs");
   const GIT_ID = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=v2-design"];
-  const SOURCES = ["package.json", "package-lock.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".codex-plugin/plugin.json"];
+  const SOURCES = ["package.json", "package-lock.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".codex-plugin/plugin.json", "gemini-extension.json", "qwen-extension.json"];
 
   const git = (dir, ...args) => {
     const r = spawnSync("git", [...GIT_ID, ...args], { cwd: dir, encoding: "utf8" });
@@ -996,6 +996,8 @@ describe("ADR-0013: dev tree version", { concurrency: CONC }, () => {
     put(dir, ".claude-plugin/plugin.json", { name: "context-mode", version: v });
     put(dir, ".claude-plugin/marketplace.json", { name: "m", metadata: { version: v }, plugins: [{ name: "context-mode", version: v }] });
     put(dir, ".codex-plugin/plugin.json", { name: "context-mode", version: v });
+    put(dir, "gemini-extension.json", { name: "context-mode", version: v });
+    put(dir, "qwen-extension.json", { name: "context-mode", version: v });
   };
   // A work repo (branch v2-design) with a local bare origin. Commit A holds tree version `v`, tagged each of `tags` (annotated, pushed).
   function seed(t, v, tags) {
@@ -1064,7 +1066,7 @@ describe("ADR-0013: dev tree version", { concurrency: CONC }, () => {
     assert.equal(lock.version, "2.0.0-next.20");
     assert.equal(lock.packages[""].version, "2.0.0-next.20");
     assert.equal(lock.packages["node_modules/x"].version, "1.5.1", "a dependency version is not touched");
-    for (const f of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]) assert.equal(get(dir, f).version, "2.0.0-next.20", f);
+    for (const f of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "gemini-extension.json", "qwen-extension.json"]) assert.equal(get(dir, f).version, "2.0.0-next.20", f);
     const market = get(dir, ".claude-plugin/marketplace.json");
     assert.equal(market.metadata.version, "2.0.0-next.20");
     assert.equal(market.plugins[0].version, "2.0.0-next.20");

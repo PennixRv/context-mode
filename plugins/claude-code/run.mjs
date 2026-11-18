@@ -168,6 +168,10 @@ var DB_TIMEOUT_MS = 5e3;
 var DB_WAL_SUFFIX = "-wal";
 var DB_SHM_SUFFIX = "-shm";
 var DB_TMP_SUFFIX = ".tmp";
+var DB_LINK_DENIED_CODES = ["EACCES", "EPERM", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"];
+var DB_PUBLISH_CLAIM_SUFFIX = ".publish";
+var DB_CLAIM_BUSY_CODES = ["EEXIST", "EPERM"];
+var DB_PUBLISH_POLL_MS = 5;
 var SQLITE_PRIMARY_CODE_MASK = 255;
 var SQLITE_CORRUPT_CODE = 11;
 var SQLITE_NOTADB_CODE = 26;
@@ -293,6 +297,7 @@ var READ_MEDIA_BY_AGENT = Object.freeze({
   qwen: READ_IMAGES_AND_PDF,
   opencode: READ_IMAGES_AND_PDF,
   pi: READ_IMAGES,
+  omp: READ_IMAGES,
   vscode: READ_IMAGES,
   zcode: READ_IMAGES,
   "copilot-cli": [],
@@ -362,7 +367,9 @@ var AGENT_HOME_DIR = Object.freeze({
   kiro: [".kiro"],
   zcode: [".zcode"],
   pi: [".pi"],
-  opencode: [".config", "opencode"]
+  opencode: [".config", "opencode"],
+  omp: [".omp"]
+  // ADR-0026: OMP data and plugins live under ~/.omp
 });
 var UPGRADE_MODES = Object.freeze(["upgrade", "uninstall"]);
 var GIT_CLONE_ARGS = Object.freeze(["clone", "--depth", "1", "--branch"]);
@@ -406,16 +413,6 @@ var UNSUPPORTED_HOSTS = Object.freeze([
     configDirs: [".cursor"],
     binaries: [],
     source: "v1.0.169:src/adapters/client-map.ts:18; detect.ts:163-165,584"
-  }),
-  unsupported({
-    id: "omp",
-    name: "OMP (oh-my-pi)",
-    clientNames: ["omp-coding-agent"],
-    envVars: [],
-    pluginPaths: [],
-    configDirs: [".omp"],
-    binaries: ["omp"],
-    source: "v1.0.169:src/adapters/client-map.ts:37; detect.ts:543 (PI_CODING_AGENT_DIR is not a signal: supported Pi reads it too)"
   }),
   unsupported({
     id: "openclaw",
@@ -478,7 +475,9 @@ var HOOK_HOST_FILE = Object.freeze({
   kiro: { root: "home", file: [".kiro", "hooks", "context-mode.json"], key: ["hooks"], shape: "kiro", timeoutKey: "timeout", matcher: false },
   zcode: { root: "home", file: [".zcode", "cli", "config.json"], key: ["hooks", "events"], shape: "zcode", timeoutKey: "timeoutMs", matcher: true },
   pi: null,
-  opencode: null
+  opencode: null,
+  omp: null
+  // ADR-0026: in-process, no hook file
 });
 var TOOL_HOOK_EVENTS = Object.freeze(["PreToolUse", "PostToolUse"]);
 var KIRO_TOOL_MATCHERS = Object.freeze([["@mcp", "mcp"], ["shell", "shell"]]);
@@ -490,6 +489,8 @@ var UPGRADE_HOST_COMMAND = Object.freeze({
   gemini: "gemini extensions update context-mode",
   qwen: "qwen extensions update context-mode",
   pi: "pi update --extensions",
+  omp: "omp plugin upgrade context-mode",
+  // ADR-0026 decision 4: OMP native update
   opencode: "opencode plugin update",
   "copilot-cli": "npm i -g context-mode && context-mode setup --agents copilot-cli",
   vscode: "npm i -g context-mode && context-mode setup --agents vscode",
@@ -655,6 +656,8 @@ var NATIVE_INSTALL = Object.freeze({
   qwen: ["qwen extensions install https://github.com/mksglu/context-mode:context-mode"],
   opencode: ["opencode plugin add context-mode"],
   pi: ["pi install npm:context-mode"],
+  omp: ["omp plugin install context-mode"],
+  // ADR-0026 decision 4: OMP native install
   "copilot-cli": ["npm i -g context-mode", "context-mode setup --agents copilot-cli"],
   vscode: ["npm i -g context-mode", "context-mode setup --agents vscode"],
   kiro: ["npm i -g context-mode", "context-mode setup --agents kiro"],
@@ -1386,6 +1389,9 @@ function readResult6(p) {
   if (p.keep === true) info.keep = true;
   return info;
 }
+function decodeOmp(raw) {
+  return { ...decode9(raw), agent: "omp" };
+}
 function decode9(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("pi: hook payload is not an object");
   const p = raw;
@@ -1687,14 +1693,36 @@ var ADAPTERS = Object.freeze([
     decode: decode10,
     encode: encode10,
     toCanonicalTool
+  },
+  {
+    // ADR-0026 (D-OMP-ROW-1): OMP runs the Pi extension API in-process, so the row reuses the Pi decode, encode and
+    // permission check; tool names stay bare. Only the entry path and the skills folder are its own.
+    id: "omp",
+    installMode: "in-process",
+    projectSource: "pi:ctx.cwd",
+    toolNamePrefix: TOOL_NAME_PREFIX9,
+    nativeTools: { shell: ["bash", "powershell"], read: ["read"] },
+    execReadOnlyHint: false,
+    eventMap: { SessionStart: "session_start", UserPromptSubmit: "input", PreToolUse: "tool_call", PostToolUse: "tool_result" },
+    compactDelivery: "pi-flag",
+    compactSummary: "none",
+    hookTimeoutMs: IN_PROCESS_TIMEOUT_MS,
+    denyChannel: "deny-reason",
+    hookChannel: { kind: "in-process", path: "omp/index.js" },
+    skillChannel: { kind: "package", path: "skills" },
+    // D-OMP-SKILLS-1
+    decode: decodeOmp,
+    encode: encode9,
+    checkPermission
+    // D-OMP-FIRE-1: agent omp in rows
   }
 ]);
 var BY_ID = new Map(ADAPTERS.map((r) => [r.id, r]));
-var REPLACE_ROWS = /* @__PURE__ */ new Set(["claude-code", "gemini", "copilot-cli", "pi", "opencode"]);
+var REPLACE_ROWS = /* @__PURE__ */ new Set(["claude-code", "gemini", "copilot-cli", "pi", "opencode", "omp"]);
 function hasReplace(row) {
   return REPLACE_ROWS.has(row.id);
 }
-var DUMP_REPLACE_ROWS = /* @__PURE__ */ new Set(["claude-code", "copilot-cli", "pi"]);
+var DUMP_REPLACE_ROWS = /* @__PURE__ */ new Set(["claude-code", "copilot-cli", "pi", "omp"]);
 function dumpRunsThenReplaces(row) {
   return DUMP_REPLACE_ROWS.has(row.id) && hasReplace(row);
 }
@@ -1913,7 +1941,7 @@ function openReadOnlyHandle(sqlite, path3, opts = {}) {
 }
 
 // src/core/store/db.ts
-var { existsSync, linkSync, mkdirSync, rmSync } = process.getBuiltinModule("node:fs");
+var { existsSync, linkSync, mkdirSync, renameSync, rmSync, statSync } = process.getBuiltinModule("node:fs");
 function versionParts(v) {
   const bare = v.startsWith("v") ? v.slice(1) : v;
   return bare.split(".").map((p) => Number.parseInt(p, 10));
@@ -1945,6 +1973,34 @@ function readUserVersion(raw) {
   const row = raw.prepare("PRAGMA user_version").get();
   return row.user_version;
 }
+function errCode(err) {
+  return err.code ?? "";
+}
+function publishWithoutLink(tmp, path3) {
+  const claim = path3 + DB_PUBLISH_CLAIM_SUFFIX;
+  const start = Date.now();
+  for (; ; ) {
+    if (existsSync(path3)) return;
+    try {
+      mkdirSync(claim);
+    } catch (err) {
+      if (!DB_CLAIM_BUSY_CODES.includes(errCode(err))) throw err;
+      if (Date.now() - start < DB_TIMEOUT_MS) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, DB_PUBLISH_POLL_MS);
+        continue;
+      }
+      const held = statSync(claim, { throwIfNoEntry: false });
+      if (held !== void 0 && held.mtimeMs < start) rmSync(claim, { recursive: true, force: true });
+      throw new Error(`context.db was not published within ${DB_TIMEOUT_MS} ms: ${claim} was held; open again`);
+    }
+    try {
+      if (!existsSync(path3)) renameSync(tmp, path3);
+    } finally {
+      rmSync(claim, { recursive: true, force: true });
+    }
+    return;
+  }
+}
 function createAtomically(sqlite, path3) {
   const { randomUUID: randomUUID2 } = process.getBuiltinModule("node:crypto");
   const tmp = path3 + "." + randomUUID2() + DB_TMP_SUFFIX;
@@ -1958,7 +2014,9 @@ function createAtomically(sqlite, path3) {
     try {
       linkSync(tmp, path3);
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      const code = errCode(err);
+      if (DB_LINK_DENIED_CODES.includes(code)) publishWithoutLink(tmp, path3);
+      else if (code !== "EEXIST") throw err;
     }
   } finally {
     for (const suffix of ["", DB_WAL_SUFFIX, DB_SHM_SUFFIX]) rmSync(tmp + suffix, { force: true });
@@ -5191,8 +5249,12 @@ var CC_READ_ONLY_DENY = Object.freeze(["Agent", "Artifact", "ArtifactComments", 
 var CLAUDE_CODE_BUILT_INS = Object.freeze({
   "general-purpose": { tools: null, disallowed: [] },
   fork: { tools: null, disallowed: [] },
+  claude: { tools: null, disallowed: [] },
   Explore: { tools: null, disallowed: [...CC_READ_ONLY_DENY] },
-  Plan: { tools: null, disallowed: [...CC_READ_ONLY_DENY] }
+  Plan: { tools: null, disallowed: [...CC_READ_ONLY_DENY] },
+  "claude-code-guide": { tools: ["Glob", "Grep", "Read", "WebFetch", "WebSearch"], disallowed: [] },
+  "statusline-setup": { tools: ["Read", "Edit"], disallowed: [] },
+  "web-fetch": { tools: ["WebFetch"], disallowed: [] }
 });
 function isSubagentCall(ev) {
   return ev.agentId !== void 0 && ev.agentId !== "";
@@ -5201,13 +5263,15 @@ function isSubagentCall(ev) {
 // src/core/policy/unwrap.ts
 var NONE = "";
 var WRAPPERS = Object.freeze({
-  sudo: { valueShorts: "ugpChDrtUTR", valueLongs: ["--user", "--group", "--prompt", "--chdir", "--host"], assignments: true, duration: false, refuseShorts: NONE },
-  env: { valueShorts: "uCS", valueLongs: ["--unset", "--chdir", "--split-string"], assignments: true, duration: false, refuseShorts: NONE },
-  time: { valueShorts: "fo", valueLongs: ["--format", "--output"], assignments: false, duration: false, refuseShorts: NONE },
-  nice: { valueShorts: "n", valueLongs: ["--adjustment"], assignments: false, duration: false, refuseShorts: NONE },
-  timeout: { valueShorts: "sk", valueLongs: ["--signal", "--kill-after"], assignments: false, duration: true, refuseShorts: NONE },
-  command: { valueShorts: NONE, valueLongs: [], assignments: false, duration: false, refuseShorts: "vV" },
-  xargs: { valueShorts: "aEdILnPs", valueLongs: ["--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars"], assignments: false, duration: false, refuseShorts: NONE }
+  sudo: { valueShorts: "ugpChDrtUTR", valueLongs: ["--user", "--group", "--prompt", "--chdir", "--host"], assignments: true, duration: false, refuseShorts: NONE, subcommands: [] },
+  env: { valueShorts: "uCS", valueLongs: ["--unset", "--chdir", "--split-string"], assignments: true, duration: false, refuseShorts: NONE, subcommands: [] },
+  time: { valueShorts: "fo", valueLongs: ["--format", "--output"], assignments: false, duration: false, refuseShorts: NONE, subcommands: [] },
+  nice: { valueShorts: "n", valueLongs: ["--adjustment"], assignments: false, duration: false, refuseShorts: NONE, subcommands: [] },
+  timeout: { valueShorts: "sk", valueLongs: ["--signal", "--kill-after"], assignments: false, duration: true, refuseShorts: NONE, subcommands: [] },
+  command: { valueShorts: NONE, valueLongs: [], assignments: false, duration: false, refuseShorts: "vV", subcommands: [] },
+  xargs: { valueShorts: "aEdILnPs", valueLongs: ["--arg-file", "--delimiter", "--max-args", "--max-procs", "--max-chars"], assignments: false, duration: false, refuseShorts: NONE, subcommands: [] },
+  // #1388: rtk (rtk-ai/rtk) runs the inner command as-is under `proxy` / `bypass`; its other subcommands are rtk's own.
+  rtk: { valueShorts: NONE, valueLongs: [], assignments: false, duration: false, refuseShorts: NONE, subcommands: ["proxy", "bypass"] }
 });
 var SHELLS = ["bash", "sh", "zsh"];
 var SCRIPT_FLAG = "c";
@@ -5230,6 +5294,10 @@ function isDuration(s) {
 }
 function peel(w, args) {
   let k = 0;
+  if (w.subcommands.length > 0) {
+    if (args.length === 0 || !w.subcommands.includes(args[0])) return null;
+    k = 1;
+  }
   while (k < args.length) {
     const a = args[k];
     if (a === LONG_OPT2) {
@@ -5600,7 +5668,7 @@ function isMediaRead(agent, abs) {
 }
 
 // src/core/policy/decide.ts
-var { statSync } = process.getBuiltinModule("node:fs");
+var { statSync: statSync2 } = process.getBuiltinModule("node:fs");
 var BASH = "Bash";
 var READ = "Read";
 var WEBFETCH = "WebFetch";
@@ -5791,7 +5859,7 @@ function inlineHttp(raw) {
 var CD_COMMAND = "cd";
 function fileSize(abs) {
   try {
-    const st = statSync(abs);
+    const st = statSync2(abs);
     return st.isFile() ? st.size : -1;
   } catch {
     return -1;
@@ -6025,7 +6093,7 @@ function sha256Hex(text) {
 }
 
 // src/core/project/resolve.ts
-var { existsSync: existsSync3, readFileSync: readFileSync4, realpathSync: realpathSync3, statSync: statSync2 } = process.getBuiltinModule("node:fs");
+var { existsSync: existsSync3, readFileSync: readFileSync4, realpathSync: realpathSync3, statSync: statSync3 } = process.getBuiltinModule("node:fs");
 function sourceOf(agent) {
   switch (agent) {
     case "claude-code":
@@ -6042,6 +6110,7 @@ function sourceOf(agent) {
     case "opencode":
       return "spawn-cwd";
     case "pi":
+    case "omp":
       return "pi:ctx.cwd";
   }
 }
@@ -6085,7 +6154,7 @@ function gitDirs(dir) {
 function gitDirAt(dotGit) {
   let gitDir;
   try {
-    if (statSync2(dotGit).isDirectory()) {
+    if (statSync3(dotGit).isDirectory()) {
       gitDir = dotGit;
     } else {
       const line = firstLine(dotGit);
@@ -6191,7 +6260,7 @@ function buildChildEnv(parent, extra) {
 }
 
 // src/core/sandbox/runtimes.ts
-import { accessSync, constants as fsConstants, statSync as statSync3 } from "node:fs";
+import { accessSync, constants as fsConstants, statSync as statSync4 } from "node:fs";
 import path from "node:path";
 
 // src/core/sandbox/path-entries.ts
@@ -6233,22 +6302,34 @@ function fileNames(name, pathExt) {
   if (!isWin() || path.extname(name) !== "") return [name];
   return [...pathExt.map((ext) => name + ext), name];
 }
-function isRunnable(full) {
-  const st = statSync3(full, { throwIfNoEntry: false });
-  if (st === void 0 || !st.isFile()) return false;
+function probe(full) {
+  let st;
+  try {
+    st = statSync4(full, { throwIfNoEntry: false });
+  } catch {
+    return "unreadable";
+  }
+  if (st === void 0 || !st.isFile()) return "absent";
   if (isWin()) {
     const ext = path.extname(full).toLowerCase();
-    return ext === "" || WIN_STARTABLE_EXT.includes(ext);
+    return ext === "" || WIN_STARTABLE_EXT.includes(ext) ? "runnable" : "absent";
   }
   try {
     accessSync(full, fsConstants.X_OK);
-    return true;
+    return "runnable";
   } catch {
-    return false;
+    return "absent";
   }
 }
+function isRunnable(full) {
+  return probe(full) === "runnable";
+}
 function findRuntime(lang, env = process.env) {
-  if (isWin() && WIN_SHELL_LANGS.includes(lang)) return findGitBash(env);
+  return lookupRuntime(lang, env).found;
+}
+function lookupRuntime(lang, env = process.env) {
+  const unreadable = [];
+  if (isWin() && WIN_SHELL_LANGS.includes(lang)) return { found: findGitBash(env), unreadable };
   const dirs = pathEntries(envValue(env, "PATH") ?? "", process.platform, path.delimiter);
   const pathExt = isWin() ? (envValue(env, "PATHEXT") ?? PATHEXT_DEFAULT).split(PATHEXT_SEPARATOR).filter((e) => e !== "") : [];
   const names = candidates(lang);
@@ -6257,13 +6338,15 @@ function findRuntime(lang, env = process.env) {
     for (const name of names) {
       for (const file of fileNames(name, pathExt)) {
         const full = path.join(dir, file);
-        if (!isRunnable(full)) continue;
-        if (!isWin() || path.extname(full) !== "") return full;
+        const state = probe(full);
+        if (state === "unreadable") unreadable.push(full);
+        if (state !== "runnable") continue;
+        if (!isWin() || path.extname(full) !== "") return { found: full, unreadable };
         if (shim === null) shim = full;
       }
     }
   }
-  return shim;
+  return { found: shim, unreadable };
 }
 function findGitBash(env) {
   const git2 = findRuntime(GIT_BIN, env);
@@ -6343,7 +6426,7 @@ function runProcess(argv, o) {
     let stopTimer;
     const kill = () => {
       if (child.pid !== void 0) killTree(child.pid);
-      if (stopTimer === void 0) stopTimer = setTimeout(() => finishHeld(), KILL_GRACE_MS);
+      if (stopTimer === void 0) stopTimer = setTimeout(() => finishHeld(true), KILL_GRACE_MS);
     };
     const onAbort = () => {
       if (killedBy !== null || settled) return;
@@ -6372,15 +6455,21 @@ function runProcess(argv, o) {
         ...held ? { held: true } : {}
       });
     };
-    const finishHeld = () => {
+    const finishHeld = (force = false) => {
       if (settled) return;
-      held = exited && killedBy === null;
-      child.stdout.destroy();
-      child.stderr.destroy();
-      if (child.pid !== void 0) killTree(child.pid);
-      settle(child.exitCode);
+      const seen = chunkCount;
+      setImmediate(() => {
+        if (settled || !force && chunkCount !== seen) return;
+        held = exited && killedBy === null && !(child.stdout.readableEnded && child.stderr.readableEnded);
+        child.stdout.destroy();
+        child.stderr.destroy();
+        if (child.pid !== void 0) killTree(child.pid);
+        settle(child.exitCode);
+      });
     };
+    let chunkCount = 0;
     const bump = () => {
+      chunkCount++;
       if (!exited || settled) return;
       clearTimeout(graceTimer);
       graceTimer = setTimeout(finishHeld, PIPE_EOF_GRACE_MS);
@@ -6398,7 +6487,7 @@ function runProcess(argv, o) {
       if (settled) return;
       exited = true;
       graceTimer = setTimeout(finishHeld, PIPE_EOF_GRACE_MS);
-      drainTimer = setTimeout(finishHeld, PIPE_DRAIN_MAX_MS);
+      drainTimer = setTimeout(() => finishHeld(true), PIPE_DRAIN_MAX_MS);
     });
     child.on("error", () => settle(null));
     child.stdin.on("error", () => {

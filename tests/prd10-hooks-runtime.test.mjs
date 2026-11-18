@@ -1002,7 +1002,7 @@ describe("PRD-v2 section 10: compaction delivery, recall and decision rows (GP6)
 
   // ---------- compactSummary "none" (DECISIONS-r6 D6) ----------
 
-  test("[M4] SessionStart(compact) on codex (none): the renderState block, once per session (A23)", async () => {
+  test("[M4] SessionStart(compact) on codex (none): the renderState block, once per compaction (A23, #1396)", async () => {
     const s = sid();
     await handleHook("codex", payload(s, { hook_event_name: "UserPromptSubmit", prompt: "fix the flaky login test" }), env);
     await waitRows("SELECT seq FROM events WHERE session_id = ?", [s], 1);
@@ -1013,6 +1013,24 @@ describe("PRD-v2 section 10: compaction delivery, recall and decision rows (GP6)
     assert.ok(text.includes('session="' + s + '"'), text);
     const again = await handleHook("codex", payload(s, { hook_event_name: "SessionStart", source: "compact" }), env);
     assert.equal(again.stdout, "");
+  });
+
+  test("#1396 SessionStart(compact) on claude-code: one state block per compaction in one session, a repeat of the same compaction stays silent", async () => {
+    const s = sid();
+    const compact = () => handleHook("claude-code", payload(s, { hook_event_name: "SessionStart", source: "compact" }), env);
+    await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: "fix the flaky login test" }), env);
+    await waitRows("SELECT seq FROM events WHERE session_id = ?", [s], 1);
+    const first = context(await compact());
+    assert.ok(first !== null && isStateBlock(first), String(first));
+    assert.ok(first.includes("fix the flaky login test"), first);
+    assert.equal((await compact()).stdout, "", "a repeat of the same compaction stays silent");
+    await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: "now ship the billing export" }), env);
+    await waitRows("SELECT seq FROM events WHERE session_id = ?", [s], 2);
+    const second = context(await compact());
+    assert.ok(second !== null && isStateBlock(second), "the second compaction gets its own state block: " + String(second));
+    assert.ok(second.includes("now ship the billing export"), second);
+    assert.ok(second.includes('session="' + s + '"'), second);
+    assert.notEqual(second, first);
   });
 
   test("[M4] SessionStart(compact) on codex with an empty journal: the empty state block, never a throw", async () => {
@@ -1094,6 +1112,51 @@ describe("PRD-v2 section 10: compaction delivery, recall and decision rows (GP6)
     assert.deepEqual(off, { stdout: "", exitCode: 0 });
   });
 
+  // #1394: recall pushes state the compaction took away (DECISIONS-r11 B). A row written after the latest
+  // SessionStart(compact) is still in the model's live context, so recall never sends it again; a row from
+  // before the boundary still comes back.
+  test("[M7] recall/compaction-boundary (#1394): rows after the latest compaction stay out, rows before it come back", async () => {
+    const s = sid();
+    await longSession("claude-code", s, "UserPromptSubmit");
+    await handleHook("claude-code", payload(s, { hook_event_name: "SessionStart", source: "compact" }), env);
+    await handleHook("claude-code", payload(s, {
+      hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "npm run bundle:quokkafrob" },
+      tool_response: { stdout: "", stderr: "quokkafrob bundle failed: EACCES writing dist/quokkafrob.js", is_error: true },
+    }), env);
+    await waitRows("SELECT seq FROM events WHERE session_id = ? AND kind = 'toolerr'", [s], 2);
+    const post = query("SELECT seq FROM events WHERE session_id = ? AND kind = 'toolerr' ORDER BY seq DESC", s)[0];
+    // a host-made prompt (task-notification) that names the post-compaction row
+    const late = context(await handleHook("claude-code", payload(s, {
+      hook_event_name: "UserPromptSubmit", prompt: "<task-notification>why did the quokkafrob bundle fail with EACCES</task-notification>",
+    }), env));
+    assert.ok(late === null || !late.includes("#" + post.seq + " "), "post-compaction row recalled: " + String(late));
+    assert.ok(late === null || !late.includes("quokkafrob bundle failed"), String(late));
+    // the pre-compaction row is still recalled
+    const pre = query("SELECT seq FROM events WHERE session_id = ? AND kind = 'toolerr' ORDER BY seq ASC", s)[0];
+    const text = context(await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: ASK_ERROR }), env));
+    assert.ok(text !== null && text.includes("#" + pre.seq + " toolerr Bash: "), String(text));
+  });
+
+  test("[M7] recall/compaction-boundary units (#1394): line units of an output after the latest compaction stay out", async () => {
+    const s = sid();
+    await longSession("claude-code", s, "UserPromptSubmit");
+    await handleHook("claude-code", payload(s, { hook_event_name: "SessionStart", source: "compact" }), env);
+    const PLANTED = "walrusbeam deploy rolled back after 41 health check failures on canary-3";
+    const lines = [];
+    for (let i = 0, n = 0; n < SYNC_INDEX_MAX_BYTES - 2000; i++) {
+      const l = i === 50 ? PLANTED : "step " + i + " of the release pipeline finished in " + (i % 17) + " s on runner " + (i % 5);
+      lines.push(l);
+      n += Buffer.byteLength(l, "utf8") + 1;
+    }
+    await handleHook("claude-code", payload(s, {
+      hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "cat deploy.log", description: "deploy log" },
+      tool_use_id: "toolu_1394", tool_response: { stdout: lines.join("\n"), stderr: "", interrupted: false, isImage: false },
+    }), env);
+    await waitRows("SELECT 1 FROM line_units WHERE session_id = ?", [s], lines.length);
+    const text = context(await handleHook("claude-code", payload(s, { hook_event_name: "UserPromptSubmit", prompt: "why did the walrusbeam deploy roll back on canary-3" }), env));
+    assert.ok(text === null || !text.includes(PLANTED), "post-compaction line unit recalled: " + String(text));
+  });
+
   // #1330 (Lcstyle, aron-intframe): the first prompt is 30 KB of the README; a later output holds README lines and
   // one line the next question is about. The recall query is the current prompt only (D-1330-RECALL-PROMPT-1).
   test("[M7] recall/long-first-prompt (#1330): the asked-for line ranks first, well inside the hook timeout", async () => {
@@ -1140,7 +1203,7 @@ describe("PRD-v2 section 10: compaction delivery, recall and decision rows (GP6)
       const out = r.encode(ev, { kind: "hint", text: "RECALL-PROBE", onceKey: "recall" });
       assert.equal(hasRecall(r), JSON.stringify(out).includes("RECALL-PROBE"), r.id);
     }
-    assert.deepEqual(ADAPTERS.filter((r) => !hasRecall(r)).map((r) => r.id), ["pi", "opencode"]); // D-R33-KIRO-RECALL-1
+    assert.deepEqual(ADAPTERS.filter((r) => !hasRecall(r)).map((r) => r.id), ["pi", "opencode", "omp"]); // D-R33-KIRO-RECALL-1; omp keeps the Pi compact path
   });
 
   // ---------- decision rows (ADR-0009 §8.2) ----------
@@ -1896,7 +1959,7 @@ describe("PRD-v2 section 10: PreToolUse module load set", { concurrency: CONC },
 describe("PRD-v2 section 10: hook never errors (D-HNE-GUARD-1)", () => {
   // D-HNE-GUARD-1 (owner decision 2026-10-29): a hook never errors. On any internal failure it exits 0 with a valid decision
   // for its host: own ctx_* tools allowed, flooding tools denied with the redirect plus "run ctx_doctor", and the error with
-  // its stack in <HOME>/.context-mode/hook-errors.log. Runs the built bundle for all 10 hosts (CM_HNE_BUNDLE overrides it).
+  // its stack in <HOME>/.context-mode/hook-errors.log. Runs the built bundle for all 11 hosts (CM_HNE_BUNDLE overrides it).
   const REPO = join(import.meta.dirname, "..");
   let root;
   let bundle;
@@ -1934,9 +1997,10 @@ describe("PRD-v2 section 10: hook never errors (D-HNE-GUARD-1)", () => {
     zcode: { pay: (t, i) => SNAKE("PreToolUse", t, i), shell: "Bash", own: "mcp__context-mode__ctx_execute", safe: "TodoWrite" },
     pi: { pay: (t, i) => ({ type: "tool_call", sessionId: "s1", cwd: repo, toolName: t, input: i }), shell: "bash", own: "ctx_execute", safe: "todo" },
     opencode: { pay: (t, i) => ({ type: "execute.before", sessionID: "s1", directory: repo, tool: t, args: i }), shell: "bash", own: "context-mode_ctx_execute", safe: "todowrite" },
+    omp: { pay: (t, i) => ({ type: "tool_call", sessionId: "s1", cwd: repo, toolName: t, input: i }), shell: "bash", own: "ctx_execute", safe: "todo" }, // ADR-0026: the Pi wire
   };
-  const EXIT2 = new Set(["kiro", "pi", "opencode"]); // these hosts deny by exit code 2 and text
-  const INPROC = new Set(["pi", "opencode"]); // installMode "in-process": ctx_* tools live in the host process, no MCP server
+  const EXIT2 = new Set(["kiro", "pi", "opencode", "omp"]); // these hosts deny by exit code 2 and text
+  const INPROC = new Set(["pi", "opencode", "omp"]); // installMode "in-process": ctx_* tools live in the host process, no MCP server
 
   function run(host, payload, { fault, env = {}, preload } = {}) {
     const home = mkdtempSync(join(root, "home-"));
@@ -2245,7 +2309,7 @@ describe("PRD-v2 section 10: saving decision per host (ADR-0020)", () => {
   // the ctx tool on PreToolUse everywhere else. One effect per host, no fallback.
   const SAVING = {
     "claude-code": "R", codex: "D", gemini: "R", qwen: "D", "copilot-cli": "R",
-    vscode: "D", kiro: "D", zcode: "D", pi: "R", opencode: "R", // opencode R: D-R54-OC-REPLACE-1 (#1347)
+    vscode: "D", kiro: "D", zcode: "D", pi: "R", opencode: "R", omp: "R", // omp R: Pi tool_result rewrite (ADR-0026); opencode R: D-R54-OC-REPLACE-1 (#1347)
   };
   // D-M3-F-9: a hook or detached write keeps its DB handle open by design (A21), and Windows cannot delete
   // an open file, so temp cleanup there is best-effort. The assertions are unchanged.
@@ -2434,6 +2498,43 @@ describe("PRD-v2 section 10: saving on live payload shapes", () => {
     const r = await handlers.tool_result({ type: "tool_result", toolCallId: "c3", toolName: "read", input,
       content: [{ type: "text", text: big }], isError: false, details: undefined }, ctx);
     assert.equal(r, undefined);
+  });
+
+  // #1392: OMP 18.21.0 read has `path` only, with the line range inline (src/tools/read.ts:899-901, read-selector.ts
+  // parseSel: :N, :N-M, :N+K, :N-, :-N, comma lists, :raw before or after). A ranged path is the user's own window
+  // (D-R41-READ-OFFSET-1); a path with no range (bare, :raw alone, a drive letter) is a full read and stays replaced.
+  async function ompHandlers(repo) {
+    const { hostExtension } = await import("../src/entries/pi.ts");
+    const handlers = {};
+    hostExtension({ on: (e, h) => { handlers[e] = h; }, registerTool: () => {} }, "omp");
+    const ctx = { cwd: repo, sessionManager: { getSessionId: () => "o1" } };
+    await handlers.before_agent_start({ systemPrompt: ["base"] }, ctx);
+    return { handlers, ctx };
+  }
+
+  test("omp tool_result of a `read` with a line range in the path is not replaced (#1392)", async (t) => {
+    const { repo, big } = sandbox(t);
+    const { handlers, ctx } = await ompHandlers(repo);
+    const ranged = ["logs/app.log:50-120", "logs/app.log:50+40", "logs/app.log:50", "logs/app.log:50-", "logs/app.log:-60",
+      "logs/app.log:5-16,960-973", "logs/app.log:2-4:raw", "logs/app.log:raw:2-4", "D:/x/app.log:50-120"];
+    const whole = [];
+    for (const p of ranged) {
+      const r = await handlers.tool_result({ type: "tool_result", toolCallId: "r-" + p, toolName: "read", input: { path: p },
+        content: [{ type: "text", text: big }], isError: false, details: undefined }, ctx);
+      if (r === undefined) whole.push(p);
+    }
+    assert.deepEqual(whole, ranged, "every ranged read reaches the model whole");
+  });
+
+  test("omp tool_result of a full `read` (no range in the path) is still replaced (#1392)", async (t) => {
+    const { repo, big } = sandbox(t);
+    const { handlers, ctx } = await ompHandlers(repo);
+    for (const p of ["logs/app.log", "logs/app.log:raw", "D:/x/app.log", "D:\\x\\app.log", "logs/app.log:img", "logs/v1:2/app.log"]) {
+      const r = await handlers.tool_result({ type: "tool_result", toolCallId: "f-" + p, toolName: "read", input: { path: p },
+        content: [{ type: "text", text: big }], isError: false, details: undefined }, ctx);
+      assert.ok(r !== undefined, p + " is replaced");
+      assert.ok(Buffer.byteLength(r.content[0].text) < Buffer.byteLength(big) / 2, p + ": replaced text is under half the raw output");
+    }
   });
 
   test("gemini AfterTool of a bounded read_file (offset/limit) is not replaced (#1314)", async (t) => {
@@ -2720,7 +2821,7 @@ describe("PRD-v2 section 10: hint throttle", { concurrency: CONC }, () => {
 // serial: tests set process.env.HOME and REQUIRE_SECURITY_ENV
 describe("PRD-v2 section 10: host tool names in hook output", () => {
   // Hook texts name tools the way the host calls them: row.toolNamePrefix + ctx_*. A bare ctx_search on Gemini
-  // (mcp_context-mode_ctx_search) names a tool the model cannot call. Covers the 10 hosts and every hook text
+  // (mcp_context-mode_ctx_search) names a tool the model cannot call. Covers the 11 hosts and every hook text
   // that names a tool: Read deny, parse-error deny, policy-unreadable deny, the replace handle line, the
   // compact state block and the pointer line. DEVIATIONS D-HL-NAMES-1.
   function rmTemp(dir) {
@@ -2746,12 +2847,12 @@ describe("PRD-v2 section 10: host tool names in hook output", () => {
     event: "PreToolUse", agent: row.id, sessionId: "s1", cwd, tool: { name, canonicalName, input },
   });
 
-  test("all 10 hosts: the Read deny names <prefix>ctx_execute", () => {
+  test("all 11 hosts: the Read deny names <prefix>ctx_execute", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "cm-names-"));
     try {
       const big = path.join(dir, "big.log");
       writeFileSync(big, "x".repeat(300 * 1024));
-      assert.equal(ADAPTERS.length, 10);
+      assert.equal(ADAPTERS.length, 11); // ADR-0026 T18: omp is the 11th row
       for (const row of ADAPTERS) {
         const d = decide(ev(row, dir, "Read", "Read", { file_path: big }), row, []);
         assert.equal(d.kind, "deny", row.id);
@@ -2764,7 +2865,7 @@ describe("PRD-v2 section 10: host tool names in hook output", () => {
     }
   });
 
-  test("all 10 hosts: parse-error and policy-unreadable denies name <prefix>ctx_*", () => {
+  test("all 11 hosts: parse-error and policy-unreadable denies name <prefix>ctx_*", () => {
     const old = process.env[REQUIRE_SECURITY_ENV];
     try {
       for (const row of ADAPTERS) {

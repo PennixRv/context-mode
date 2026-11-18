@@ -9,6 +9,7 @@ import { AGENT_HOME_DIR, PLUGIN_MARKETPLACE_NAME, HOST_NODE_COMMAND, HOST_PLUGIN
 import type { AgentId, AdapterRow, HostConfigFormat } from "../core/contracts/types.ts";
 import { claudeDirOf, claudeProfileEnv, copilotDirOf, geminiDirOf, kiroDirOf, opencodeDirOf, ownMcpFileOf } from "../core/project/config-dir.ts";
 import { ownMcpValue } from "../core/ops/host-config.ts";
+import { ompImportFiles } from "../core/ops/omp-import.ts";
 import { HOOK_SHAPES, type JsonObject } from "./hook-shapes.ts";
 
 export const SERVER_BUNDLE = "server.mjs";
@@ -183,6 +184,10 @@ export function stableNodePath(execPath: string, fs: NodePathFs = REAL_FS): stri
   return execPath;
 }
 
+/** Agents whose Windows hook shell may be PowerShell: their written hook line starts with bare `node`
+ *  (D-C166-WIN-FIRE-1 codex, D-R44-QWEN-WIN-1 qwen, D-1375-COPILOT-WIN-1 copilot-cli and vscode). */
+const BARE_NODE_ON_WINDOWS: readonly AgentId[] = ["codex", "qwen", "copilot-cli", "vscode"];
+
 /** The node setup writes into host configs (D-STABLE-NODE-1). */
 export const SETUP_NODE = stableNodePath(process.execPath);
 
@@ -241,6 +246,8 @@ function cliFor(ctx: SetupContext, id: AgentId): CliPlan | undefined {
     case "qwen": return { bin: "qwen", install: [["extensions", "link", ctx.pkgDir]], remove: [["extensions", "uninstall", SERVER_KEY]], input: "y\n" };
     case "copilot-cli": return { bin: "copilot", install: [["mcp", "add", SERVER_KEY, "--", ...s]], remove: [["mcp", "remove", SERVER_KEY]] };
     case "pi": return { bin: "pi", install: [["install", ctx.pkgDir]], remove: [["remove", ctx.pkgDir]] };
+    // ADR-0026 decision 4: OMP installs from its own plugin store by name (T23, T24).
+    case "omp": return { bin: "omp", install: [["plugin", "install", SERVER_KEY]], remove: [["plugin", "uninstall", SERVER_KEY]] };
     default: return undefined;
   }
 }
@@ -261,6 +268,7 @@ const LIST: Partial<Record<AgentId, { bin: string; args: string[] }>> = {
   qwen: { bin: "qwen", args: ["extensions", "list"] },
   "copilot-cli": { bin: "copilot", args: ["mcp", "list"] },
   pi: { bin: "pi", args: ["list"] },
+  omp: { bin: "omp", args: ["plugin", "list"] }, // ADR-0026
   // D-HF-OPENCODE-LIST-1: --pure skips external plugins, so a fresh HOME does not wait on the @opencode-ai/plugin install.
   opencode: { bin: "opencode", args: ["mcp", "list", "--pure"] },
 };
@@ -321,7 +329,9 @@ export function buildRegistry(ctx: SetupContext): CheckRow[] {
     // D-C166-WIN-FIRE-1: Codex 0.166 runs a hook through the session shell, PowerShell on Windows, and PowerShell reads a
     // leading quoted path as a string. A bare `node` word runs in sh, cmd.exe and PowerShell; the doctor still runs the absolute node.
     // D-R44-QWEN-WIN-1 (host audit qwen-3): Qwen spawns a hook through cmd.exe /d /s /c (ComSpec) or PowerShell, so the same bare word.
-    const bareNode = (id === "codex" || id === "qwen") && (ctx.platform ?? process.platform) === "win32";
+    // #1375 D-1375-COPILOT-WIN-1: the GitHub Copilot app runs the `command` field as `pwsh -NoProfile -Command` and skips the
+    // `powershell` field, so copilot-cli and vscode take the same bare word on Windows.
+    const bareNode = BARE_NODE_ON_WINDOWS.includes(id) && (ctx.platform ?? process.platform) === "win32";
     const hookCommand = bareNode ? [HOST_NODE_COMMAND, ...runCommand.slice(1)] : runCommand;
     const command = `${bareNode ? HOST_NODE_COMMAND : `"${hookCommand[0]}"`} "${hookCommand[1]}" ${AGENT_FLAG} ${id}`;
     const hookInstall = hookInstallFor(ctx, getAdapter(id), command);
@@ -336,6 +346,7 @@ export function buildRegistry(ctx: SetupContext): CheckRow[] {
       ...(hookInstall.kind === "file" && hookInstall.trust ? [hookInstall.trust] : []),
       ...(skillInstall.kind === "dir" ? skillInstall.files.map((f) => f.file) : []),
       ...legacySkills.map((f) => f.file),
+      ...(id === "omp" ? [ompImportFiles(ctx.home).mcp] : []), // ADR-0026 decision 11: disabledServers, only when OMP imports us
     ];
     const out: CheckRow = {
       id, installMode: row.installMode, serverCommand: serverCmd(ctx, id), config, cli: cliFor(ctx, id),

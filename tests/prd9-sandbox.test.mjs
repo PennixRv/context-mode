@@ -5,7 +5,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readFileSync, realpathSync, writeFileSync, chmodSync, readdirSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
-import { test, describe } from "node:test";
+import { test, describe, mock } from "node:test";
+import dc from "node:diagnostics_channel";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { CONC } from "./_lib/concurrency.mjs";
 import { fileURLToPath } from "node:url";
 import * as C from "../src/core/contracts/constants.ts";
@@ -945,6 +948,31 @@ describe("PRD-v2 section 9: runProcess settles on exit (D-1337-EXIT-SETTLE-1, #1
     assert.equal(lines[399999], "400000");
   });
 
+  // D-R59-D5-DRAIN-1 (CI flake of "[M5] doctor-hook/D5-codex-without-hooks-file-runs-round-trip", ubuntu legs): a loop stall
+  // longer than PIPE_EOF_GRACE_MS right after "exit" made the grace timer fire before the poll phase read the pipes, so the
+  // bytes already in the pipe were dropped (stdout "", held: true) and D5 saw an empty, "native" reply. The stall is injected
+  // here: an "exit" listener (added after runProcess's own) busy-waits until the output is in the pipe and the grace is over.
+  test("a loop stall after exit does not drop output the pipes already hold", async () => {
+    if (process.platform === "win32") return;
+    const dir = mkdtempSync(join(tmpdir(), "cm-r59-stall-"));
+    const marker = join(dir, "written");
+    const ch = dc.channel("child_process");
+    const stall = ({ process: c }) => queueMicrotask(() => c.once("exit", () => {
+      const t0 = Date.now();
+      while (!existsSync(marker) || Date.now() - t0 < 2 * C.PIPE_EOF_GRACE_MS) { /* the loop is busy: no poll phase */ }
+    }));
+    ch.subscribe(stall);
+    let r;
+    try {
+      r = await run(`(sleep 0.05; printf garbage; : > '${marker}') & exit 0`);
+    } finally {
+      ch.unsubscribe(stall);
+      rmSync(dir, { recursive: true, force: true });
+    }
+    assert.equal(r.stdout.toString("utf8"), "garbage");
+    assert.equal(r.exitCode, 0);
+  });
+
   test("the survivor is stopped with its process group", async () => {
     if (process.platform === "win32") return;
     const r = await run("sleep 600 & echo $!");
@@ -1191,6 +1219,108 @@ describe("PRD-v2 section 9: runtime lookup", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // #1373: on Windows the first python.exe on PATH can be the Microsoft Store App Execution Alias; node's stat throws EACCES on
+  // it, and throwIfNoEntry only silences ENOENT. A candidate that cannot be stat'ed is not runnable: skip it, take the next.
+  describe("[#1373] a PATH candidate that stat cannot read is skipped", () => {
+    function lanes() {
+      const root = mkdtempSync(join(tmpdir(), "cm-1373-"));
+      // The first python candidate name on this platform (runtimes.ts candidates: python.exe on Windows, python3 on POSIX).
+      const name = process.platform === "win32" ? "python.exe" : "python3";
+      const stub = join(root, "WindowsApps"); mkdirSync(stub); writeFileSync(join(stub, name), "x");
+      const good = join(root, "real"); mkdirSync(good); writeFileSync(join(good, name), "#!/bin/sh\necho REAL_PYTHON_1373\n"); chmodSync(join(good, name), 0o755);
+      return { root, stub, good, name, bin: join(good, name), env: { PATH: [stub, good].join(delimiter) } };
+    }
+    function statThrows(code, under, only = "") {
+      const real = fs.statSync;
+      const m = mock.method(fs, "statSync", (p, o) => {
+        if (String(p).startsWith(under) && String(p).includes(only)) throw Object.assign(new Error(code + ": injected"), { code });
+        return real(p, o);
+      });
+      syncBuiltinESMExports();
+      return () => { m.mock.restore(); syncBuiltinESMExports(); };
+    }
+    function ctxIn(root) {
+      return {
+        project: { projectKey: "1".repeat(16), projectDir: join(root, "projects", "1".repeat(16)), dbPath: join(root, "projects", "1".repeat(16), "context.db"), worktree: root, containmentRoot: root, agent: "claude-code", source: "env:CLAUDE_PROJECT_DIR" },
+        sessionId: "s1", turn: 1, signal: new AbortController().signal,
+      };
+    }
+
+    for (const code of ["EACCES", "EPERM", "UNKNOWN"]) {
+      test(`stat ${code} on the first candidate: findRuntime skips it and returns the next python`, () => {
+        const l = lanes();
+        const restore = statThrows(code, l.stub);
+        try { assert.equal(findRuntime("python", l.env), l.bin); } finally { restore(); rmSync(l.root, { recursive: true, force: true }); }
+      });
+    }
+
+    test("a real unreadable directory (EACCES from the OS) is skipped", () => {
+      if (process.platform === "win32" || process.getuid?.() === 0) return;
+      const l = lanes();
+      chmodSync(l.stub, 0o000);
+      try { assert.equal(findRuntime("python", l.env), l.bin); } finally { chmodSync(l.stub, 0o755); rmSync(l.root, { recursive: true, force: true }); }
+    });
+
+    test("a symlink loop (ELOOP) is skipped", () => {
+      if (process.platform === "win32") return;
+      const l = lanes();
+      rmSync(join(l.stub, l.name)); symlinkSync(join(l.stub, l.name), join(l.stub, l.name));
+      try { assert.equal(findRuntime("python", l.env), l.bin); } finally { rmSync(l.root, { recursive: true, force: true }); }
+    });
+
+    test("every candidate unreadable: findRuntime is null, never a throw", () => {
+      const l = lanes();
+      const restore = statThrows("EACCES", l.root);
+      try { assert.equal(findRuntime("python", l.env), null); } finally { restore(); rmSync(l.root, { recursive: true, force: true }); }
+    });
+
+    test("ctx_execute python with the Store alias first: the real python later on PATH runs", async () => {
+      // The fake python is a #!/bin/sh script; Windows cannot start it. The findRuntime tests above cover Windows.
+      if (process.platform === "win32") return;
+      const l = lanes();
+      const restore = statThrows("EACCES", l.stub);
+      const before = process.env.PATH;
+      process.env.PATH = l.env.PATH + delimiter + before;
+      try {
+        const out = await ctxExecute.handler({ language: "python", code: "print(1)" }, ctxIn(l.root));
+        assert.equal(out.isError, false, out.text);
+        assert.ok(out.text.includes("REAL_PYTHON_1373"), out.text);
+      } finally { process.env.PATH = before; restore(); rmSync(l.root, { recursive: true, force: true }); }
+    });
+
+    test("ctx_execute with every python candidate unreadable answers NO_RUNTIME (a named line), not the internal error", async () => {
+      const l = lanes();
+      const restore = statThrows("EACCES", l.root);
+      const before = process.env.PATH;
+      process.env.PATH = l.env.PATH;
+      try {
+        const out = await ctxExecute.handler({ language: "python", code: "print(1)" }, ctxIn(l.root));
+        assert.equal(out.isError, true);
+        assert.equal(out.text, formatError("NO_RUNTIME", { lang: "python" }));
+      } finally { process.env.PATH = before; restore(); rmSync(l.root, { recursive: true, force: true }); }
+    });
+
+    test("doctor D11 names a language whose runtime cannot be found, with the reason; PASS when all resolve", async () => {
+      const { checkRuntimes } = await import("../src/core/ops/doctor-env.ts");
+      const l = lanes();
+      const restore = statThrows("EACCES", l.root, "python");
+      try {
+        const pass = { id: "D11", label: "shell", status: "PASS", detail: "sh: /bin/sh" };
+        const row = checkRuntimes({ PATH: l.env.PATH }, pass);
+        assert.equal(row.status, "WARN");
+        assert.ok(row.detail.includes("python"), row.detail);
+        assert.ok(row.detail.includes(l.stub), row.detail); // the reason: this candidate could not be read
+        assert.ok(row.fixCommand && row.fixCommand.length > 0);
+        const fail = { id: "D11", label: "shell", status: "FAIL", detail: "no sh on PATH", fixCommand: "x" };
+        assert.deepEqual(checkRuntimes({ PATH: l.env.PATH }, fail), fail, "a FAIL row stays as it is");
+      } finally { restore(); }
+      try {
+        const row = checkRuntimes({ PATH: [l.good, dirname(process.execPath)].join(delimiter) }, { id: "D11", label: "shell", status: "PASS", detail: "sh: /bin/sh" });
+        assert.equal(row.status, "PASS", row.detail);
+      } finally { rmSync(l.root, { recursive: true, force: true }); }
+    });
   });
 
   test("findRuntime accepts a #!/bin/sh shim with the exec bit set, without parsing the shebang", () => {

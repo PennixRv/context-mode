@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn, execFileSync, spawnSync } from "node:child_process";
 import { openSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runDoctor, runSetup } from "../src/setup/index.ts";
 

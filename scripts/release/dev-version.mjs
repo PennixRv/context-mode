@@ -16,7 +16,7 @@ import { compareReleaseVersions, parseReleaseVersion, parseTaggedReleases } from
 const REMOTE = "origin";
 const PUSH_TRIES = 3;
 const SELF = "node scripts/release/dev-version.mjs";
-const SOURCES = Object.freeze(["package.json", "package-lock.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".codex-plugin/plugin.json"]);
+const SOURCES = Object.freeze(["package.json", "package-lock.json", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", ".codex-plugin/plugin.json", "gemini-extension.json", "qwen-extension.json"]);
 const BOT = Object.freeze(["-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com", "-c", "commit.gpgsign=false"]);
 const SHORT_SHA = 8;
 
@@ -46,7 +46,7 @@ export function setVersions(repo, version) {
   };
   set("package.json", (o) => { o.version = version; });
   set("package-lock.json", (o) => { o.version = version; if (o.packages?.[""]) o.packages[""].version = version; });
-  for (const rel of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]) set(rel, (o) => { o.version = version; });
+  for (const rel of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "gemini-extension.json", "qwen-extension.json"]) set(rel, (o) => { o.version = version; });
   set(".claude-plugin/marketplace.json", (o) => {
     if (o.metadata) o.metadata.version = version;
     for (const p of o.plugins ?? []) p.version = version;

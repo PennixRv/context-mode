@@ -219,6 +219,29 @@ describe("ADR-0019 cli", () => {
       assert.match(b.stderr, /--agents needs a value/);
     });
 
+    test("[D-UNSUPPORTED-HOSTS-1] cli/setup --print: unsupported host names get exit 2 without writes; unknown names list supported agents", (t) => {
+      const s = sandbox(t);
+      const before = snapshot(s.home);
+      for (const h of UNSUPPORTED_HOSTS) {
+        for (const n of [h.id, ...h.clientNames.filter((c) => !c.includes(" ")), ...h.binaries]) {
+          const r = run(s, ["setup", "--print", n]);
+          assert.equal(r.status, 2, n);
+          assert.ok(r.stderr.includes(`${h.name} is not a supported host today.`), r.stderr);
+          assert.ok(r.stderr.includes("Setup writes nothing for it."), r.stderr);
+          assert.ok(r.stderr.includes("Supported agents: claude-code, codex, gemini, qwen, copilot-cli, vscode, kiro, zcode, pi, opencode, omp"), r.stderr);
+          assert.equal(r.stderr.includes("unknown agent"), false, r.stderr);
+          assert.deepEqual(snapshot(s.home), before, n);
+        }
+      }
+      const p = run(s, ["setup", "--print", "cursor"]);
+      assert.equal(p.status, 2);
+      assert.ok(p.stderr.includes("Cursor is not a supported host today."), p.stderr);
+      const u = run(s, ["setup", "--print", "nosuchagent"]);
+      assert.equal(u.status, 2);
+      assert.ok(u.stderr.includes('unknown agent "nosuchagent".'), u.stderr);
+      assert.ok(u.stderr.includes("Supported agents: claude-code"), u.stderr);
+    });
+
     test("[D-UNSUPPORTED-HOSTS-1] cli/doctor: an unsupported host env var adds the one line; json carries it; supported rows unchanged", (t) => {
       const s = sandbox(t);
       const r = run(s, ["doctor"], { env: { CURSOR_TRACE_ID: "x", PATH: s.bin } });

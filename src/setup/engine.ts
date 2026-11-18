@@ -15,8 +15,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { claudeDirOf, codexDirOf, copilotDirOf, dataRootOf, geminiDirOf, kiroDirOf, opencodeDirOf } from "../core/project/config-dir.ts";
-import { AGENT_HOME_DIR, D2_NODE_DETAIL, D2_NODE_FIX, D2_SQLITE_DETAIL, D2_SQLITE_FIX, DB_FILE_NAME, MCP_ENV_FIELD, MCP_ENV_VARS_FIELD, MCP_TOOLS_FIELD, SETUP_MANIFEST_FILE, NATIVE_INSTALL, OPENCODE_CONFIG_FILES, OPENCODE_PLUGIN_KEY, OPENCODE_PLUGINS_KEY, OPENCODE_PLUGIN_PATH, PROJECTS_DIR_NAME, SERVER_KEY, TOOL_ORDER, UPGRADE_REPORT_ONLY_REASONS } from "../core/contracts/constants.ts";
+import { claudeDirOf, codexDirOf, codexPluginHomeOf, copilotDirOf, dataRootOf, geminiDirOf, kiroDirOf, opencodeDirOf } from "../core/project/config-dir.ts";
+import { AGENT_HOME_DIR, D2_NODE_DETAIL, D2_NODE_FIX, D2_SQLITE_DETAIL, D2_SQLITE_FIX, DB_FILE_NAME, MCP_ENV_FIELD, MCP_ENV_VARS_FIELD, MCP_TOOLS_FIELD, SETUP_MANIFEST_FILE, NATIVE_INSTALL, OPENCODE_CONFIG_FILES, OPENCODE_PLUGIN_KEY, OPENCODE_PLUGINS_KEY, OPENCODE_PLUGIN_PATH, PROJECTS_DIR_NAME, SERVER_KEY, TOOL_ORDER, UPGRADE_KEEP_ASIDE_REASONS, UPGRADE_REPORT_ONLY_REASONS } from "../core/contracts/constants.ts";
 import { CtxError, formatError } from "../core/contracts/errors.ts";
 import { nodeTooOld } from "../core/hooks/fallback.ts";
 import { ADAPTERS, getAdapter } from "../adapters/table.ts";
@@ -25,8 +25,9 @@ import { detectV1 } from "../core/ops/detect-v1.ts";
 import { isNativeOpencodeEntry, OPENCODE_PACKAGE_DIR_HINT, opencodeDirPlugin, opencodeDirPlugins, opencodePluginDirs, opencodeProjectDir } from "../core/ops/doctor-config.ts";
 import { atomicWriteFile, renameWithRetry, unlinkWithRetry } from "../core/ops/atomic-file.ts";
 import { editHostConfigText, hostConfigValueAt, parseHostConfig } from "../core/ops/host-config.ts";
+import { OMP_DISABLED_SERVERS_KEY, ompImportFiles, ompImportsUs } from "../core/ops/omp-import.ts";
 import { hostLayout, hostText, withLayout } from "../core/ops/host-text.ts";
-import { AGENT_FLAG, BACKUP_DIR, COMMAND_SKILLS, HOOK_BUNDLE, LOCK_FILE, SKILL_FILE, assertWritable, buildRegistry, configEdits, hookCommandString, renderSkill } from "./registry.ts";
+import { AGENT_FLAG, BACKUP_DIR, COMMAND_SKILLS, HOOK_BUNDLE, SERVER_BUNDLE, LOCK_FILE, SKILL_FILE, assertWritable, buildRegistry, configEdits, hookCommandString, renderSkill } from "./registry.ts";
 import type { CheckRow, HookFile, HookInstall, NativePlugin, SetupContext } from "./registry.ts";
 import { envValue, pathEntries, spawnForm, spawnShim, whichBin, winCmdLine } from "./spawn-bin.ts";
 export { spawnForm, spawnShim, whichBin, winCmdLine };
@@ -409,6 +410,17 @@ function skillPathSafe(file: string): void {
   }
 }
 
+/** ADR-0026 decision 11 (D-OMP-SETUP-1): when OMP imports a context-mode server from ~/.claude.json, OMP's own
+ *  denylist `disabledServers` in ~/.omp/agent/mcp.json gets our name (merge, every other key stays). Import off: no write. */
+function planOmpImport(row: CheckRow, edits: FileEdit[], ctx: SetupContext): void {
+  const files = ompImportFiles(ctx.home);
+  if (!ompImportsUs(files, ctx.env)) return;
+  planJsonKeys(row, edits, files.mcp, "json", (doc) => {
+    const cur = Array.isArray(doc[OMP_DISABLED_SERVERS_KEY]) ? doc[OMP_DISABLED_SERVERS_KEY] as unknown[] : [];
+    return cur.includes(SERVER_KEY) ? [] : [[[OMP_DISABLED_SERVERS_KEY], [...cur, SERVER_KEY]]];
+  });
+}
+
 function planRow(row: CheckRow, listed: boolean, stale: boolean, env: SetupContext["env"], disabled = false): Plan {
   const edits: FileEdit[] = [];
   if (row.config) {
@@ -485,7 +497,13 @@ function opencodeListCheck(bin: string, major: number, env: SetupContext["env"])
   const first = (s: unknown) => `${s}`.trim().split("\n")[0] ?? "";
   let out: unknown;
   try { out = JSON.parse(`${r.stdout}`); } catch { out = undefined; }
-  if (r.status !== 0) return { name: "list", ok: false, detail: `${what} exited ${r.status}: ${first(r.stderr)}` };
+  // #1386 D-1386-OC-LIST-EXIT-1: the host command itself did not run (OpenCode 2.2.6 on Termux exits 1 with "ERROR" and
+  // the reason on the next line). It says nothing about our entry, so the install checks on the files decide; the list
+  // check is a WARN that quotes the host's own lines (D-1378-GEMINI-DISK-1). A list that runs without our entry stays red.
+  if (r.status !== 0) {
+    const host = `${r.stderr}`.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3).join(" ");
+    return { name: "list", ok: true, warn: true, detail: `${what} exited ${r.status}: ${host}; doctor checked the entry and hooks on disk` };
+  }
   if (major >= 2) {
     if (!Array.isArray(out)) return { name: "list", ok: false, detail: `${what} printed no config list: ${first(r.stdout)}` };
     const listed = out.some((d) => isObj(d) && isObj(d.info) && isObj(d.info.mcp) && isObj(d.info.mcp.servers) && isObj(d.info.mcp.servers[SERVER_KEY]));
@@ -516,8 +534,9 @@ function hostBroken(bin: string, out: string): string | undefined {
   return `${b.prefix}${b.fix} (${(lines.find((l) => l.includes(b.text)) ?? lines[0]).trim()})`;
 }
 
+type ListState = { check?: Check; status: PluginStatus; broken?: string };
 /** One run of the host list command (claude plugin list takes ~1.8 s): the list check and the plugin status share it. */
-function listState(row: CheckRow, env: SetupContext["env"]): { check?: Check; status: PluginStatus; broken?: string } {
+function listState(row: CheckRow, env: SetupContext["env"]): ListState {
   const l = row.listCommand;
   if (!l || !hostBin(l.bin, env).file) return { status: undefined };
   if (row.id === "opencode") {
@@ -823,8 +842,11 @@ const EXT_ENABLED_WORKSPACE = "Enabled (Workspace):";
 const EXT_TRUE = "true";
 type NativeState = "enabled" | "disabled" | undefined;
 /** The extension list also shows the workspace scope: off there, gemini runs none of its hooks (D-NI-GEMINI-GATE-1). */
-/** stopped: the list command ended early (signal or spawn error) after it named the plugin (D-1322-LIST-SIZE-1). */
-interface NativeStatus { state: NativeState; workspaceOff: boolean; hookGate?: string; stopped?: string }
+/** stopped: the list command ended early (signal or spawn error) after it named the plugin (D-1322-LIST-SIZE-1), or a gemini
+ *  extension on disk is missing from a list that answered with an error (D-1378-GEMINI-LIST-ERR-1). */
+/** disk: #1378 D-1378-GEMINI-DISK-1, the list did not answer but the extension is on disk; doctor checks it there. */
+interface NativeStatus { state: NativeState; workspaceOff: boolean; hookGate?: string; stopped?: string; disk?: DiskExtension }
+interface DiskExtension { dir: string; note: string; enablement: string }
 
 /** D-1322-LIST-SIZE-1, codex plugin list --json (codex-rs/cli/src/plugin_cmd.rs JsonPluginListOutput): { installed: [{ pluginId,
  *  enabled }], available: [] }. Without --available only installed plugins are listed, so the output stays small. */
@@ -876,8 +898,72 @@ function jsonState(n: NativePlugin, text: string): NativeStatus {
   return { state: "enabled", workspaceOff: false, hookGate };
 }
 
+/** #1378 D-1378-GEMINI-LIST-ERR-1: `gemini extensions install` left <gemini dir>/extensions/<plugin>/gemini-extension.json, but
+ *  the list did not name it (an auth error such as 402, exit 0). The install is the host's; doctor quotes the list answer. */
+function unlistedExtension(n: NativePlugin, env: SetupContext["env"], home: string, out: string, status: number | null): { dir: string; note: string } | undefined {
+  if (n.bin !== "gemini") return undefined;
+  const dir = path.join(geminiDirOf(env, home), "extensions", n.plugin);
+  if (!existsSync(path.join(dir, "gemini-extension.json"))) return undefined;
+  const cmd = [n.bin, ...n.args].join(" ");
+  const first = out.split("\n").map((l) => l.trim()).find((l) => l.length)?.slice(0, 300) ?? `exit ${status}`;
+  return { dir, note: `context-mode is installed in ${dir}, and ${cmd} answered "${first}" in place of the extension list; run ${cmd} in a terminal and fix that answer (gemini auth)` };
+}
+
+const EXT_ENABLEMENT_FILE = "extension-enablement.json";
+/** gemini-cli ensureLeadingAndTrailingSlash: the path form its enablement rules match against. */
+function slashDir(p: string): string {
+  let r = p.split("\\").join("/");
+  if (!r.startsWith("/")) r = `/${r}`;
+  return r.endsWith("/") ? r : `${r}/`;
+}
+/** #1378 D-1378-GEMINI-DISK-1, gemini-cli ExtensionEnablementManager.isEnabled: enabled by default; each override that
+ *  matches the cwd sets the state, so the last match wins; a leading ! disables; a trailing * covers subdirs (a path
+ *  prefix), else the path must be the same. bad: the file is not JSON (gemini reports that file as an error). */
+function geminiEnablement(n: NativePlugin, env: SetupContext["env"], home: string, cwd: string): { file: string; on: boolean; bad?: true } {
+  const file = path.join(geminiDirOf(env, home), "extensions", EXT_ENABLEMENT_FILE);
+  const text = readOr(file);
+  if (text === undefined) return { file, on: true };
+  let doc: unknown;
+  try { doc = JSON.parse(text); } catch { return { file, on: false, bad: true }; }
+  const mine = isObj(doc) ? doc[n.plugin] : undefined;
+  const rules = isObj(mine) && Array.isArray(mine.overrides) ? mine.overrides : [];
+  const here = slashDir(cwd);
+  let on = true;
+  for (const rule of rules) {
+    if (typeof rule !== "string") continue;
+    const off = rule.startsWith("!");
+    let base = off ? rule.slice(1) : rule;
+    const subdirs = base.endsWith("*");
+    if (subdirs) base = base.slice(0, -1);
+    base = slashDir(base);
+    if (subdirs ? here.startsWith(base) : here === base) on = !off;
+  }
+  return { file, on };
+}
+
+/** #1378 D-1378-GEMINI-DISK-1: hook-registered from the extension on disk: its hooks/hooks.json holds the gemini hook. */
+function diskHookCheck(row: CheckRow, n: NativePlugin, dir: string): Check {
+  const name = "hook-registered";
+  const file = path.join(dir, n.hooksVia);
+  const text = readOr(file);
+  if (text === undefined) return { name, ok: false, detail: `${file} is missing; run: ${NATIVE_INSTALL.gemini[0]}` };
+  let doc: unknown;
+  try { doc = JSON.parse(text); } catch { return { name, ok: false, detail: `${file} is not valid JSON; run: ${NATIVE_INSTALL.gemini[0]}` }; }
+  return holdsOwn(doc, row.id) ? { name, ok: true } : { name, ok: false, detail: `${file} holds no ${AGENT_FLAG} ${row.id} hook; run: ${NATIVE_INSTALL.gemini[0]}` };
+}
+
+/** #1378 D-1378-GEMINI-DISK-1: the row as the extension on disk runs it (server and hook bundles under plugins/claude-code). */
+const EXT_BUNDLE_DIR = ["plugins", "claude-code"];
+function diskRow(row: CheckRow, n: NativePlugin, dir: string): CheckRow {
+  const bundle = (f: string): string => path.join(dir, ...EXT_BUNDLE_DIR, f);
+  return { ...nativeRow(row, n), listCommand: undefined,
+    serverCommand: [row.serverCommand[0], bundle(SERVER_BUNDLE), AGENT_FLAG, row.id],
+    hookRunCommand: [row.hookRunCommand[0], bundle(HOOK_BUNDLE), AGENT_FLAG, row.id],
+    ...(row.hookCommand ? { hookCommand: [row.hookRunCommand[0], bundle(HOOK_BUNDLE), AGENT_FLAG, row.id] } : {}) };
+}
+
 /** The host's own install as its list command shows it (undefined: not listed in that form, setup owns the agent). */
-function nativeState(row: CheckRow, env: SetupContext["env"]): NativeStatus {
+function nativeState(row: CheckRow, env: SetupContext["env"], home: string): NativeStatus {
   const none: NativeStatus = { state: undefined, workspaceOff: false };
   const n = row.nativePlugin;
   if (!n || !hostBin(n.bin, env).file) return none;
@@ -888,11 +974,20 @@ function nativeState(row: CheckRow, env: SetupContext["env"]): NativeStatus {
     const cmd = [n.bin, ...n.args].join(" ");
     return { ...none, stopped: `${cmd} stopped before it finished (${why}); it names ${n.plugin}, run ${cmd} in a terminal` };
   }
+  if (n.format === "extension") {
+    // Gemini 0.65.0 writes the extension list to stderr (D-INST-2).
+    const out = `${r.stdout}${r.stderr}`;
+    const st = r.status === 0 ? extensionState(n, out) : none;
+    if (st.state !== undefined) return st;
+    const unlisted = unlistedExtension(n, env, home, out, r.status);
+    if (!unlisted) return st;
+    const en = geminiEnablement(n, env, home, process.cwd());
+    if (en.bad) return { ...none, stopped: `${en.file} is not valid JSON, so gemini cannot read which projects enable context-mode; fix that file. ${unlisted.note}` };
+    return { state: en.on ? "enabled" : "disabled", workspaceOff: false, disk: { ...unlisted, enablement: en.file } };
+  }
   if (r.status !== 0) return none;
-  // Gemini 0.65.0 writes the extension list to stderr (D-INST-2).
   if (n.format === "json") return jsonState(n, `${r.stdout}`);
-  if (n.format === "codex-json") return { state: codexJsonState(n, `${r.stdout}`), workspaceOff: false };
-  return extensionState(n, `${r.stdout}${r.stderr}`);
+  return { state: codexJsonState(n, `${r.stdout}`), workspaceOff: false };
 }
 
 /** The row as the host's own plugin install sets it up. */
@@ -905,12 +1000,15 @@ function nativeRow(row: CheckRow, n: NativePlugin): CheckRow {
  *  disabled extension is a FAIL that names the host's enable command: setup cannot link over it (D-NI-EXT-DOCTOR-1). */
 async function nativeResult(row: CheckRow, ctx: SetupContext, apply?: { run: Run; dryRun: boolean }): Promise<AgentResult | undefined> {
   const n = row.nativePlugin;
-  const { state, workspaceOff, hookGate, stopped } = nativeState(row, ctx.env);
+  const { state, workspaceOff, hookGate, stopped, disk } = nativeState(row, ctx.env, ctx.home);
   const bin = n ? hostBin(n.bin, ctx.env).file : undefined;
   if (stopped) return { id: row.id, status: "FAIL", v1: [], changes: [], checks: [], bin, reason: stopped };
+  if (n?.format === "codex-json" && !bin && codexPluginHomeOf(ctx.pkgDir) !== null) return codexCacheResult(row, ctx, apply);
   if (!n || state === undefined) return undefined;
   if (state === "disabled") {
     if (!n.enable) return undefined;
+    if (disk) return { id: row.id, status: "FAIL", v1: [], changes: [], checks: [], bin,
+      reason: `context-mode is installed in ${disk.dir} but disabled for ${process.cwd()} in ${disk.enablement}, run ${n.bin} ${n.enable.join(" ")}` };
     return { id: row.id, status: "FAIL", v1: [], changes: [], checks: [], bin,
       reason: `context-mode is installed but disabled in ${n.bin}, run ${n.bin} ${n.enable.join(" ")}` };
   }
@@ -926,7 +1024,11 @@ async function nativeResult(row: CheckRow, ctx: SetupContext, apply?: { run: Run
       return { ...res, status: "FAIL", reason: (e as Error).message, rolledBack: true };
     }
   }
-  res.checks = await verifyRow(nativeRow(row, n), ctx);
+  if (disk) {
+    res.checks = (await verifyRow(diskRow(row, n, disk.dir), { ...ctx, pkgDir: disk.dir }))
+      .map((c) => c.name === "hook-registered" ? diskHookCheck(row, n, disk.dir) : c);
+    res.checks.push({ name: "list", ok: true, warn: true, detail: `${disk.note}; doctor checked the extension files on disk` });
+  } else res.checks = await verifyRow(nativeRow(row, n), ctx);
   if (n.hookTrust) res.checks = withHookTrust(res.checks, hooks, !!apply?.dryRun);
   if (n.format === "extension") res.checks = withHookGate(res.checks, geminiGate(n, ctx, workspaceOff));
   if (n.format === "json") res.checks = withHookGate(res.checks, hookGate);
@@ -935,6 +1037,78 @@ async function nativeResult(row: CheckRow, ctx: SetupContext, apply?: { run: Run
     res.status = "FAIL"; res.reason = bad.map((c) => `${c.name}: ${c.detail}`).join("; ");
     if (apply && !apply.dryRun && res.changes.length) { apply.run.rollback(row.id, ctx.env); res.rolledBack = true; }
   }
+  return res;
+}
+
+/** #1376 D-1376-CODEX-PLUGIN-CACHE-1: the edits that drop our own entries from config.toml and hooks.json. `found` gets one
+ *  line per own entry. User entries stay as they are. */
+function codexCacheEdits(row: CheckRow, found: string[]): FileEdit[] {
+  const edits: FileEdit[] = [];
+  const c = row.config;
+  const text = c ? readOr(c.file) : undefined;
+  if (c && text !== undefined) {
+    let cur: unknown;
+    try { cur = hostConfigValueAt(parseHostConfig(row.id, c.file, text, c.format), c.key); } catch { throw new Error(parseFail(row, c.file)); }
+    if (cur !== undefined) {
+      const res = editHostConfigText(row.id, c.file, text, c.format, [[c.key, undefined]]);
+      const run = isObj(cur) ? [cur.command, ...(Array.isArray(cur.args) ? cur.args : [])].filter((x) => typeof x === "string").join(" ") : "";
+      found.push(`${c.file}: [${c.key.join(".")}] runs ${run}`);
+      if (res.edits.length) edits.push({ file: c.file, before: text, after: res.text, changes: res.edits.map((e) => ({ file: c.file, ...e })) });
+    }
+  }
+  const h = row.hookInstall;
+  if (h.kind === "file") planJsonKeys(row, edits, h.file, "json", (doc) => {
+    if (!isObj(doc.hooks)) return [];
+    const own = (x: unknown): boolean => {
+      const hit = isObj(x) && isOwnHookCommand(x.command, row.id);
+      if (hit) found.push(`${h.file}: ${String((x as Json).command)}`);
+      return hit;
+    };
+    const hooks: Json = {};
+    for (const [ev, groups] of Object.entries(doc.hooks)) {
+      if (!Array.isArray(groups)) { hooks[ev] = groups; continue; }
+      const kept = groups.flatMap((g) => {
+        if (own(g)) return [];
+        if (!isObj(g) || !Array.isArray(g.hooks) || !g.hooks.length) return [g];
+        const inner = g.hooks.filter((x) => !own(x));
+        return inner.length ? [{ ...g, hooks: inner }] : [];
+      });
+      if (kept.length || !groups.length) hooks[ev] = kept;
+    }
+    return [[["hooks"], hooks]];
+  });
+  return edits;
+}
+
+/** #1376 D-1376-CODEX-PLUGIN-CACHE-1: setup runs from <codex home>/plugins/cache/.../<version> and codex is not on PATH. The
+ *  codex plugin ships the MCP server and the hooks (${PLUGIN_ROOT}); a Codex plugin update replaces <version>/, so a path
+ *  into it goes missing. Setup writes no entry here and drops the pinned ones an earlier setup wrote. */
+async function codexCacheResult(row: CheckRow, ctx: SetupContext, apply?: { run: Run; dryRun: boolean }): Promise<AgentResult> {
+  const res: AgentResult = { id: row.id, status: "PASS", v1: [], changes: [], checks: [] };
+  const found: string[] = [];
+  let edits: FileEdit[];
+  try { edits = codexCacheEdits(row, found); } catch (e) { return { ...res, status: "FAIL", reason: (e as Error).message }; }
+  res.changes = edits.flatMap((e) => e.changes);
+  const plugin = `the codex plugin in ${codexPluginHomeOf(ctx.pkgDir)} runs the MCP server and the hooks`;
+  if (!apply && found.length) {
+    res.checks = found.map((f) => ({ name: "pinned-entry", ok: false, detail: `${f}; ${plugin}, this entry runs a second copy and its path goes away on a plugin update; run: context-mode setup` }));
+    return { ...res, status: "FAIL", reason: res.checks.map((c) => `${c.name}: ${c.detail}`).join("; ") };
+  }
+  if (apply && !apply.dryRun) {
+    try {
+      for (const e of edits) {
+        assertWritable(row, e.file);
+        const raw = readRaw(e.file);
+        apply.run.record({ agent: row.id, file: e.file, existed: raw !== undefined }, raw);
+        if (e.after === undefined) unlinkWithRetry(e.file);
+        else atomicWrite(e.file, e.plain || raw === undefined ? e.after : withLayout(e.after, hostLayout(raw)));
+      }
+    } catch (e) {
+      apply.run.rollback(row.id, ctx.env);
+      return { ...res, status: "FAIL", reason: (e as Error).message, rolledBack: true };
+    }
+  }
+  res.checks = [{ name: "hook-registered", ok: true, warn: true, detail: `${plugin}; codex is not on PATH, so check them with: codex plugin list` }];
   return res;
 }
 
@@ -1027,10 +1201,16 @@ async function enableCopilotHooks(row: CheckRow, ctx: SetupContext, run: Run): P
 }
 const isObjSetup = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-async function verifyRow(row: CheckRow, ctx: SetupContext): Promise<Check[]> {
+/** D-OMP-DOCTOR-PERF-1: one doctor call reads the host list at most once; plan and verify share it. Never kept past the call. */
+function listOnce(row: CheckRow, env: SetupContext["env"]): () => ListState {
+  let ls: ListState | undefined;
+  return () => (ls ??= listState(row, env));
+}
+
+async function verifyRow(row: CheckRow, ctx: SetupContext, list: () => ListState = () => listState(row, ctx.env)): Promise<Check[]> {
   const env = ctx.env;
   const checks: Check[] = [parseCheck(row)];
-  const ls = listState(row, env);
+  const ls = list();
   const l = ls.check;
   if (l) checks.push(l);
   const cp = copyCheck(row, ctx.pkgDir);
@@ -1164,7 +1344,7 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   return { exitCode: agents.some((a) => a.status === "FAIL") ? 1 : 0, agents, backupDir: run.manifest ? run.dir : undefined };
 }
 
-async function setupRow(row: CheckRow, ctx: SetupContext, run: Run, dryRun: boolean): Promise<AgentResult> {
+async function setupRow(row: CheckRow, ctx: SetupContext, run: Run, dryRun: boolean, list: () => ListState = () => listState(row, ctx.env)): Promise<AgentResult> {
   const res: AgentResult = { id: row.id, status: "PASS", v1: [], changes: [], checks: [] };
   const needsBin = !row.config && row.cli;
   if (needsBin) {
@@ -1176,10 +1356,11 @@ async function setupRow(row: CheckRow, ctx: SetupContext, run: Run, dryRun: bool
   if (!row.config && !row.cli) return { ...res, status: "SKIPPED", reason: `${row.id}: no setup path in the registry` };
   let plan: Plan;
   try {
-    const ls = needsBin ? listState(row, ctx.env) : { status: undefined, check: undefined, broken: undefined };
+    const ls = needsBin ? list() : { status: undefined, check: undefined, broken: undefined };
     if (ls.broken) return { ...res, status: "SKIPPED", reason: ls.broken };
     const listed = ls.check?.ok === true;
     plan = planRow(row, listed, copyCheck(row, ctx.pkgDir)?.ok === false, ctx.env, listed && ls.status === "disabled");
+    if (row.id === "omp") planOmpImport(row, plan.edits, ctx);
   } catch (e) { return { ...res, status: "FAIL", reason: (e as Error).message }; }
   // The config entry is current when the plan changes nothing in that file but codex trust entries.
   const configEdited = (file: string): boolean => plan.edits.some((e) => e.file === file && e.changes.some((c) => !isTrust(row, c)));
@@ -1252,13 +1433,20 @@ export async function runDoctor(opts: SetupOptions): Promise<SetupResult> {
     opts.onAgent?.(id, "start");
     const native = await nativeResult(row, ctx);
     if (native) { agents.push(native); opts.onAgent?.(id, "done", native); continue; }
-    const res = await setupRow(row, ctx, run, true);
+    const list = listOnce(row, ctx.env); // doctor writes nothing, so the list setupRow read is still true for verify
+    const res = await setupRow(row, ctx, run, true, list);
+    // #1376 D-1376-CODEX-PLUGIN-CACHE-1: an entry of ours that names a server.mjs or hook.mjs that is gone (a Codex plugin
+    // update replaced the version dir it pointed into) fails with that path and the fix line.
+    const gone = row.id === "codex" ? missingPinnedChecks(row) : [];
+    if (gone.length) { res.status = "FAIL"; res.checks = [...gone, ...res.checks]; res.reason = gone.map((c) => `${c.name}: ${c.detail}`).join("; "); }
     if (res.status === "PASS") {
       // Report-only findings (shared temp file, user data dir) are never changed by setup, so they cannot be fixed by it.
-      if (res.v1.some((f) => !UPGRADE_REPORT_ONLY_REASONS.includes(f.reason))) { res.status = "FAIL"; res.reason = V1_FORM_REASON; }
+      // #1383 D-1383-DOCTOR-V1-DATA-1: a v1 data dir is user data setup keeps (ADR-0017 R6; ctx_upgrade moves it aside,
+      // D-SEC-V1-ASIDE-1), so doctor lists it in res.v1 as a note; only old forms (hooks, MCP entries) fail and name setup.
+      if (res.v1.some((f) => !UPGRADE_REPORT_ONLY_REASONS.includes(f.reason) && !UPGRADE_KEEP_ASIDE_REASONS.includes(f.reason))) { res.status = "FAIL"; res.reason = V1_FORM_REASON; }
       else if (res.changes.length && !onlyTrust(row, res.changes) && !hasPluginIssue(row)) { res.status = "FAIL"; res.reason = notSetUpReason(row, res, ctx.env); }
       else {
-        res.checks = await verifyRow(row, ctx);
+        res.checks = await verifyRow(row, ctx, list);
         const bad = res.checks.filter((c) => !c.ok);
         if (bad.length) { res.status = "FAIL"; res.reason = bad.map((c) => `${c.name}: ${c.detail}`).join("; "); const fix = fixLineOf(row); if (fix) res.fix = fix; }
       }
@@ -1267,6 +1455,41 @@ export async function runDoctor(opts: SetupOptions): Promise<SetupResult> {
     opts.onAgent?.(id, "done", res);
   }
   return { exitCode: agents.some((a) => a.status === "FAIL") ? 1 : 0, agents };
+}
+
+/** #1376 D-1376-CODEX-PLUGIN-CACHE-1: the server.mjs path in our MCP entry and the hook.mjs path in each own hook
+ *  command, when that file does not exist. String search only (no regex as a mechanism). */
+function missingPinnedChecks(row: CheckRow): Check[] {
+  const paths: string[] = [];
+  const c = row.config;
+  const text = c ? readOr(c.file) : undefined;
+  if (c && text !== undefined) {
+    let cur: unknown;
+    try { cur = hostConfigValueAt(parseHostConfig(row.id, c.file, text, c.format), c.key); } catch { cur = undefined; }
+    if (isObj(cur) && Array.isArray(cur.args)) for (const a of cur.args) if (typeof a === "string" && path.basename(a) === "server.mjs") paths.push(a);
+  }
+  const h = row.hookInstall;
+  const hooksText = h.kind === "file" ? readOr(h.file) : undefined;
+  if (hooksText !== undefined) {
+    let doc: unknown;
+    try { doc = JSON.parse(hooksText); } catch { doc = undefined; }
+    const walk = (v: unknown): void => {
+      if (typeof v === "string") { if (isOwnHookCommand(v, row.id)) paths.push(hookPathOf(v)); }
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (isObj(v)) Object.values(v).forEach(walk);
+    };
+    if (isObj(doc)) walk(doc.hooks);
+  }
+  return [...new Set(paths)].filter((f) => path.isAbsolute(f) && !existsSync(f))
+    .map((f) => ({ name: "missing-file", ok: false, detail: `${f} does not exist (a Codex plugin update replaces its version dir); run: context-mode setup` }));
+}
+
+/** The hook.mjs path in an own hook command: from the quote or space before it up to HOOK_BUNDLE. */
+function hookPathOf(cmd: string): string {
+  const at = cmd.lastIndexOf(HOOK_BUNDLE);
+  const end = at + HOOK_BUNDLE.length;
+  const start = cmd[end] === '"' ? cmd.lastIndexOf('"', at) + 1 : cmd.lastIndexOf(" ", at) + 1;
+  return cmd.slice(start, end);
 }
 
 /** D-OC2-NATIVE-CMD-1: doctor on OpenCode 2 with no plugin entry names the host's own command next to the setup fix. */

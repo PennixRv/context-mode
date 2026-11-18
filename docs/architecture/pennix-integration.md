@@ -1,6 +1,10 @@
 # Pennix 架构与集成记录
 
-## 当前：跟随上游稳定版本
+## 当前任务：同步上游 v2.2.1
+
+根任务 codegraph-context-mode-upstream-sync 已批准第 2 版合同，冻结上游为 99c5f38b622c918a9a2abfe8a263a2737623e21b，组件决定及验证见 [upstream-sync-2.2.1.md](../tasks/upstream-sync-2.2.1.md)。拟发行 2.2.1-pennix.1，当前仍在合并验证，不代表已发布或部署。保留既有 Pennix 输出／恢复、身份与 Lifecycle 归属，采用适用的上游修复及 OMP 元数据。
+
+## 前序稳定基线：v2.1.10
 
 当前根任务为 `11-14-workflow-input-growth-context-mode-audit`，组件记录见 `docs/tasks/input-growth-audit.md`。固定上游为 `v2.1.10`、提交 `4bffb4283bf2198b959062192882a8f33655c8d0`；采用保留双亲历史的普通合并。发行目标为 `@pennixrv/context-mode@2.1.10-pennix.1`、`beta` 通道和同版本 v 标签，实施和验收事实以根任务 execution.md 为准。原稳定基线为 v2.1.5（`157464a3f47b9c5e2e068a800b3490ffca67aab2`）。
 
